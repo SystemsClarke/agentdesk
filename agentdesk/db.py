@@ -117,7 +117,11 @@ def start_thread(conn, channel, subject, opened_by, author_kind, body,
     ts = now_iso()
 
     if thread_id is None:
-        status = paths.STATUS_OPEN if channel == "question" else paths.STATUS_FYI
+        # A question waits on the human and a work item waits on an agent; both
+        # are 'open' in the sense that something is outstanding. Only the
+        # question one reaches the toast, because the view filters the channel.
+        status = (paths.STATUS_OPEN
+                  if channel in ("question", "work") else paths.STATUS_FYI)
         cur = conn.execute(
             "INSERT INTO threads (created_ts, updated_ts, channel, subject, opened_by, status, meta)"
             " VALUES (?,?,?,?,?,?,?)",
@@ -163,6 +167,103 @@ def set_thread_subject(conn, thread_id, subject) -> None:
         "UPDATE threads SET subject=?, updated_ts=? WHERE id=?",
         (subject, now_iso(), thread_id),
     )
+
+
+# --- the work queue -----------------------------------------------------------
+#
+# A work thread is the job. Claiming is a status move plus a name written into
+# the thread's meta, so two agents pulling from the queue at once cannot both
+# come away believing they own the same task.
+
+def _thread_meta(conn, thread_id) -> dict:
+    row = conn.execute("SELECT meta FROM threads WHERE id=?", (thread_id,)).fetchone()
+    if row is None:
+        raise ValueError(f"no such thread: {thread_id}")
+    if not row["meta"]:
+        return {}
+    try:
+        return json.loads(row["meta"]) or {}
+    except (TypeError, ValueError):
+        # A thread whose meta is not JSON is still a thread; refusing to claim
+        # it would be worse than losing whatever was written there.
+        return {}
+
+
+def claim_task(conn, thread_id, agent) -> bool:
+    """Take a work item. True if THIS call took it.
+
+    The check and the write are one statement, so two agents racing for the
+    same task resolve in SQLite rather than in whichever one read first. A
+    False return is not an error: it means somebody else has it.
+    """
+    ts = now_iso()
+    meta = _thread_meta(conn, thread_id)
+    meta.update({"assignee": agent, "claimed_ts": ts})
+    cur = conn.execute(
+        "UPDATE threads SET status=?, updated_ts=?, meta=?"
+        " WHERE id=? AND channel=? AND status=?",
+        (paths.STATUS_CLAIMED, ts, _json(meta), thread_id, "work",
+         paths.STATUS_OPEN),
+    )
+    return cur.rowcount == 1
+
+
+def complete_task(conn, thread_id, agent) -> bool:
+    """Finish a work item this agent holds. False if it does not hold it.
+
+    Only the assignee may complete, so a task cannot be closed out by an agent
+    that never did the work.
+    """
+    ts = now_iso()
+    meta = _thread_meta(conn, thread_id)
+    if meta.get("assignee") != agent:
+        return False
+    meta["completed_ts"] = ts
+    cur = conn.execute(
+        "UPDATE threads SET status=?, updated_ts=?, meta=?"
+        " WHERE id=? AND channel=? AND status=?",
+        (paths.STATUS_DONE, ts, _json(meta), thread_id, "work",
+         paths.STATUS_CLAIMED),
+    )
+    return cur.rowcount == 1
+
+
+def release_task(conn, thread_id, agent, note=None) -> bool:
+    """Put a claimed item back on the queue. False if this agent does not hold it.
+
+    This exists because a claim is a lock, and a lock with no release leaks. If
+    the agent that took an item dies, times out, or is killed, the item sits in
+    'claimed' for ever: it is not open, so no other agent will pick it up, and
+    it is not done, so nobody notices it stopped moving. The queue silently
+    loses the work, which is worse than either succeeding or failing loudly.
+
+    The attempt counter is the other half. A release puts the item back in front
+    of every agent, so an item that reliably kills whatever takes it would be
+    retried for ever. Whoever releases increments the count, and the dispatcher
+    uses it to stop picking the item up after a few tries.
+    """
+    ts = now_iso()
+    meta = _thread_meta(conn, thread_id)
+    if meta.get("assignee") != agent:
+        return False
+    meta.pop("assignee", None)
+    meta.pop("claimed_ts", None)
+    meta["attempts"] = int(meta.get("attempts") or 0) + 1
+    meta["last_released_ts"] = ts
+    if note:
+        meta["last_release_note"] = note
+    cur = conn.execute(
+        "UPDATE threads SET status=?, updated_ts=?, meta=?"
+        " WHERE id=? AND channel=? AND status=?",
+        (paths.STATUS_OPEN, ts, _json(meta), thread_id, "work",
+         paths.STATUS_CLAIMED),
+    )
+    return cur.rowcount == 1
+
+
+def list_work(conn, status=None, limit=100) -> list:
+    """The work queue, newest first. No status means every state."""
+    return list_threads(conn, channel="work", status=status, limit=limit)
 
 
 # --- reads --------------------------------------------------------------------

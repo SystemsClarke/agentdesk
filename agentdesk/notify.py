@@ -68,7 +68,20 @@ def toast(title: str, message: str, *, launch: Optional[str] = None,
         notify = getattr(icon, "notify", None)
         if callable(notify):
             try:
-                notify(title=title, message=message)
+                # pystray's signature is notify(message, title=None). Both of
+                # those ARE the keyword names, so keyword order does not matter
+                # and this line is equivalent to notify(title=..., message=...).
+                # It was changed to match the declared order and for no other
+                # reason -- an earlier comment here claimed the old keyword
+                # order raised TypeError on every call and forced the tray route
+                # to fall through to PowerShell. That was wrong: the old call
+                # bound fine against pystray 0.19.5 and never raised.
+                #
+                # So the reason toasts are unreliable is still UNKNOWN. Do not
+                # read this call as a fix. True from here means "pystray
+                # accepted the call", not "a toast appeared" -- it returns
+                # nothing and cannot report whether Windows actually showed it.
+                notify(message=message, title=title)
                 return True
             except Exception as exc:
                 # The tray icon exists but refused; the PowerShell route is

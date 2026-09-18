@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+import hashlib
+import os
 import queue
 import sqlite3
 import sys
@@ -283,6 +285,96 @@ class Page(ttk.Frame):
         self.reply_txt.delete("1.0", "end")
 
 
+# --- one window per board -----------------------------------------------------
+#
+# Two copies means two poll loops, two tray icons and two toasts for the same
+# question, and nothing on screen says which window is authoritative.
+#
+# The guard is keyed to the DATABASE, not to the app, because the board is the
+# thing that must not be doubled. A `--db` run against a scratch copy is a
+# different board and is therefore legitimately a different instance -- keying
+# the mutex to the app instead would make the test suite and the real window
+# mutually exclusive for no reason, and the tests would have to lie about it.
+#
+# A named mutex rather than a pidfile. Windows releases a mutex when the owning
+# process ends, however it ends, so a crash cannot leave John locked out of his
+# own app. A pidfile can, and the stale-pid recovery that fixes it is exactly
+# the sort of code that works until the one day it doesn't.
+
+_MUTEX_ERROR_ALREADY_EXISTS = 183
+_SW_RESTORE = 9
+
+
+def window_title(db_path: Path) -> str:
+    """The title of the window showing this board.
+
+    Only the real board gets the bare name; a copy says which copy it is, both
+    so it is honest on screen and so `raise_existing` finds the right window
+    when two boards really are open side by side.
+    """
+    return ("AgentDesk" if Path(db_path) == paths.DB_PATH
+            else f"AgentDesk [{Path(db_path).name}]")
+
+
+class SingleInstance:
+    """Hold the one-window-per-board mutex for as long as this object lives.
+
+    The handle is deliberately never closed on the success path: it is released
+    when the process exits, which is the whole point of using a mutex. Keep a
+    reference to this object alive for the same reason.
+    """
+
+    def __init__(self, db_path: Path) -> None:
+        self.title = window_title(db_path)
+        self.already_running = False
+        self._handle = None
+        if os.name != "nt":
+            return  # the tests run on Windows; other platforms just skip the guard
+        digest = hashlib.sha1(
+            str(Path(db_path).resolve()).lower().encode("utf-8")
+        ).hexdigest()[:16]
+        # use_last_error=True gives this DLL its own error slot, so the read
+        # below cannot be clobbered by an unrelated ctypes call in between.
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        # A HANDLE is pointer-sized, and ctypes defaults restype to c_int -- so
+        # without these, the handle is truncated to 32 bits on the way back.
+        # A truncated handle can alias some OTHER handle in the process, and
+        # CloseHandle on it would then close the wrong thing.
+        kernel32.CreateMutexW.restype = ctypes.c_void_p
+        kernel32.CreateMutexW.argtypes = [
+            ctypes.c_void_p, ctypes.c_int, ctypes.c_wchar_p]
+        kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+        handle = kernel32.CreateMutexW(None, True, f"Local\\AgentDesk.{digest}")
+        # CreateMutex succeeds even when the name is taken -- it hands back a
+        # handle to the EXISTING mutex -- so the existence check is this error,
+        # read immediately, and not the return value.
+        self.already_running = (
+            ctypes.get_last_error() == _MUTEX_ERROR_ALREADY_EXISTS)
+        if self.already_running:
+            kernel32.CloseHandle(handle)  # somebody else's; we do not own it
+        else:
+            self._handle = handle         # ours, held until the process ends
+
+    def raise_existing(self) -> bool:
+        """Bring the running window forward. False if that could not be done.
+
+        Best-effort on purpose. Windows refuses a foreground steal from a
+        process the user is not currently interacting with, so this genuinely
+        fails sometimes -- so it reports what happened rather than assuming it
+        worked, and the caller still exits cleanly either way.
+        """
+        if os.name != "nt":
+            return False
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        hwnd = user32.FindWindowW(None, self.title)
+        if not hwnd:
+            return False  # running, but with no window to raise: tray-only,
+                          # or hidden -- both are legitimate states
+        user32.ShowWindow(hwnd, _SW_RESTORE)  # in case it is minimised
+        user32.SetForegroundWindow(hwnd)
+        return user32.GetForegroundWindow() == hwnd
+
+
 class App:
     POLL_MS = 3000
 
@@ -302,13 +394,15 @@ class App:
             conn.close()
 
         self.root = tk.Tk()
-        self.root.title("AgentDesk")
+        # Must match window_title(), which is what a second launch looks for
+        # when it tries to raise this window.
+        self.root.title(window_title(db_path))
         self.root.geometry("1000x640")
         self.root.minsize(720, 420)
         self.root.protocol("WM_DELETE_WINDOW", self._hide_to_tray)
 
         labels = {"question": "Questions", "discussion": "Discussion",
-                  "wiki": "Wiki"}
+                  "wiki": "Wiki", "work": "Work to Hire"}
         nb = ttk.Notebook(self.root)
         nb.pack(fill="both", expand=True)
         self.pages: dict[str, Page] = {}
@@ -439,11 +533,15 @@ class App:
                       if q["thread_id"] not in self.announced]
             self.announced.update(current_ids)
         for q in new_qs:
-            try:
-                self.icon.notify(f"from {q['opened_by']}",
-                                 title=f"New question: {q['subject']}")
-            except Exception:
-                pass  # notify is best-effort; the title count still shows
+            # Route through notify.toast, never self.icon.notify. toast() tries
+            # the tray icon first and falls back to the PowerShell WinRT route,
+            # logging every failure; calling the tray icon directly here skipped
+            # all of that, and when _make_tray had left icon None the old bare
+            # except ate the AttributeError -- so from outside, "toasts do not
+            # work" and "the tray icon was never built" looked identical.
+            # toast() never raises (its own contract), so no try here.
+            notify.toast(f"New question: {q['subject']}",
+                         f"from {q['opened_by']}", icon=self.icon)
         count = len(open_qs)
         noun = "question" if count == 1 else "questions"
         self.root.title(f"AgentDesk - {count} open {noun}" if count
@@ -520,6 +618,19 @@ def main(argv: Optional[list[str]] = None) -> int:
     )
     args = parser.parse_args(argv)
     paths.ensure_dirs()
+
+    guard = SingleInstance(args.db)
+    if guard.already_running:
+        raised = guard.raise_existing()
+        print("AgentDesk is already open"
+              + (" - bringing that window forward." if raised else
+                 "; its window could not be raised from here, so it is in the "
+                 "taskbar or the notification area."), file=sys.stderr)
+        # Zero, not one. The user asked for the window and the window is there;
+        # the second copy declining to make a duplicate is this program
+        # working, and a shortcut or launcher should not report a failure.
+        return 0
+
     App(args.db).run()
     return 0
 

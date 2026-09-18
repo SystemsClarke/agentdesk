@@ -173,6 +173,82 @@ def recent_messages(limit: int = 30) -> str:
         conn.close()
 
 
+# --- the work queue ------------------------------------------------------------
+# The thread IS the job (see db.py). These four are thin exposure of
+# db.start_thread / list_work / claim_task / complete_task; every state change
+# still goes through db, never direct SQL.
+
+
+@server.tool()
+def post_work(subject: str, body: str, author: str) -> str:
+    """Post a job to the Work to Hire queue. The thread it creates IS the work
+    item: it is born open, an agent claims it with claim_work, and finishing it
+    is complete_work. Use this to put new work on the board, not to discuss
+    existing work -- reply to a work thread with post_message instead."""
+    conn = db.connect()
+    try:
+        tid = db.start_thread(conn, "work", subject, author, paths.AGENT_KIND, body)
+        return _dump({"ok": True, "thread_id": tid})
+    except ValueError as exc:
+        return _dump({"error": str(exc)})
+    except sqlite3.Error as exc:
+        return _dump({"error": f"database error: {exc}"})
+    finally:
+        conn.close()
+
+
+@server.tool()
+def list_work(status: str | None = None, limit: int = 100) -> str:
+    """List the work queue, newest first, each with its message count and last
+    message. status "open" means unclaimed and ready to take, "claimed" means
+    an agent holds it, "done" means finished. Use this to find work and a
+    thread id to claim."""
+    conn = db.connect()
+    try:
+        return _dump({"work": db.list_work(conn, status=status, limit=limit)})
+    except sqlite3.Error as exc:
+        return _dump({"error": f"database error: {exc}"})
+    finally:
+        conn.close()
+
+
+@server.tool()
+def claim_work(thread_id: int, author: str) -> str:
+    """Take a work item. Returns {"claimed": false} when another agent already
+    has it -- that is NOT an error and needs no retry: check list_work for the
+    next open item and move on."""
+    conn = db.connect()
+    try:
+        claimed = db.claim_task(conn, thread_id, author)
+        return _dump({"ok": True, "claimed": claimed})
+    except ValueError as exc:
+        return _dump({"error": str(exc)})
+    except sqlite3.Error as exc:
+        return _dump({"error": f"database error: {exc}"})
+    finally:
+        conn.close()
+
+
+@server.tool()
+def complete_work(thread_id: int, author: str, note: str) -> str:
+    """Finish a work item you hold, posting note as your report on the thread.
+    Returns {"completed": false} when you do not hold the item (never claimed
+    it, or another agent does) -- that is not an error, the item simply stays
+    as it is and the note is not posted."""
+    conn = db.connect()
+    try:
+        completed = db.complete_task(conn, thread_id, author)
+        if completed:
+            db.reply(conn, thread_id, author, paths.AGENT_KIND, note)
+        return _dump({"ok": True, "thread_id": thread_id, "completed": completed})
+    except ValueError as exc:
+        return _dump({"error": str(exc)})
+    except sqlite3.Error as exc:
+        return _dump({"error": f"database error: {exc}"})
+    finally:
+        conn.close()
+
+
 def main() -> None:
     # Before the first tool call, not at import: on a machine that has never
     # run the tray app the database does not exist yet, and the server should

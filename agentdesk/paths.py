@@ -31,8 +31,11 @@ HUMAN = "john"
 HUMAN_KIND = "human"
 AGENT_KIND = "agent"
 
-# Channels are the two pages the user asked for, plus a wiki.
-CHANNELS = ("question", "discussion", "wiki")
+# Channels are the two pages the user asked for, plus a wiki, plus the work
+# queue. 'work' is where a task is posted and an agent comes to find it: the
+# thread IS the job, so claiming and finishing are thread-status moves rather
+# than a second table.
+CHANNELS = ("question", "discussion", "wiki", "work")
 
 # A question is 'open' until the human answers it; that state is what drives the
 # toast, so it is a column and not something inferred from the thread shape.
@@ -40,6 +43,17 @@ STATUS_OPEN = "open"
 STATUS_ANSWERED = "answered"
 STATUS_CLOSED = "closed"
 STATUS_FYI = "fyi"
+
+# The work queue's two extra states. A work thread is born 'open' -- available
+# to be taken -- and moves to 'claimed' when an agent picks it up and 'done'
+# when that agent reports back.
+#
+# 'open' is shared with questions, which is safe because the open_questions VIEW
+# filters on channel='question' as well as on the status. It is worth stating
+# plainly, because the obvious future change -- dropping the channel test from
+# that view -- would turn every unclaimed task into a toast at John.
+STATUS_CLAIMED = "claimed"
+STATUS_DONE = "done"
 
 
 def ensure_dirs() -> None:
