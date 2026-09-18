@@ -22,12 +22,28 @@
 [CmdletBinding()]
 param(
     [string] $TaskName = 'AgentDesk-Backup',
-    [string] $RepoRoot = (Split-Path -Parent $PSScriptRoot),
-    [string] $Pythonw  = (Join-Path (Split-Path -Parent $PSScriptRoot) '.venv\Scripts\pythonw.exe'),
+    [string] $RepoRoot,
+    [string] $Pythonw,
     [switch] $Uninstall
 )
 
 $ErrorActionPreference = 'Stop'
+
+# The defaults are resolved HERE and not in the param block. In Windows
+# PowerShell 5.1 $PSScriptRoot is not populated while param defaults are being
+# evaluated, so `$RepoRoot = (Split-Path -Parent $PSScriptRoot)` died with
+# "Cannot bind argument to parameter 'Path' because it is an empty string" --
+# before the script's own error handling was even reached. $MyInvocation is the
+# fallback for the same reason: it is the one source of the script's own path
+# that is present however the file was invoked.
+if (-not $PSScriptRoot) {
+    $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+} else {
+    $scriptDir = $PSScriptRoot
+}
+$repoDefault = Split-Path -Parent $scriptDir
+if (-not $RepoRoot) { $RepoRoot = $repoDefault }
+if (-not $Pythonw)  { $Pythonw  = Join-Path $repoDefault '.venv\Scripts\pythonw.exe' }
 
 if ($Uninstall) {
     $existing = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
