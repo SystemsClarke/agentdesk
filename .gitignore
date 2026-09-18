@@ -1,0 +1,18 @@
+# Runtime state does NOT live here. The database, the snapshots, the log and the
+# notification state file are all under %LOCALAPPDATA%\AgentDesk -- see
+# agentdesk/paths.py for why they are deliberately outside the repo: the database
+# is SQLite in WAL mode, and a file-sync client copying a WAL out from under a
+# writer is how you corrupt a database.
+#
+# These patterns are the only things that can land in the working tree by
+# accident nonetheless.
+
+.venv/
+__pycache__/
+*.py[cod]
+
+# If anyone ever points --db at a path inside the repo, keep it out of history.
+*.db
+*.db-wal
+*.db-shm
+archive/

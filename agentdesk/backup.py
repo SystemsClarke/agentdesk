@@ -1,0 +1,233 @@
+"""The backup. Snapshots the database hourly and writes the day's messages into
+the memory vault as plain markdown, which is the only copy that survives the
+machine."""
+
+import argparse
+import json
+import sqlite3
+from datetime import date, datetime, time, timedelta, timezone
+from pathlib import Path
+
+from . import db, paths
+
+# The snapshot filename carries its UTC timestamp so prune_archive can be
+# judged by the name rather than by a file mtime, which a copy or a sync
+# client can reset.
+_SNAPSHOT_STAMP = "%Y%m%dT%H%M%S"
+
+# This module deliberately contains no git calls, even though the vault is a
+# git repository. Commits on the vault carry an explicit authorship convention
+# that belongs to a human decision, and an hourly job must not author a commit
+# an hour. If you are about to add a git call here, put it behind a human
+# instead.
+
+
+def _to_local(ts: str) -> datetime:
+    """Parse a timestamp from the database into a local aware datetime.
+
+    The stored strings are UTC from now_iso(); a naive value is tolerated so a
+    hand-inserted row cannot crash the backup.
+    """
+    dt = datetime.fromisoformat(ts)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone()
+
+
+def _day_bounds_utc(local_date: date) -> tuple[str, str]:
+    """The [start, end) of a local day as UTC strings in now_iso()'s format.
+
+    The day boundary is decided in local time first, then converted, or a
+    message sent at 20:00 local lands in tomorrow's file. The boundaries are
+    formatted through isoformat() so SQL's string comparison against the stored
+    timestamps compares like with like.
+    """
+    start = datetime.combine(local_date, time.min).astimezone()
+    end = start + timedelta(days=1)
+    return (
+        start.astimezone(timezone.utc).isoformat(timespec="seconds"),
+        end.astimezone(timezone.utc).isoformat(timespec="seconds"),
+    )
+
+
+def snapshot(conn: sqlite3.Connection) -> Path:
+    """A consistent copy of the live database into paths.ARCHIVE_DIR, named
+    agentdesk-<UTC timestamp>.db.
+
+    Uses SQLite's online backup API rather than a file copy: the database is in
+    WAL mode with a writer that may be mid-transaction, and copying the .db file
+    alone yields a torn snapshot that is missing whatever is still in the
+    write-ahead log. conn.backup() copies a committed page image instead.
+    """
+    paths.ensure_dirs()
+    stamp = datetime.now(timezone.utc).strftime(_SNAPSHOT_STAMP)
+    dest_path = paths.ARCHIVE_DIR / f"agentdesk-{stamp}.db"
+    dest = sqlite3.connect(str(dest_path))
+    try:
+        conn.backup(dest)
+    finally:
+        dest.close()
+    return dest_path
+
+
+def render_day(conn: sqlite3.Connection, local_date: date) -> str:
+    """The full markdown for one local day: a header with counts, the threads
+    touched that day, then every message in order."""
+    start, end = _day_bounds_utc(local_date)
+    rows = [
+        dict(r)
+        for r in conn.execute(
+            "SELECT m.id, m.ts, m.thread_id, m.author, m.author_kind, m.body,"
+            "       m.reply_to, t.subject, t.channel, t.status, t.opened_by"
+            " FROM messages m JOIN threads t ON t.id = m.thread_id"
+            " WHERE m.ts >= ? AND m.ts < ?"
+            " ORDER BY m.id",
+            (start, end),
+        )
+    ]
+
+    human = sum(1 for r in rows if r["author_kind"] == paths.HUMAN_KIND)
+    agent = len(rows) - human
+    threads = len({r["thread_id"] for r in rows})
+
+    lines = [f"# AgentDesk daily transcript - {local_date.isoformat()}", ""]
+    lines.append(f"{threads} threads touched, {len(rows)} messages "
+                 f"({human} human, {agent} agent).")
+    # A day with no messages still gets its file, so a gap in the daily series
+    # reads as "nothing happened" rather than as "the backup did not run".
+    if not rows:
+        lines += ["", "Nothing happened on this day - the backup ran and found no messages."]
+
+    lines += ["", "## Threads touched", ""]
+    if rows:
+        seen: set[int] = set()
+        for r in rows:
+            if r["thread_id"] in seen:
+                continue
+            seen.add(r["thread_id"])
+            lines.append(
+                f'- thread {r["thread_id"]}: "{r["subject"]}" - channel {r["channel"]},'
+                f' status {r["status"]}, opened by {r["opened_by"]}'
+            )
+    else:
+        lines.append("None.")
+
+    lines += ["", "## Messages", ""]
+    if not rows:
+        lines.append("None.")
+    for r in rows:
+        stamp_local = _to_local(r["ts"]).strftime("%H:%M")
+        reply_note = f" (reply to #{r['reply_to']})" if r["reply_to"] else ""
+        # Continuation lines are indented so a multi-line body stays inside the
+        # list item instead of breaking out of it.
+        body = r["body"].replace("\r\n", "\n").replace("\n", "\n  ")
+        lines.append(
+            f'- {stamp_local} **{r["author"]}** ({r["author_kind"]})'
+            f' [thread {r["thread_id"]}]{reply_note} - {body}'
+        )
+    return "\n".join(lines).rstrip("\n") + "\n"
+
+
+def write_vault(conn: sqlite3.Connection, local_date: date | None = None) -> Path:
+    """Rewrite paths.VAULT_AGENTDESK/<local-date>.md from the database and make
+    sure the vault log for that day carries the pointer line.
+
+    The day file is rewritten whole every run rather than appended to: it is
+    derived data, so a rewrite is idempotent, where an hourly append would grow
+    the same message into the vault a dozen times a day. Transcripts live in
+    agentdesk/ only, never in the vault's notes/ directory, which is hand-written
+    atomic memories under a search index.
+    """
+    if local_date is None:
+        local_date = datetime.now().astimezone().date()
+    text = render_day(conn, local_date)
+    paths.ensure_dirs()
+
+    day_file = paths.VAULT_AGENTDESK / f"{local_date.isoformat()}.md"
+    with day_file.open("w", encoding="utf-8", newline="\n") as f:
+        f.write(text)
+
+    # The pointer line is keyed to the date alone. Putting message counts in it
+    # would change the line through the day and defeat the idempotence check
+    # below, which compares whole lines.
+    pointer = f"- [[agentdesk/{local_date.isoformat()}]] - AgentDesk daily transcript"
+    log_file = paths.VAULT_LOG / f"{local_date.isoformat()}.md"
+    if log_file.exists():
+        existing = log_file.read_text(encoding="utf-8")
+        if pointer not in existing.splitlines():
+            # If the file does not end on a newline, a plain append would weld
+            # the pointer onto the last existing line.
+            prefix = "" if (not existing or existing.endswith("\n")) else "\n"
+            with log_file.open("a", encoding="utf-8", newline="\n") as f:
+                f.write(prefix + pointer + "\n")
+    else:
+        with log_file.open("w", encoding="utf-8", newline="\n") as f:
+            f.write(pointer + "\n")
+    return day_file
+
+
+def prune_archive(keep_days: int = 14) -> int:
+    """Delete snapshots older than keep_days, judged by the timestamp in the
+    filename. Returns how many went."""
+    cutoff = datetime.now(timezone.utc) - timedelta(days=keep_days)
+    prefix_len = len("agentdesk-")
+    pruned = 0
+    for f in paths.ARCHIVE_DIR.glob("agentdesk-*.db"):
+        try:
+            stamp = datetime.strptime(
+                f.stem[prefix_len:], _SNAPSHOT_STAMP
+            ).replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue  # not one of ours; leave it alone
+        if stamp < cutoff:
+            f.unlink()
+            pruned += 1
+    return pruned
+
+
+def run_once(json_out: bool = False) -> dict:
+    """One full cycle: snapshot the database, rewrite the vault day file, prune
+    old snapshots.
+
+    Prints a one-line summary, or the whole result as JSON when json_out is set.
+    The CLI and the scheduled task both go through here so the two cannot drift.
+    """
+    paths.ensure_dirs()
+    conn = db.connect()
+    try:
+        # Idempotent, so the backup can run on a machine where nothing else has
+        # created the schema yet.
+        db.init_db(conn)
+        today = datetime.now().astimezone().date()
+        snap = snapshot(conn)
+        vault = write_vault(conn, today)
+        pruned = prune_archive()
+        n_messages = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+    finally:
+        conn.close()
+
+    result = {
+        "day": today.isoformat(),
+        "messages": n_messages,
+        "snapshot": str(snap),
+        "vault": str(vault),
+        "pruned": pruned,
+    }
+    if json_out:
+        print(json.dumps(result, ensure_ascii=False))
+    else:
+        print(f"agentdesk backup: day {result['day']}, {n_messages} message(s), "
+              f"snapshot {snap.name}, {pruned} pruned")
+    return result
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Run one AgentDesk backup cycle.")
+    parser.add_argument("--json", action="store_true",
+                        help="print the cycle result as JSON")
+    args = parser.parse_args()
+    run_once(json_out=args.json)
+
+
+if __name__ == "__main__":
+    main()

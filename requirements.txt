@@ -1,0 +1,6 @@
+# MCP client/server SDK for agent communication over stdio/HTTP
+mcp>=2.2.0
+# System tray icon support for the desktop agent UI
+pystray>=0.19.5
+# Image handling for tray icons and screenshots
+Pillow>=12.3.0

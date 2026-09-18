@@ -1,0 +1,14 @@
+# Store LF in the repository and check LF out, on every platform.
+#
+# Git's default on Windows is to convert to CRLF on checkout, which makes every
+# file read as modified the moment a tool rewrites it with LF, and makes a diff
+# between this repo and anything that ran through a Unix tool show the whole file
+# changed. The code here is Python and PowerShell; both read LF correctly, so
+# there is nothing to gain from the conversion and a lot of noise to avoid.
+* text=auto eol=lf
+
+# Binary-ish: never touch the line endings of an image or a database, even if
+# one is ever committed by accident.
+*.png binary
+*.ico binary
+*.db binary
