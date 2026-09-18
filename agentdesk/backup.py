@@ -34,6 +34,20 @@ def _to_local(ts: str) -> datetime:
     return dt.astimezone()
 
 
+def _local_midnight_utc(local_date: date) -> str:
+    """Local midnight on `local_date`, as a UTC string in now_iso()'s format.
+
+    astimezone() called on a NAIVE datetime is the platform's local-time
+    conversion: it applies the UTC offset actually in force at that date and
+    time, including a DST shift.
+    """
+    return (
+        datetime.combine(local_date, time.min)
+        .astimezone(timezone.utc)
+        .isoformat(timespec="seconds")
+    )
+
+
 def _day_bounds_utc(local_date: date) -> tuple[str, str]:
     """The [start, end) of a local day as UTC strings in now_iso()'s format.
 
@@ -41,12 +55,17 @@ def _day_bounds_utc(local_date: date) -> tuple[str, str]:
     message sent at 20:00 local lands in tomorrow's file. The boundaries are
     formatted through isoformat() so SQL's string comparison against the stored
     timestamps compares like with like.
+
+    The two ends are converted SEPARATELY, each from its own naive local
+    midnight, because they do not always share a UTC offset -- on the day the
+    clocks shift, the local day is 23 or 25 hours long. Computing the end as
+    start + timedelta(days=1) instead does wall-clock arithmetic on an aware
+    datetime, which adds exactly 24 hours and keeps the start's offset, so on
+    a DST day the last hour (or the first) is filed under the wrong date.
     """
-    start = datetime.combine(local_date, time.min).astimezone()
-    end = start + timedelta(days=1)
     return (
-        start.astimezone(timezone.utc).isoformat(timespec="seconds"),
-        end.astimezone(timezone.utc).isoformat(timespec="seconds"),
+        _local_midnight_utc(local_date),
+        _local_midnight_utc(local_date + timedelta(days=1)),
     )
 
 

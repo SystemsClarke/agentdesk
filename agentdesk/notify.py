@@ -16,7 +16,6 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Optional
-from xml.sax.saxutils import escape
 
 from . import db, paths
 
@@ -174,15 +173,25 @@ def _toast_powershell(title: str, message: str,
 def _ps_script(title: str, message: str, launch: Optional[str]) -> str:
     """Assemble the PowerShell for one toast.
 
-    Text goes through xml.sax.saxutils.escape because the template's
-    placeholders are replaced textually: John pastes build names and branch
-    names into messages, and an unescaped ampersand would break the XML. The
-    single quote is mapped to an entity too, which keeps the text safe inside
-    PowerShell's single-quoted literals. The `launch` attribute is set through
-    the DOM instead, so the serializer does that one's escaping.
+    The text goes in through the DOM, NOT by substituting placeholders into the
+    template XML. GetTemplateContent hands back a document whose text nodes are
+    already EMPTY --
+
+        <text id="1"></text><text id="2"></text>
+
+    -- not the literal strings 'Text1'/'Text2' that the old XML-documentation
+    examples suggest. A textual .Replace('Text1', ...) against that document
+    matches nothing, so it returned success while showing a blank toast, and
+    the caller then recorded those questions as announced and never raised them
+    again. CreateTextNode also means the serializer does the XML escaping, so
+    an ampersand in a build name is safe without hand-escaping it first --
+    escaping it here as well would put a literal '&amp;' on screen.
+
+    The single quotes still have to be doubled for PowerShell's own
+    single-quoted literals; that is a different layer from the XML.
     """
-    esc_title = escape(title, {"'": "&#39;"})
-    esc_message = escape(message, {"'": "&#39;"})
+    ps_title = title.replace("'", "''")
+    ps_message = message.replace("'", "''")
     lines = [
         "$ErrorActionPreference = 'Stop'",
         "[void][Windows.UI.Notifications.ToastNotificationManager,"
@@ -190,13 +199,11 @@ def _ps_script(title: str, message: str, launch: Optional[str]) -> str:
         "$template = [Windows.UI.Notifications.ToastNotificationManager]"
         "::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]"
         "::ToastText02)",
-        # Two-stage replacement so a title that happens to contain 'Text2'
-        # cannot be caught by the second placeholder swap.
-        "$xml = $template.GetXml()"
-        ".Replace('Text1', '__TITLE__').Replace('Text2', '__MSG__')",
-        "$xml = $xml.Replace('__TITLE__', '" + esc_title + "')"
-        ".Replace('__MSG__', '" + esc_message + "')",
-        "$template.LoadXml($xml)",
+        "$texts = $template.GetElementsByTagName('text')",
+        "$null = $texts.Item(0).AppendChild("
+        "$template.CreateTextNode('" + ps_title + "'))",
+        "$null = $texts.Item(1).AppendChild("
+        "$template.CreateTextNode('" + ps_message + "'))",
     ]
     if launch:
         # PS-literal quoting only; the DOM escapes XML when serializing.

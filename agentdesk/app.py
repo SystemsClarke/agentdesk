@@ -25,10 +25,10 @@ from PIL import Image, ImageDraw
 # pythonw runs a file as a plain script, where there is no package context for
 # a relative import; fall back to putting the repo root on the path.
 try:
-    from agentdesk import db, paths
+    from agentdesk import db, notify, paths
 except ImportError:  # pragma: no cover - depends on how the file was launched
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-    from agentdesk import db, paths
+    from agentdesk import db, notify, paths
 
 
 def local_ts(iso: str) -> str:
@@ -102,6 +102,9 @@ class Page(ttk.Frame):
         # Guards _on_select while the tree is rebuilt programmatically, so a
         # refresh does not re-read and re-render the thread under the reader.
         self._suppress_select = False
+        # The row tuples currently in the tree, so an unchanged refresh can be
+        # skipped instead of rebuilding the list and losing the scroll position.
+        self._rendered: list = []
 
         top = ttk.Frame(self)
         top.pack(fill="x", padx=6, pady=(6, 0))
@@ -187,27 +190,40 @@ class Page(ttk.Frame):
     # --- reads ---------------------------------------------------------------
 
     def refresh_list(self, conn: sqlite3.Connection) -> None:
-        self.rows = db.list_threads(conn, channel=self.channel, limit=200)
+        rows = db.list_threads(conn, channel=self.channel, limit=200)
+        self.rows = rows
+        # Build the whole table in memory first, so an unchanged refresh can be
+        # skipped entirely. Rebuilding the tree widget drops the scrollbar
+        # position and flashes the list, and a poll that found nothing new has
+        # no business doing either.
+        wanted = []
+        for r in rows:
+            is_open = r["status"] == paths.STATUS_OPEN
+            wanted.append((str(r["id"]), ("isopen",) if is_open else (),
+                           ("open" if is_open else "", r["subject"],
+                            r["opened_by"], local_ts(r["updated_ts"]),
+                            r["message_count"])))
+        if wanted == self._rendered:
+            return
+
         self._suppress_select = True
         try:
             keep = self.thread_id
+            at = self.tree.yview()
             self.tree.delete(*self.tree.get_children())
-            for r in self.rows:
-                is_open = r["status"] == paths.STATUS_OPEN
-                self.tree.insert(
-                    "", "end", iid=str(r["id"]),
-                    tags=("isopen",) if is_open else (),
-                    values=("open" if is_open else "", r["subject"],
-                            r["opened_by"], local_ts(r["updated_ts"]),
-                            r["message_count"]),
-                )
+            for iid, tags, values in wanted:
+                self.tree.insert("", "end", iid=iid, tags=tags, values=values)
             # Re-select the thread being read, or the view loses its place on
             # every refresh even though nothing about it changed.
             if keep is not None and self.tree.exists(str(keep)):
                 self.tree.selection_set(str(keep))
-                self.tree.see(str(keep))
+            # Restore where the reader had scrolled to. see() would drag the
+            # view to the selected row instead, which reads as the list
+            # jumping under the cursor whenever any message anywhere lands.
+            self.tree.yview_moveto(at[0])
         finally:
             self._suppress_select = False
+            self._rendered = wanted
 
     def refresh_detail(self, conn: sqlite3.Connection) -> None:
         if self.thread_id is None:
@@ -382,23 +398,30 @@ class App:
         self._do_poll(reschedule=False)
 
     def _do_poll(self, reschedule: bool) -> None:
+        conn = None
         try:
             conn = db.connect(self.db_path)
-            try:
-                row = conn.execute("SELECT MAX(id) FROM messages").fetchone()
-                max_id = int(row[0]) if row and row[0] is not None else 0
-                open_qs = db.open_questions(conn)
-            finally:
-                conn.close()
+            row = conn.execute("SELECT MAX(id) FROM messages").fetchone()
+            max_id = int(row[0]) if row and row[0] is not None else 0
+            open_qs = db.open_questions(conn)
             if (max_id != self.last_max_id
                     or len(open_qs) != self.last_open_count):
+                # _apply_changes reads from this same connection, so the close
+                # has to come after it, and the two counters have to move after
+                # it as well. Advancing them first means a failed redraw leaves
+                # the window believing it is up to date, and no later tick ever
+                # retries -- the panes simply stay empty.
+                self._apply_changes(conn, open_qs)
                 self.last_max_id = max_id
                 self.last_open_count = len(open_qs)
-                self._apply_changes(conn, open_qs)
-        except sqlite3.Error:
-            # The database is shared; a transient failure should wait for the
-            # next tick rather than bring the window down.
-            pass
+        except sqlite3.Error as exc:
+            # The database is shared with the MCP server and the hourly backup;
+            # a transient failure waits for the next tick rather than bringing
+            # the window down.
+            notify.log_line(f"poll failed: {exc!r}")
+        finally:
+            if conn is not None:
+                conn.close()
         if reschedule:
             self.root.after(self.POLL_MS, self._poll)
 

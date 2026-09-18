@@ -98,8 +98,19 @@ def start_thread(conn, channel, subject, opened_by, author_kind, body,
                  meta=None, thread_id=None) -> int:
     """Post a message, creating a thread if `thread_id` is None.
 
-    Returns the message id. A question thread is born 'open'; everything else is
-    born 'fyi', because only a question is waiting on the human.
+    Returns the THREAD id, so the caller can carry on the conversation with it.
+
+    It used to return the message id -- cur.lastrowid from the INSERT below --
+    which is the obvious thing to write and the wrong thing to return. Threads
+    and messages have independent id sequences, so the two numbers coincide
+    only on an empty database and drift apart from the first reply onwards. A
+    caller doing the natural thing with the result (reply to what start_thread
+    handed back) then hit a foreign key error, or, where the message id
+    happened to match an unrelated thread's id, silently posted into that other
+    conversation.
+
+    A question thread is born 'open'; everything else is born 'fyi', because
+    only a question is waiting on the human.
     """
     if channel not in paths.CHANNELS:
         raise ValueError(f"channel must be one of {paths.CHANNELS}, got {channel!r}")
@@ -118,12 +129,12 @@ def start_thread(conn, channel, subject, opened_by, author_kind, body,
             raise ValueError(f"no such thread: {thread_id}")
         conn.execute("UPDATE threads SET updated_ts=? WHERE id=?", (ts, thread_id))
 
-    cur = conn.execute(
+    conn.execute(
         "INSERT INTO messages (ts, thread_id, author, author_kind, body, reply_to, meta)"
         " VALUES (?,?,?,?,?,?,?)",
         (ts, thread_id, opened_by, author_kind, body, None, _json(meta)),
     )
-    return int(cur.lastrowid)
+    return int(thread_id)
 
 
 def reply(conn, thread_id, author, author_kind, body, reply_to=None, meta=None) -> int:

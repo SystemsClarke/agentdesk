@@ -44,10 +44,9 @@ def post_message(channel: str, subject: str, body: str, author: str,
         return _dump({"error": f"channel must be one of {list(paths.CHANNELS)}, got {channel!r}"})
     conn = db.connect()
     try:
-        msg_id = db.start_thread(conn, channel, subject, author, paths.AGENT_KIND, body,
-                                 thread_id=thread_id)
-        row = conn.execute("SELECT thread_id FROM messages WHERE id=?", (msg_id,)).fetchone()
-        return _dump({"ok": True, "thread_id": row["thread_id"], "message_id": msg_id})
+        tid = db.start_thread(conn, channel, subject, author, paths.AGENT_KIND, body,
+                              thread_id=thread_id)
+        return _dump({"ok": True, "thread_id": tid})
     except ValueError as exc:
         return _dump({"error": str(exc)})
     except sqlite3.Error as exc:
@@ -64,10 +63,9 @@ def ask_human(subject: str, body: str, author: str, meta: dict | None = None) ->
     discussion."""
     conn = db.connect()
     try:
-        msg_id = db.start_thread(conn, "question", subject, author, paths.AGENT_KIND, body,
-                                 meta=meta)
-        row = conn.execute("SELECT thread_id FROM messages WHERE id=?", (msg_id,)).fetchone()
-        return _dump({"ok": True, "thread_id": row["thread_id"], "message_id": msg_id})
+        tid = db.start_thread(conn, "question", subject, author, paths.AGENT_KIND, body,
+                              meta=meta)
+        return _dump({"ok": True, "thread_id": tid})
     except sqlite3.Error as exc:
         return _dump({"error": f"database error: {exc}"})
     finally:
