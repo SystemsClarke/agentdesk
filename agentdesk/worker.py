@@ -227,13 +227,27 @@ def _post_release_note(tid: int, reason: str, tail: list) -> None:
         conn.close()
 
 
-def _pick(conn, claimed: set) -> Optional[dict]:
+def _pick(conn, claimed: set, only: Optional[int] = None) -> Optional[dict]:
     """The oldest open item that is not already being worked, or None.
 
     Oldest-first, because a queue everyone can add to but nobody drains from the
     front is a stack, and the item John posted a week ago never gets reached.
+
+    `only` filters INSIDE the search for that one id. An earlier version picked
+    the oldest item first and then discarded it unless it happened to be the one
+    asked for, which meant `--only 24` did nothing at all unless 24 was also the
+    oldest open item -- and it did that silently, exiting 0. That is precisely
+    the surprise the flag exists to prevent, so the filter moved here, where it
+    selects rather than rejects.
     """
-    for item in db.list_work(conn, status=paths.STATUS_OPEN, limit=50):
+    # reversed(): db.list_work returns newest-first, so iterating it directly
+    # gave the NEWEST open item -- the exact opposite of what the paragraph
+    # above promises. It read correctly and did the wrong thing, which is why
+    # the reasoning is written down and not just the code.
+    pending = db.list_work(conn, status=paths.STATUS_OPEN, limit=50)
+    for item in reversed(pending):
+        if only is not None and item["id"] != only:
+            continue
         if item["id"] in claimed:
             continue
         if _attempts(item) >= MAX_ATTEMPTS:
@@ -378,12 +392,7 @@ def main(argv=None) -> int:
         if len(running) < MAX_CONCURRENT:
             conn = db.connect()
             try:
-                item = _pick(conn, set(running))
-                if args.only is not None:
-                    # Honour --only strictly: if that item is not open, do not
-                    # quietly fall through to something else, because that is
-                    # exactly the surprise the flag exists to prevent.
-                    item = item if (item and item["id"] == args.only) else None
+                item = _pick(conn, set(running), args.only)
             finally:
                 conn.close()
             if item is not None:
@@ -391,8 +400,18 @@ def main(argv=None) -> int:
                     target=run_item, args=(item, WORKER_NAME), daemon=True)
                 th.start()
                 running[item["id"]] = th
+            elif args.only is not None and not running:
+                # Say it out loud. A named item that is claimed, capped or not
+                # open is a normal thing to find, but exiting 0 in silence makes
+                # it indistinguishable from having run the item, which is how
+                # the earlier version of this flag wasted a whole run.
+                log(f"#{args.only} is not open, is already claimed, or has hit "
+                    f"the attempt cap - nothing to do")
+                break
 
-        if args.once:
+        # A named item is one pass by definition: "run this one item and
+        # nothing else" cannot mean "and then go on to whatever else is oldest".
+        if args.once or args.only is not None:
             break
         time.sleep(POLL_SECONDS)
 
