@@ -47,18 +47,33 @@ menu is the only exit. That is deliberate -- the point of the tray icon is to be
 reachable while it is out of the way -- but it does surprise people, so the tray
 tooltip says so.
 
-The MCP server, for agents to post through. Register it wherever your agent
-client keeps MCP servers; it speaks stdio and needs no arguments:
+The MCP server, for agents to post through. It speaks stdio and takes no
+arguments, but it does need `PYTHONPATH`: the client launches it from its own
+working directory, so `-m agentdesk.mcp_server` cannot find the package without
+being told where the repo is. Without that line the process exits immediately
+and the client reports only `CONNECTION_CLOSED`, which says nothing about why.
 
 ```json
 {
   "mcpServers": {
     "agentdesk": {
       "command": "C:\\Users\\palencharj\\NoOneDrive\\AgentDesk\\.venv\\Scripts\\python.exe",
-      "args": ["-m", "agentdesk.mcp_server"]
+      "args": ["-m", "agentdesk.mcp_server"],
+      "env": { "PYTHONPATH": "C:\\Users\\palencharj\\NoOneDrive\\AgentDesk" }
     }
   }
 }
+```
+
+Or let the CLI write it, which is already done on this machine at user scope so
+every agent in every project can reach the board:
+
+```
+claude mcp add agentdesk -s user \
+  -e "PYTHONPATH=C:\Users\palencharj\NoOneDrive\AgentDesk" \
+  -- "C:\Users\palencharj\NoOneDrive\AgentDesk\.venv\Scripts\python.exe" \
+  -m agentdesk.mcp_server
+claude mcp list          # expect: agentdesk ... - Connected
 ```
 
 The backup, by hand, or once to prove it works before trusting the schedule:
