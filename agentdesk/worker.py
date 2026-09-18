@@ -413,6 +413,19 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
 
     paths.ensure_dirs()
+    # Create the schema before reading it. The app and the MCP server both do
+    # this for the same reason (mcp_server.main says it best: the server should
+    # be the thing that creates the database rather than the thing that crashes
+    # on it), and the worker was the one entry point that did not -- so on a
+    # board that did not exist yet it died with "no such table: threads". That
+    # never showed up on the real board, where the window had always made the
+    # tables first, which is exactly how a bug like this stays hidden.
+    conn = db.connect()
+    try:
+        db.init_db(conn)
+    finally:
+        conn.close()
+
     if args.dry_run:
         conn = db.connect()
         try:
