@@ -64,16 +64,25 @@ AGENT = "app-dev"
 
 # How the spawned agent may act without a human in the loop.
 #
-# 'acceptEdits' lets it read, grep and edit files unattended but NOT run
-# commands -- every Bash call is denied in headless mode. That is a real limit
-# and it matters: the agent's own brief requires it to VERIFY by running things,
-# so under this mode it will report more often that it could not prove a result.
-# Raising this to 'bypassPermissions' removes that limit and also removes the
-# last thing standing between an unattended agent and this machine.
+# 'auto' (John's choice, 2026-09-18) is the default: the classifier judges each
+# call, so the agent can run the command it just wrote and prove its own work.
+# That matters because the agent's brief requires it to VERIFY by running
+# things, and the previous default could not.
 #
-# Default stays 'acceptEdits'. A dispatcher that cannot verify is worse than one
-# that says so; a dispatcher that can do anything is worse than both.
-PERMISSION_MODE = os.environ.get("AGENTDESK_WORKER_PERMISSION", "acceptEdits")
+# The other two, and why they are not the default:
+#   'acceptEdits'  lets it read, grep and edit but DENIES EVERY BASH CALL in
+#                  headless mode, so it cannot run what it wrote and reports
+#                  "could not verify" a great deal. Safe, and close to useless
+#                  for work whose acceptance test is a command's output.
+#   'bypassPermissions' removes the limit and also removes the last thing
+#                  standing between an unattended agent and this machine.
+#
+# ONE HONEST CAVEAT about 'auto': the classifier is a network call, and when it
+# is unreachable it denies rather than allowing. It has been unreachable
+# repeatedly today. So under this mode an item can fail for a reason that has
+# nothing to do with the work -- which is exactly what MAX_ATTEMPTS and the
+# release note on the thread exist to make visible instead of silent.
+PERMISSION_MODE = os.environ.get("AGENTDESK_WORKER_PERMISSION", "auto")
 
 POLL_SECONDS = int(os.environ.get("AGENTDESK_WORKER_POLL", "30"))
 RUN_TIMEOUT = int(os.environ.get("AGENTDESK_WORKER_TIMEOUT", "3600"))
@@ -84,8 +93,49 @@ MAX_CONCURRENT = int(os.environ.get("AGENTDESK_WORKER_CONCURRENCY", "1"))
 # keep trying.
 MAX_ATTEMPTS = int(os.environ.get("AGENTDESK_WORKER_MAX_ATTEMPTS", "2"))
 
-STOP_FILE = paths.DATA_DIR / "worker.stop"
+STOP_FILE = paths.WORKER_STOP
 WORKER_NAME = "work-dispatcher"
+
+# Set once in main(); carried into the heartbeat so the window can show when a
+# dispatcher started, which is the difference between "running" and "wedged".
+_STARTED_TS = ""
+
+
+def write_state(current_item=None) -> None:
+    """Tell the window what this dispatcher is doing. Best-effort, never raises.
+
+    A heartbeat file rather than a lock, because the window has to be able to
+    show a dispatcher it did not start: John may run one from a shell, and a
+    button that reads "Start" while the queue is already being drained is worse
+    than having no button. The pid is in here so the reader can check the
+    process is still alive -- a crashed worker leaves this file behind, and a
+    stale heartbeat that reads as "running" is the one failure this must not
+    have.
+    """
+    try:
+        paths.DATA_DIR.mkdir(parents=True, exist_ok=True)
+        paths.WORKER_STATE.write_text(json.dumps({
+            "pid": os.getpid(),
+            "started_ts": _STARTED_TS,
+            "item": current_item,
+            "agent": AGENT,
+            "mode": PERMISSION_MODE,
+        }), encoding="utf-8")
+    except OSError:
+        pass  # the queue does not stop because the window cannot see it
+
+
+def clear_state() -> None:
+    """Remove the heartbeat as this worker exits.
+
+    Deleted rather than marked stopped, so the only way that file exists is a
+    dispatcher that either is running or died without cleaning up -- and the
+    pid check settles which.
+    """
+    try:
+        paths.WORKER_STATE.unlink()
+    except OSError:
+        pass
 
 
 def log(msg: str) -> None:
@@ -268,6 +318,7 @@ def run_item(item: dict, worker: str) -> None:
         conn.close()
 
     log(f"#{tid} claimed: {item['subject'][:70]}")
+    write_state(tid)
 
     exe = _claude_exe()
     if not exe:
@@ -380,6 +431,16 @@ def main(argv=None) -> int:
         f"max_attempts={MAX_ATTEMPTS})")
     log(f"stop file: {STOP_FILE}")
 
+    global _STARTED_TS
+    _STARTED_TS = db.now_iso()
+    # A stale stop file from the last run would stop this one immediately, which
+    # reads as "the button does nothing". Cleared here, at the moment we start.
+    try:
+        STOP_FILE.unlink()
+    except OSError:
+        pass
+    write_state(None)
+
     running: dict[int, threading.Thread] = {}
     while True:
         if STOP_FILE.exists():
@@ -388,6 +449,7 @@ def main(argv=None) -> int:
 
         for tid in [t for t, th in running.items() if not th.is_alive()]:
             running.pop(tid)
+            write_state(None)  # idle again, but still running
 
         if len(running) < MAX_CONCURRENT:
             conn = db.connect()
@@ -417,6 +479,8 @@ def main(argv=None) -> int:
 
     for th in running.values():
         th.join(timeout=RUN_TIMEOUT + 30)
+    clear_state()
+    log("dispatcher stopped")
     return 0
 
 

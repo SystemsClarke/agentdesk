@@ -11,12 +11,14 @@ from __future__ import annotations
 import argparse
 import ctypes
 import hashlib
+import json
 import os
 import queue
 import sqlite3
+import subprocess
 import sys
 import tkinter as tk
-from tkinter import ttk
+from tkinter import messagebox, ttk
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Optional
@@ -375,11 +377,48 @@ class SingleInstance:
         return user32.GetForegroundWindow() == hwnd
 
 
+# --- is that dispatcher still alive? -----------------------------------------
+#
+# The worker leaves a heartbeat file naming its pid, but a worker that CRASHED
+# also leaves it behind -- so the file alone is not evidence of anything, and a
+# stale heartbeat that reads as "running" is the one wrong answer here. This is
+# what turns it into evidence: ask the OS, never trust a recorded number.
+#
+# It is the same lesson as the single-instance guard, which is why it uses the
+# same call. OpenProcess on a pid that has exited and been recycled can look
+# identical to one we are merely not allowed to open; returning False for a
+# live-but-protected process only mislabels the button, which is the safe
+# direction to be wrong in.
+_SYNCHRONIZE = 0x00100000
+_WAIT_TIMEOUT = 0x00000102
+
+
+def pid_alive(pid) -> bool:
+    """True if a process with this pid exists right now."""
+    if os.name != "nt" or not pid:
+        return False
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.restype = ctypes.c_void_p
+    kernel32.OpenProcess.argtypes = [ctypes.c_uint, ctypes.c_int, ctypes.c_uint]
+    kernel32.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+    kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+    handle = kernel32.OpenProcess(_SYNCHRONIZE, False, int(pid))
+    if not handle:
+        return False
+    try:
+        # A 0 timeout: signalled means it has already exited; WAIT_TIMEOUT
+        # means the process is still running.
+        return kernel32.WaitForSingleObject(handle, 0) == _WAIT_TIMEOUT
+    finally:
+        kernel32.CloseHandle(handle)
+
+
 class App:
     POLL_MS = 3000
 
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
+        self._worker_proc: Optional[subprocess.Popen] = None
         self.ui_queue: "queue.Queue[Callable[[], None]]" = queue.Queue()
         self.last_max_id = -1
         self.last_open_count = -1
@@ -401,6 +440,18 @@ class App:
         self.root.minsize(720, 420)
         self.root.protocol("WM_DELETE_WINDOW", self._hide_to_tray)
 
+        # The dispatcher control sits OUTSIDE the notebook, above it, because it
+        # is not a property of any one channel: turning it on starts agents on
+        # whatever is in the queue, and a control that lived on the Work tab
+        # would look like it only affected the tab it was sitting on.
+        strip = ttk.Frame(self.root, padding=(6, 4))
+        strip.pack(fill="x")
+        self.worker_label = ttk.Label(strip, text="Worker: checking...")
+        self.worker_label.pack(side="left")
+        self.worker_button = ttk.Button(strip, text="Start worker",
+                                        command=self._toggle_worker)
+        self.worker_button.pack(side="right")
+
         labels = {"question": "Questions", "discussion": "Discussion",
                   "wiki": "Wiki", "work": "Work to Hire"}
         nb = ttk.Notebook(self.root)
@@ -413,7 +464,83 @@ class App:
 
         self._make_tray()
         self.root.after(200, self._drain)
+        self._refresh_worker()
         self._poll()
+
+    # --- the dispatcher ------------------------------------------------------
+
+    def _worker_status(self) -> tuple:
+        """(running, one-line description). Reads the heartbeat, checks the pid.
+
+        Reports a dispatcher started from a shell exactly the same as one this
+        window started, because the heartbeat is the worker's own file and not
+        something the window wrote about itself.
+        """
+        try:
+            state = json.loads(paths.WORKER_STATE.read_text(encoding="utf-8"))
+        except Exception:
+            return False, "Worker: not running"
+        if not pid_alive(state.get("pid")):
+            # The crashed case, said out loud rather than hidden: the file is
+            # real, the process is not, and the next Start clears it.
+            return False, "Worker: not running (stale heartbeat on disk)"
+        item = state.get("item")
+        doing = f"item #{item}" if item else "idle"
+        return True, (f"Worker: running, {doing} "
+                      f"[{state.get('agent')}/{state.get('mode')}]")
+
+    def _refresh_worker(self) -> None:
+        running, text = self._worker_status()
+        self.worker_label.config(text=text)
+        self.worker_button.config(text="Stop worker" if running else "Start worker")
+
+    def _toggle_worker(self) -> None:
+        if self._worker_status()[0]:
+            self._stop_worker()
+        else:
+            self._start_worker()
+        # Re-read rather than assuming: the start is a subprocess that may fail,
+        # and a button that says "running" when nothing is running is a lie the
+        # next poll would only sometimes catch.
+        self.root.after(400, self._refresh_worker)
+
+    def _start_worker(self) -> None:
+        if self._worker_proc is not None and self._worker_proc.poll() is None:
+            return
+        # A stop file left over from the last run would stop the new one before
+        # it did anything, which reads as a dead button.
+        try:
+            paths.WORKER_STOP.unlink()
+        except OSError:
+            pass
+        flags = 0x08000000 if os.name == "nt" else 0  # no console window
+        repo = Path(__file__).resolve().parent.parent
+        try:
+            self._worker_proc = subprocess.Popen(
+                [sys.executable, "-m", "agentdesk.worker"],
+                cwd=str(repo), creationflags=flags,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except OSError as exc:
+            messagebox.showerror("AgentDesk",
+                                 f"Could not start the worker:\n\n{exc}")
+
+    def _stop_worker(self) -> None:
+        """Ask the dispatcher to stop rather than killing it.
+
+        It reads this flag between items, so the item being worked right now
+        finishes and is recorded properly. Killing the process instead would
+        abandon a claim mid-edit -- the exact leak release_task exists to
+        prevent, and it would be silly to reintroduce it from the UI.
+
+        So Stop is not instant, and it is not meant to be: the button will keep
+        saying "Stop worker" until the item finishes and the heartbeat goes.
+        """
+        try:
+            paths.WORKER_STOP.parent.mkdir(parents=True, exist_ok=True)
+            paths.WORKER_STOP.write_text(db.now_iso(), encoding="utf-8")
+        except OSError as exc:
+            messagebox.showerror("AgentDesk",
+                                 f"Could not write the stop flag:\n\n{exc}")
 
     # --- tray ----------------------------------------------------------------
 
@@ -516,6 +643,13 @@ class App:
         finally:
             if conn is not None:
                 conn.close()
+        # Outside the try above on purpose. The dispatcher strip has nothing to
+        # do with the database, and a transient database failure should not
+        # also freeze the button that starts the thing that works the queue.
+        try:
+            self._refresh_worker()
+        except Exception as exc:
+            notify.log_line(f"worker status refresh failed: {exc!r}")
         if reschedule:
             self.root.after(self.POLL_MS, self._poll)
 

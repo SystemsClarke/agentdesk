@@ -17,6 +17,16 @@ DB_PATH = DATA_DIR / "agentdesk.db"
 ARCHIVE_DIR = DATA_DIR / "archive"          # hourly raw snapshots
 LOG_PATH = DATA_DIR / "agentdesk.log"
 
+# The dispatcher's two handles, and they are deliberately different kinds of
+# file. WORKER_STATE is a heartbeat the worker writes, so the window can tell
+# whether a dispatcher is running even one it did not start itself. WORKER_STOP
+# is how the window asks it to finish: the worker checks for it between items,
+# so stopping leaves the item it is holding alone rather than killing it
+# mid-edit. A flag file and not a signal, because a signal would arrive while
+# the worker was inside a subprocess it does not control.
+WORKER_STATE = DATA_DIR / "worker.state"
+WORKER_STOP = DATA_DIR / "worker.stop"
+
 # --- the memory vault ---------------------------------------------------------
 # Raw transcripts go in their own folder rather than into notes/, because the
 # vault's notes are hand-written atomic memories with a search index over them.
