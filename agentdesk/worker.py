@@ -96,6 +96,70 @@ MAX_ATTEMPTS = int(os.environ.get("AGENTDESK_WORKER_MAX_ATTEMPTS", "2"))
 STOP_FILE = paths.WORKER_STOP
 WORKER_NAME = "work-dispatcher"
 
+# --- showing the work while it runs --------------------------------------------
+#
+# The agent is spawned with `--output-format stream-json`, which emits one JSON
+# object per line as the run proceeds instead of one blob at the end. That
+# format is what makes progress visible at all: with `--output-format json`
+# there is nothing on stdout until the agent has already finished, so the only
+# thing a watcher can say is "it is still running", which is the thing John
+# asked to be able to see past.
+#
+# THE COST OF THAT CHOICE, and it is a real one: the final report now arrives as
+# the `result` event of a stream rather than as the whole of stdout, so
+# _result_text below is the only thing standing between this change and a
+# dispatcher that silently stops posting agents' write-ups. That is why the
+# acceptance script checks the report text, not just the events.
+#
+# `--verbose` is required by the CLI for stream-json in print mode. It is not
+# cosmetic and dropping it fails the run outright, so it is not a flag to tidy
+# away later.
+STREAM_FORMAT = "stream-json"
+
+# How much of any one line is kept. Long enough for a command or a file path,
+# short enough that one pathological line cannot push every other event out of
+# the panel.
+EVENT_MAX = 400
+# The agent's own prose is not what this panel is for -- its steps are -- and an
+# agent that narrates continuously would otherwise bury them. One output line
+# per this many seconds, at most.
+OUTPUT_MIN_SECONDS = 2.0
+# How much raw output is kept for the release note when a run fails.
+TAIL_LINES = 12
+
+# A tool call in words, because "Read" and "Grep" are the agent's vocabulary and
+# not the reader's. The fallback for an unlisted tool is the tool's own name,
+# which is honest: a step that reads "Task(...)" is still a step, and inventing
+# a verb for a tool we do not know would be a guess printed as a fact.
+_TOOL_VERB = {
+    "Read": "Reading",
+    "Glob": "Looking for",
+    "Grep": "Searching for",
+    "Edit": "Editing",
+    "Write": "Writing",
+    "NotebookEdit": "Editing",
+    "Bash": "Running",
+    "PowerShell": "Running",
+    "Task": "Delegating",
+    "Agent": "Delegating",
+    "WebFetch": "Fetching",
+    "WebSearch": "Searching the web",
+    "TodoWrite": "Planning",
+    "Skill": "Using a skill",
+}
+# Which field of the tool's input is the interesting one. Anything not here
+# contributes no detail and the line is just the verb, which is why the default
+# is None rather than a str() of the whole input blob -- a raw JSON dump in the
+# panel would push the readable lines off the screen.
+_TOOL_DETAIL = {
+    "Read": "file_path", "Edit": "file_path", "Write": "file_path",
+    "NotebookEdit": "notebook_path",
+    "Glob": "pattern", "Grep": "pattern",
+    "Bash": "command", "PowerShell": "command",
+    "Task": "description", "Agent": "description",
+    "WebFetch": "url", "WebSearch": "query", "Skill": "skill",
+}
+
 # Set once in main(); carried into the heartbeat so the window can show when a
 # dispatcher started, which is the difference between "running" and "wedged".
 _STARTED_TS = ""
@@ -193,24 +257,239 @@ def _claude_exe() -> Optional[str]:
     return shutil.which("claude") or shutil.which("claude.cmd")
 
 
-def _agent_report(out: str) -> Optional[str]:
-    """The agent's own final message, pulled out of `--output-format json`.
+def _no_window() -> dict:
+    """Extra Popen kwargs that stop the spawned `claude` CLI flashing a console.
 
-    None when there is nothing usable: a crash, a truncated stream, output that
-    is not the JSON we asked for. None is deliberately not an error. The item is
-    already recorded as done by the database, and a missing summary must not be
-    allowed to turn finished work back into a failed run -- that would re-queue
-    a job that actually succeeded, which is the one outcome worse than a thin
-    report.
+    The dispatcher runs under `pythonw.exe` (no console of its own), so a
+    console child spawned with no flag gets Windows allocating it a brand-new
+    window that steals focus -- once per work item drained off the queue.
+    Same fix as `crew._no_window()`; kept local here rather than imported so
+    this module has no dependency on `crew`.
     """
-    try:
-        payload = json.loads(out or "")
-    except (TypeError, ValueError):
-        return None
-    if not isinstance(payload, dict):
-        return None
-    text = payload.get("result")
+    if os.name != "nt":
+        return {}
+    si = subprocess.STARTUPINFO()
+    si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    si.wShowWindow = subprocess.SW_HIDE
+    return {"creationflags": subprocess.CREATE_NO_WINDOW, "startupinfo": si}
+
+
+def _agent_cmd(exe: str, item: dict, worker: str) -> list:
+    """The command line the agent runs under.
+
+    A named function rather than a list built inline at the call site, so the
+    acceptance script can run the REAL CLI under exactly these flags instead of
+    under a copy of them. The stream format is an assumption about another
+    program's behaviour, and a test that re-states the flag list is testing its
+    own copy of the assumption rather than the one that ships.
+    """
+    return [exe, "-p", _prompt(item, worker),
+            "--agent", AGENT,
+            "--permission-mode", PERMISSION_MODE,
+            "--output-format", STREAM_FORMAT, "--verbose",
+            "--add-dir", str(REPO)]
+
+
+def _one_line(text: str, limit: int = EVENT_MAX) -> str:
+    """Collapse text to a single line, truncated. The panel is a list of lines."""
+    flat = " ".join((text or "").split())
+    return flat[:limit] + ("..." if len(flat) > limit else "")
+
+
+def _tool_line(name: str, args: dict) -> str:
+    """One line in words for a tool call: what the agent is doing right now.
+
+    Deliberately not the tool's raw input. A `Read` is interesting for its
+    path and a `Bash` for its command, and everything else in the input is
+    noise that would push the next line off the panel.
+    """
+    verb = _TOOL_VERB.get(name)
+    key = _TOOL_DETAIL.get(name)
+    detail = ""
+    if key and isinstance(args, dict):
+        value = args.get(key)
+        if isinstance(value, str):
+            detail = value
+    if verb is None:
+        # An unknown tool, so nothing is claimed about it beyond its name.
+        return _one_line(f"{name}: {detail}" if detail else name)
+    return _one_line(f"{verb} {detail}".strip() if detail else verb)
+
+
+def _result_text(event: dict) -> Optional[str]:
+    """The agent's own final message, out of the stream's `result` event.
+
+    None when there is nothing usable: a crash, a truncated stream, a run killed
+    at the timeout. None is deliberately not an error. The item is recorded as
+    done by the database, not by this function, and a missing summary must not
+    be allowed to turn finished work back into a failed run -- that would
+    re-queue a job that actually succeeded, which is the one outcome worse than
+    a thin report.
+    """
+    text = event.get("result")
     return text.strip() if isinstance(text, str) and text.strip() else None
+
+
+class _RunRecorder:
+    """Reads the spawned agent's stream and writes work_events as it lands.
+
+    ONE THREAD PER PIPE, and that is not tidiness. A subprocess writing to a
+    pipe nobody drains fills the pipe buffer and blocks -- so reading stdout on
+    the main thread while stderr filled would present to John as an agent that
+    hung, which is exactly the state this panel exists to let him tell apart
+    from a slow one. Both are drained here, concurrently, while the main thread
+    waits on the process.
+
+    The connection lives in the reader thread and nowhere else: a sqlite3
+    connection is not safe to use from a thread it was not opened in, and
+    opening one per event would be a connection per tool call for no gain. It
+    is WAL, so this writer does not block the window's reads.
+    """
+
+    def __init__(self, proc: subprocess.Popen, tid: int) -> None:
+        self.proc = proc
+        self.tid = tid
+        # The agent's final message, once the stream carries it. None until
+        # then, and None for ever if the run died before saying anything --
+        # which the caller reads as "the thread keeps the one-line note".
+        self.report: Optional[str] = None
+        self.err_lines: list[str] = []
+        self.out_lines: list[str] = []
+        self._last_output = 0.0
+        self._threads: list[threading.Thread] = []
+
+    # --- lifecycle ------------------------------------------------------------
+
+    def start(self) -> None:
+        for target in (self._read_stdout, self._read_stderr):
+            th = threading.Thread(target=target, daemon=True)
+            th.start()
+            self._threads.append(th)
+
+    def join(self) -> None:
+        """Wait for both readers. They end with the pipes, so this is bounded.
+
+        The timeout is a backstop for a child that exited without closing its
+        pipes; a reader still alive after it is abandoned rather than allowed
+        to block the dispatcher for the rest of the run.
+        """
+        for th in self._threads:
+            th.join(timeout=30)
+
+    def tail(self) -> list[str]:
+        """The last lines to quote in a release note. stderr first.
+
+        stderr wins because when a headless run fails the reason is nearly
+        always there -- an argument the CLI rejected, an auth error -- and
+        stdout is the stream we asked for, so it is mostly empty when that
+        happens.
+        """
+        source = self.err_lines or self.out_lines
+        return [line[:300] for line in source[-TAIL_LINES:]]
+
+    # --- the two readers ------------------------------------------------------
+
+    def _read_stdout(self) -> None:
+        conn = None
+        try:
+            conn = db.connect()
+            for line in self.proc.stdout or ():
+                line = line.strip()
+                if not line:
+                    continue
+                self.out_lines.append(line)
+                del self.out_lines[:-TAIL_LINES]
+                self._consume(line, conn)
+        except Exception as exc:
+            # The agent is still running and the item is still its own; losing
+            # the commentary must not also lose the run.
+            log(f"#{self.tid} reading the agent's output failed: {exc!r}")
+        finally:
+            if conn is not None:
+                conn.close()
+
+    def _read_stderr(self) -> None:
+        try:
+            for line in self.proc.stderr or ():
+                line = line.strip()
+                if line:
+                    self.err_lines.append(line)
+                    del self.err_lines[:-TAIL_LINES]
+        except Exception:
+            pass  # a pipe we cannot read is not a reason to stop the run
+
+    # --- turning the stream into events ---------------------------------------
+
+    def _consume(self, line: str, conn) -> None:
+        try:
+            event = json.loads(line)
+        except ValueError:
+            # Not the JSON we asked for -- a banner, a warning the CLI wrote to
+            # stdout. It is already kept in out_lines for a failure note.
+            return
+        if not isinstance(event, dict):
+            return
+        etype = event.get("type")
+        if etype == "result":
+            self.report = _result_text(event) or self.report
+            if event.get("is_error"):
+                # The agent's own account of why it stopped, which is better
+                # than the exit code alone and is what the tab shows.
+                self._record(conn, db.WORK_ERROR,
+                             _one_line(str(event.get("result") or
+                                           "the agent reported an error")))
+            return
+        if etype == "assistant":
+            message = event.get("message")
+            blocks = message.get("content") if isinstance(message, dict) else None
+            for block in blocks or []:
+                self._block(conn, block)
+
+    def _block(self, conn, block) -> None:
+        if not isinstance(block, dict):
+            return
+        btype = block.get("type")
+        if btype == "tool_use":
+            self._record(conn, db.WORK_STEP,
+                         _tool_line(str(block.get("name") or "tool"),
+                                    block.get("input") or {}))
+        elif btype == "text":
+            text = (block.get("text") or "").strip()
+            if text:
+                self._maybe_output(conn, text)
+
+    def _maybe_output(self, conn, text: str) -> None:
+        """Record the agent's prose, throttled. See OUTPUT_MIN_SECONDS."""
+        now = time.monotonic()
+        if now - self._last_output < OUTPUT_MIN_SECONDS:
+            return
+        self._last_output = now
+        self._record(conn, db.WORK_OUTPUT, _one_line(text))
+
+    def _record(self, conn, kind: str, body: str) -> None:
+        try:
+            db.add_work_event(conn, self.tid, kind, body)
+        except Exception as exc:
+            # Progress reporting is a view of the work, never a precondition
+            # for it. A locked board must not fail the item.
+            log(f"#{self.tid} could not record a work event: {exc!r}")
+
+
+def _note(tid: int, kind: str, body: str) -> None:
+    """One event on its own short-lived connection.
+
+    For the paths that have no reader thread -- the claim, a missing CLI, the
+    release, the completion. Without these the panel would show an item that
+    stopped for a reason nothing on it states, which is the failure mode this
+    whole feature is meant to remove.
+    """
+    conn = db.connect()
+    try:
+        db.add_work_event(conn, tid, kind, _one_line(body))
+    except Exception as exc:
+        log(f"#{tid} could not record a work event: {exc!r}")
+    finally:
+        conn.close()
 
 
 def _post_report(tid: int, text: str) -> bool:
@@ -298,6 +577,13 @@ def _pick(conn, claimed: set, only: Optional[int] = None) -> Optional[dict]:
     for item in reversed(pending):
         if only is not None and item["id"] != only:
             continue
+        # An item reserved for `anyone` is skipped by the SWEEP, not forbidden
+        # to the worker. --only names one item on purpose, which is the same
+        # deliberate act as claim_work, so it is allowed through; the
+        # reservation exists to stop the automatic pass from eating a job that
+        # was meant to be left for an agent to choose.
+        if only is None and not db.open_to_dispatcher(item):
+            continue
         if item["id"] in claimed:
             continue
         if _attempts(item) >= MAX_ATTEMPTS:
@@ -319,39 +605,59 @@ def run_item(item: dict, worker: str) -> None:
 
     log(f"#{tid} claimed: {item['subject'][:70]}")
     write_state(tid)
+    # Recorded at the claim rather than at the spawn, so the panel's clock
+    # starts when the item stopped being available -- the gap between the two
+    # is exactly the "started, but nothing is happening yet" window that a
+    # reader would otherwise have to guess at.
+    _note(tid, db.WORK_START,
+          f"{AGENT} started ({PERMISSION_MODE}): {item['subject']}")
 
     exe = _claude_exe()
     if not exe:
         conn = db.connect()
         db.release_task(conn, tid, worker, note="claude CLI not on PATH")
         conn.close()
+        _note(tid, db.WORK_ERROR, "the claude CLI is not on PATH")
         log(f"#{tid} released: the claude CLI is not on PATH")
         return
 
-    cmd = [exe, "-p", _prompt(item, worker),
-           "--agent", AGENT,
-           "--permission-mode", PERMISSION_MODE,
-           "--output-format", "json",
-           "--add-dir", str(REPO)]
+    cmd = _agent_cmd(exe, item, worker)
     try:
         proc = subprocess.Popen(
-            cmd, cwd=str(REPO), stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
+            cmd, cwd=str(REPO),
+            # stdin is closed rather than inherited. `claude -p` reads stdin
+            # when it is a pipe, and the dispatcher's own stdin is not a pipe
+            # it controls -- as a spawned child it inherited whatever the
+            # window's shell had. The CLI then waits three seconds for input
+            # that will never come and warns about it on every single run.
+            # Closing it says "there is none" up front.
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, encoding="utf-8", errors="replace",
+            **_no_window(),
         )
     except OSError as exc:
         conn = db.connect()
         db.release_task(conn, tid, worker, note=f"could not start agent: {exc}")
         conn.close()
+        _note(tid, db.WORK_ERROR, f"could not start the agent: {exc}")
         log(f"#{tid} released: could not start the agent: {exc}")
         return
 
+    # From here the agent is running, and this is what shows what it is doing.
+    # The recorder drains both pipes while this thread waits, so the child can
+    # never block on a full pipe buffer.
+    recorder = _RunRecorder(proc, tid)
+    recorder.start()
+
     timed_out = False
     try:
-        out, err = proc.communicate(timeout=RUN_TIMEOUT)
+        proc.wait(timeout=RUN_TIMEOUT)
     except subprocess.TimeoutExpired:
         timed_out = True
         proc.kill()
-        out, err = proc.communicate()
+        proc.wait()
+    recorder.join()
 
     # The agent's own complete_work is the success signal, not the exit code.
     # An agent that exits 0 having decided it could not do the work must NOT
@@ -364,12 +670,19 @@ def run_item(item: dict, worker: str) -> None:
         conn.close()
 
     if status == paths.STATUS_DONE:
-        report = _agent_report(out)
+        # The report is what makes the item readable after the fact: without
+        # this it is a title and a "done", and the agent's actual account of
+        # the work is only in a log nobody opens.
+        report = recorder.report
         if report:
             where = ("posted on the thread" if _post_report(tid, report)
                      else "already on the thread from complete_work")
+            _note(tid, db.WORK_DONE, f"finished; summary {where}")
             log(f"#{tid} done (agent completed it); summary {where}")
         else:
+            _note(tid, db.WORK_DONE,
+                  "finished, but its final message could not be read, so the "
+                  "thread has only the one-line note")
             log(f"#{tid} done (agent completed it), but its final message could "
                 f"not be read, so no summary was posted -- the thread has the "
                 f"one-line note instead")
@@ -380,12 +693,15 @@ def run_item(item: dict, worker: str) -> None:
     conn = db.connect()
     db.release_task(conn, tid, worker, note=reason)
     conn.close()
+    # On the item as well as in the log. An item that failed and came back is
+    # otherwise indistinguishable on the queue from one nobody ever tried.
+    _note(tid, db.WORK_ERROR, reason)
     log(f"#{tid} released: {reason}")
 
-    # The tail of the agent's report, so the reason is visible without opening
+    # The tail of what the agent said, so the reason is visible without opening
     # the transcript. Truncated: the full output belongs in a file, not a log
     # line that will be read once.
-    tail = (err or out or "").strip().splitlines()[-8:]
+    tail = recorder.tail()
     for line in tail:
         log(f"    #{tid} agent said: {line[:200]}")
 
@@ -433,10 +749,16 @@ def main(argv=None) -> int:
         finally:
             conn.close()
         for item in pending:
+            # Say which ones this pass would leave alone and why. A dry run
+            # that listed a reserved item identically to one it was about to
+            # take would be the one place the reservation is invisible, which
+            # is the opposite of what a preview is for.
+            reserved = "" if db.open_to_dispatcher(item) else "  [reserved: anyone]"
             print(f"#{item['id']}  attempts={_attempts(item)}  "
-                  f"{item['subject'][:80]}")
-        print(f"\n{len(pending)} open item(s); would run up to {MAX_CONCURRENT} "
-              f"at a time as {WORKER_NAME}")
+                  f"{item['subject'][:80]}{reserved}")
+        n_auto = sum(1 for i in pending if db.open_to_dispatcher(i))
+        print(f"\n{len(pending)} open item(s), {n_auto} this pass would take; "
+              f"would run up to {MAX_CONCURRENT} at a time as {WORKER_NAME}")
         return 0
 
     log(f"dispatcher starting as {WORKER_NAME} (agent={AGENT}, "
