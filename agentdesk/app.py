@@ -40,6 +40,25 @@ except ImportError:  # pragma: no cover - depends on how the file was launched
                           prs, vault)
 
 
+def _self_argv(subcommand: str, extra: Optional[list[str]] = None) -> list[str]:
+    """The argv to re-invoke this program as `subcommand`, from source or exe.
+
+    Packaged (Nuitka-compiled) builds run as one exe, `AgentDesk.exe`, with
+    the module name as a subcommand ("crew", "app", ...) -- see cli.py. Under
+    plain source, sys.executable is the venv's python(w).exe and the old
+    `-m agentdesk.<module>` form is what actually exists. Nuitka stamps a
+    `__compiled__` global into every compiled module's namespace, which is
+    the cheapest reliable way to tell the two apart at runtime.
+    """
+    extra = extra or []
+    if "__compiled__" in globals():
+        return [sys.executable, subcommand, *extra]
+    exe = sys.executable
+    if subcommand == "app" and exe.lower().endswith("python.exe"):
+        exe = exe[: -len("python.exe")] + "pythonw.exe"
+    return [exe, "-m", f"agentdesk.{subcommand}", *extra]
+
+
 def local_ts(iso: str) -> str:
     """Render a UTC ISO timestamp as a short LOCAL-time string for display."""
     try:
@@ -1663,7 +1682,7 @@ class App:
             # writes the same heartbeat file and watches the same stop file, so
             # the button below needs no other change.
             self._worker_proc = subprocess.Popen(
-                [sys.executable, "-m", "agentdesk.crew"],
+                _self_argv("crew"),
                 cwd=str(repo), creationflags=flags,
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except OSError as exc:
@@ -1738,12 +1757,9 @@ class App:
 
         flags = 0x08000000 if os.name == "nt" else 0
         repo = Path(__file__).resolve().parent.parent
-        pythonw = sys.executable
-        if pythonw.lower().endswith("python.exe"):
-            pythonw = pythonw[:-len("python.exe")] + "pythonw.exe"
         try:
             subprocess.Popen(
-                [pythonw, "-m", "agentdesk.app", "--db", str(self.db_path)],
+                _self_argv("app", ["--db", str(self.db_path)]),
                 cwd=str(repo), creationflags=flags,
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except OSError as exc:

@@ -90,23 +90,33 @@ def registry_seen() -> bool:
         return False
 
 
-def _default_python() -> str:
-    """The interpreter the shortcut should launch: this app's own.
+def _shortcut_target() -> tuple[str, str]:
+    """(TargetPath, Arguments) for the shortcut this app's own launch needs.
 
-    Prefers the venv's pythonw.exe, because this is the one artifact here a
-    person might actually double-click and a console window flashing up on
-    every launch is a reason not to. Falls back to whatever is running.
+    A Nuitka-compiled build has no `.venv` and no `agentdesk` package on
+    disk to run with `-m` -- `sys.executable` IS AgentDesk.exe itself, and
+    it already dispatches to the GUI with no arguments (see cli.py). Detect
+    that case by name rather than by a Nuitka-specific attribute, so this
+    keeps working regardless of which build tool a future package uses.
+
+    In dev mode (running from source), prefer the venv's pythonw.exe,
+    because this is the one artifact here a person might actually
+    double-click and a console window flashing up on every launch is a
+    reason not to. Falls back to whatever is running.
     """
+    exe = Path(sys.executable)
+    if exe.stem.lower() == "agentdesk":
+        return str(exe), ""
+
     for cand in (REPO / ".venv" / "Scripts" / "pythonw.exe",
                  REPO / ".venv" / "Scripts" / "python.exe"):
         if cand.exists():
-            return str(cand)
-    exe = Path(sys.executable)
+            return str(cand), "-m agentdesk.app"
     if exe.name.lower() == "python.exe":
         windowless = exe.with_name("pythonw.exe")
         if windowless.exists():
-            return str(windowless)
-    return str(exe)
+            return str(windowless), "-m agentdesk.app"
+    return str(exe), "-m agentdesk.app"
 
 
 def _write_shortcut() -> None:
@@ -123,11 +133,12 @@ def _write_shortcut() -> None:
     import win32com.client
     from win32com.propsys import propsys, pscon
 
+    target, arguments = _shortcut_target()
     shell = win32com.client.Dispatch("WScript.Shell")
     lnk = shell.CreateShortCut(str(SHORTCUT_PATH))
-    lnk.TargetPath = _default_python()
-    lnk.Arguments = "-m agentdesk.app"
-    lnk.WorkingDirectory = str(REPO)
+    lnk.TargetPath = target
+    lnk.Arguments = arguments
+    lnk.WorkingDirectory = str(Path(target).parent) if arguments == "" else str(REPO)
     lnk.Description = "AgentDesk - the message board between John and the agents"
     lnk.IconLocation = f"{lnk.TargetPath},0"
     lnk.Save()

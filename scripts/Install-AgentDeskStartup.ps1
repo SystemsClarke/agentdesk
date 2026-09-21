@@ -39,7 +39,14 @@ param(
     [string] $RepoRoot,
     [string] $Pythonw,
     [int]    $DelaySeconds = 20,
-    [switch] $Uninstall
+    [switch] $Uninstall,
+    # For a packaged (Nuitka) install: the compiled AgentDesk.exe IS the
+    # interpreter and needs no `-m agentdesk.app` argument. When given, this
+    # replaces $Pythonw/$RepoRoot/args entirely rather than layering on top
+    # of the dev-mode defaults, so a packaged install never accidentally
+    # inherits a venv path that will not exist on the target machine.
+    [string] $Exe,
+    [string] $ExeArgs = ""
 )
 
 $ErrorActionPreference = 'Stop'
@@ -53,8 +60,10 @@ if (-not $PSScriptRoot) {
     $scriptDir = $PSScriptRoot
 }
 $repoDefault = Split-Path -Parent $scriptDir
-if (-not $RepoRoot) { $RepoRoot = $repoDefault }
-if (-not $Pythonw)  { $Pythonw  = Join-Path $repoDefault '.venv\Scripts\pythonw.exe' }
+if (-not $Exe) {
+    if (-not $RepoRoot) { $RepoRoot = $repoDefault }
+    if (-not $Pythonw)  { $Pythonw  = Join-Path $repoDefault '.venv\Scripts\pythonw.exe' }
+}
 
 if ($Uninstall) {
     $existing = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
@@ -65,18 +74,27 @@ if ($Uninstall) {
     exit 0
 }
 
-# --- refuse loudly rather than register a task that cannot run -------------
-# A task whose command does not exist fails silently at logon, and looks exactly
-# like a task that ran and declined to open a window.
-if (-not (Test-Path -LiteralPath $Pythonw)) {
-    throw "pythonw.exe not found at '$Pythonw'. Pass -Pythonw, or create the venv first."
+if ($Exe) {
+    # Packaged install: the exe IS the app, no interpreter/module to find.
+    if (-not (Test-Path -LiteralPath $Exe)) {
+        throw "AgentDesk.exe not found at '$Exe'. Pass the correct -Exe path."
+    }
+    $Command   = (Resolve-Path -LiteralPath $Exe).Path
+    $Arguments = $ExeArgs
+    $RepoRoot  = Split-Path -Parent $Command
+} else {
+    # --- refuse loudly rather than register a task that cannot run ---------
+    # A task whose command does not exist fails silently at logon, and looks
+    # exactly like a task that ran and declined to open a window.
+    if (-not (Test-Path -LiteralPath $Pythonw)) {
+        throw "pythonw.exe not found at '$Pythonw'. Pass -Pythonw, or create the venv first."
+    }
+    if (-not (Test-Path -LiteralPath (Join-Path $RepoRoot 'agentdesk\app.py'))) {
+        throw "agentdesk\app.py not found under '$RepoRoot'. Pass -RepoRoot."
+    }
+    $Command   = (Resolve-Path -LiteralPath $Pythonw).Path
+    $Arguments = "-m agentdesk.app"
 }
-if (-not (Test-Path -LiteralPath (Join-Path $RepoRoot 'agentdesk\app.py'))) {
-    throw "agentdesk\app.py not found under '$RepoRoot'. Pass -RepoRoot."
-}
-
-$Pythonw  = (Resolve-Path -LiteralPath $Pythonw).Path
-$RepoRoot = (Resolve-Path -LiteralPath $RepoRoot).Path
 
 # The delay gives the shell time to come up. Without it the window can start
 # before the desktop is ready and land behind the taskbar, leaving no sign it is
@@ -126,8 +144,8 @@ $xml = @"
   </Settings>
   <Actions Context="Author">
     <Exec>
-      <Command>$Pythonw</Command>
-      <Arguments>-m agentdesk.app</Arguments>
+      <Command>$Command</Command>
+      <Arguments>$Arguments</Arguments>
       <WorkingDirectory>$RepoRoot</WorkingDirectory>
     </Exec>
   </Actions>
@@ -136,10 +154,18 @@ $xml = @"
 
 Register-ScheduledTask -TaskName $TaskName -Xml $xml -Force | Out-Null
 
+# -Force does not reliably flip a previously-DISABLED task back to enabled,
+# even though the XML above says <Enabled>true</Enabled> -- measured: a task
+# disabled by an earlier session stayed Disabled through a -Force
+# re-registration and needed this explicit call. A reinstall/upgrade must not
+# silently leave the app un-launchable at logon because of state left over
+# from before this run.
+Enable-ScheduledTask -TaskName $TaskName | Out-Null
+
 $task = Get-ScheduledTask -TaskName $TaskName
 
 "Registered '$TaskName'."
-"  command     : $Pythonw -m agentdesk.app"
+"  command     : $Command $Arguments"
 "  working dir : $RepoRoot"
 "  state       : $($task.State)"
 "  runs as     : $($task.Principal.UserId) ($($task.Principal.LogonType))"

@@ -24,7 +24,12 @@ param(
     [string] $TaskName = 'AgentDesk-Backup',
     [string] $RepoRoot,
     [string] $Pythonw,
-    [switch] $Uninstall
+    [switch] $Uninstall,
+    # For a packaged (Nuitka) install: the compiled AgentDesk.exe IS the
+    # interpreter and takes `backup` as a subcommand, not `-m agentdesk.backup`.
+    # Same override contract as Install-AgentDeskStartup.ps1.
+    [string] $Exe,
+    [string] $ExeArgs = "backup"
 )
 
 $ErrorActionPreference = 'Stop'
@@ -42,8 +47,10 @@ if (-not $PSScriptRoot) {
     $scriptDir = $PSScriptRoot
 }
 $repoDefault = Split-Path -Parent $scriptDir
-if (-not $RepoRoot) { $RepoRoot = $repoDefault }
-if (-not $Pythonw)  { $Pythonw  = Join-Path $repoDefault '.venv\Scripts\pythonw.exe' }
+if (-not $Exe) {
+    if (-not $RepoRoot) { $RepoRoot = $repoDefault }
+    if (-not $Pythonw)  { $Pythonw  = Join-Path $repoDefault '.venv\Scripts\pythonw.exe' }
+}
 
 if ($Uninstall) {
     $existing = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
@@ -53,18 +60,27 @@ if ($Uninstall) {
     exit 0
 }
 
-# --- refuse loudly rather than register a task that cannot run --------------
-# A scheduled task whose Command does not exist fails silently at 3am and looks
-# exactly like a task that ran and found nothing to do.
-if (-not (Test-Path -LiteralPath $Pythonw)) {
-    throw "pythonw.exe not found at '$Pythonw'. Pass -Pythonw, or create the venv first."
+if ($Exe) {
+    if (-not (Test-Path -LiteralPath $Exe)) {
+        throw "AgentDesk.exe not found at '$Exe'. Pass the correct -Exe path."
+    }
+    $Command   = (Resolve-Path -LiteralPath $Exe).Path
+    $Arguments = $ExeArgs
+    $RepoRoot  = Split-Path -Parent $Command
+} else {
+    # --- refuse loudly rather than register a task that cannot run ---------
+    # A scheduled task whose Command does not exist fails silently at 3am and
+    # looks exactly like a task that ran and found nothing to do.
+    if (-not (Test-Path -LiteralPath $Pythonw)) {
+        throw "pythonw.exe not found at '$Pythonw'. Pass -Pythonw, or create the venv first."
+    }
+    if (-not (Test-Path -LiteralPath (Join-Path $RepoRoot 'agentdesk\backup.py'))) {
+        throw "agentdesk\backup.py not found under '$RepoRoot'. Pass -RepoRoot."
+    }
+    $Command   = (Resolve-Path -LiteralPath $Pythonw).Path
+    $Arguments = "-m agentdesk.backup"
+    $RepoRoot  = (Resolve-Path -LiteralPath $RepoRoot).Path
 }
-if (-not (Test-Path -LiteralPath (Join-Path $RepoRoot 'agentdesk\backup.py'))) {
-    throw "agentdesk\backup.py not found under '$RepoRoot'. Pass -RepoRoot."
-}
-
-$Pythonw = (Resolve-Path -LiteralPath $Pythonw).Path
-$RepoRoot = (Resolve-Path -LiteralPath $RepoRoot).Path
 
 # A boundary in the past is fine -- the scheduler computes the next occurrence
 # from the interval -- but it must be a fixed literal, because -Xml has to be
@@ -116,8 +132,8 @@ $xml = @"
   </Settings>
   <Actions Context="Author">
     <Exec>
-      <Command>$Pythonw</Command>
-      <Arguments>-m agentdesk.backup</Arguments>
+      <Command>$Command</Command>
+      <Arguments>$Arguments</Arguments>
       <WorkingDirectory>$RepoRoot</WorkingDirectory>
     </Exec>
   </Actions>
@@ -126,11 +142,15 @@ $xml = @"
 
 Register-ScheduledTask -TaskName $TaskName -Xml $xml -Force | Out-Null
 
+# See the matching comment in Install-AgentDeskStartup.ps1: -Force does not
+# reliably re-enable a task a previous session left Disabled.
+Enable-ScheduledTask -TaskName $TaskName | Out-Null
+
 $task = Get-ScheduledTask -TaskName $TaskName
 $info = Get-ScheduledTaskInfo -TaskName $TaskName
 
 "Registered '$TaskName'."
-"  command        : $Pythonw -m agentdesk.backup"
+"  command        : $Command $Arguments"
 "  working dir    : $RepoRoot"
 "  state          : $($task.State)"
 "  runs as        : $($task.Principal.UserId) ($($task.Principal.LogonType))"
