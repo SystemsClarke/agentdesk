@@ -32,12 +32,12 @@ from PIL import Image, ImageDraw
 # pythonw runs a file as a plain script, where there is no package context for
 # a relative import; fall back to putting the repo root on the path.
 try:
-    from agentdesk import (aumid, db, identity, mdview, notify, paths, pr_scan,
-                          prs, vault)
+    from agentdesk import (aumid, db, dictate, identity, mdview, notify,
+                          paths, pr_scan, prs, vault)
 except ImportError:  # pragma: no cover - depends on how the file was launched
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-    from agentdesk import (aumid, db, identity, mdview, notify, paths, pr_scan,
-                          prs, vault)
+    from agentdesk import (aumid, db, dictate, identity, mdview, notify,
+                          paths, pr_scan, prs, vault)
 
 
 def _self_argv(subcommand: str, extra: Optional[list[str]] = None) -> list[str]:
@@ -474,11 +474,12 @@ class Page(ttk.Frame):
         pane.pack(fill="both", expand=True, padx=8, pady=(6, 2))
 
         left = ttk.Frame(pane)
-        cols = ("open", "subject", "by", "updated", "msgs")
+        cols = ("num", "open", "subject", "by", "updated", "msgs")
         self.tree = ttk.Treeview(left, columns=cols, show="headings",
                                  selectmode="browse")
         look = _LIST_LOOK[channel]
         for key, label in (
+            ("num", "#"),
             ("open", look["state"]),
             ("subject", "Subject"),
             ("by", look["by"]),
@@ -486,6 +487,13 @@ class Page(ttk.Frame):
             ("msgs", "Msgs"),
         ):
             self.tree.heading(key, text=label)
+        # "#" is the thread/work-item id everyone already uses when talking
+        # about one ("item #212", "#208") -- it existed all along as the tree
+        # row's iid, but an iid is not rendered, so the only place to see the
+        # number was the chat log that used it. Narrow and right-aligned: it
+        # is a number people scan for, not a label people read.
+        self.tree.column("num", width=44, minwidth=36, anchor="e",
+                         stretch=False)
         # The first column was 44px and blank-headed, which fits the single
         # character it used to hold and nothing else. It now carries a word, so
         # it is wide enough for the longest one ("answered", 8 characters).
@@ -767,8 +775,8 @@ class Page(ttk.Frame):
             else:
                 by = identity.label(r["opened_by"])
             wanted.append((str(r["id"]), tags,
-                           (word, r["subject"], by, local_ts(r["updated_ts"]),
-                            r["message_count"])))
+                           (r["id"], word, r["subject"], by,
+                            local_ts(r["updated_ts"]), r["message_count"])))
         if wanted == self._rendered:
             return
 
@@ -1466,6 +1474,187 @@ def pid_alive(pid) -> bool:
         kernel32.CloseHandle(handle)
 
 
+# --- dictation: Ctrl+D in any text field ------------------------------------
+#
+# Modeled on the same keystroke in Claude Code's own terminal UI: press it in
+# a text field to start listening, press it again to stop. sherpa-onnx and
+# the microphone callback run on a background thread (agentdesk.dictate's own
+# rule -- see its module docstring); everything below only ever reaches a
+# widget through `app.ui_queue`, the same hand-off pystray's tray callbacks
+# already use to get onto the tk thread safely.
+_DICTATE_INDICATOR_BG = "#fff3cd"
+_DICTATE_INDICATOR_FG = "#856404"
+
+
+class _LiveInsert:
+    """Replaces the text typed since dictation started with each new partial.
+
+    tk.Text and ttk.Entry/tk.Entry need different index arithmetic (a Text
+    mark vs. a plain integer position), so this is the one place that knows
+    which -- everything above it just calls update()/finish().
+    """
+
+    def __init__(self, widget: tk.Widget) -> None:
+        self.widget = widget
+        self._last = ""
+        if isinstance(widget, tk.Text):
+            widget.mark_set("dictate_start", "insert")
+            # gravity "left": text inserted right at the mark does not push
+            # it forward, so it keeps pointing at where dictation began
+            # rather than chasing the text it is about to replace.
+            widget.mark_gravity("dictate_start", "left")
+        else:
+            self._start = widget.index("insert")
+
+    def update(self, text: str) -> None:
+        widget = self.widget
+        try:
+            if isinstance(widget, tk.Text):
+                widget.delete("dictate_start",
+                             f"dictate_start + {len(self._last)}c")
+                widget.insert("dictate_start", text)
+                widget.mark_set("insert", f"dictate_start + {len(text)}c")
+            else:
+                widget.delete(self._start, self._start + len(self._last))
+                widget.insert(self._start, text)
+                widget.icursor(self._start + len(text))
+        except tk.TclError:
+            # The widget went away (dialog closed) or refused the edit (now
+            # disabled) mid-dictation. Nothing left to update; not an error
+            # the person dictating needs to see.
+            pass
+        self._last = text
+
+
+class DictationController:
+    def __init__(self, app: "App") -> None:
+        self.app = app
+        self.session: Optional[dictate.Session] = None
+        self.insert: Optional[_LiveInsert] = None
+        self.indicator: Optional[tk.Label] = None
+        self._downloading = False
+
+    def attach(self, root: tk.Misc) -> None:
+        root.bind_all("<Control-d>", self._on_key)
+
+    def _on_key(self, event: tk.Event) -> Optional[str]:
+        if self.session is not None:
+            self._stop()
+            return "break"
+        widget = event.widget
+        if not isinstance(widget, (tk.Text, tk.Entry, ttk.Entry)):
+            return None
+        try:
+            if str(widget.cget("state")) == "disabled":
+                return None
+        except tk.TclError:
+            pass
+        if self._downloading:
+            return "break"
+        if not dictate.is_downloaded():
+            self._download_then(lambda: self._start(widget))
+            return "break"
+        self._start(widget)
+        return "break"
+
+    def _start(self, widget: tk.Widget) -> None:
+        self.insert = _LiveInsert(widget)
+        self._show_indicator(widget)
+        self.session = dictate.Session(
+            on_text=lambda text, final:
+                self.app.ui_queue.put(lambda: self._on_text(text, final)),
+            on_error=lambda exc:
+                self.app.ui_queue.put(lambda: self._on_error(exc)),
+        )
+        self.session.start()
+
+    def _stop(self) -> None:
+        if self.session is not None:
+            self.session.stop()
+        # self.session itself is cleared in _on_text once the final=True
+        # callback arrives, not here -- stop() only asks the mic to close;
+        # the tail of the audio is still being decoded for a moment after.
+
+    def _on_text(self, text: str, final: bool) -> None:
+        if self.insert is not None:
+            self.insert.update(text)
+        if final:
+            self._hide_indicator()
+            self.session = None
+            self.insert = None
+
+    def _on_error(self, exc: Exception) -> None:
+        self._hide_indicator()
+        self.session = None
+        self.insert = None
+        messagebox.showerror(
+            "AgentDesk - dictation",
+            f"Dictation stopped because of an error:\n\n{exc}\n\n"
+            "This is usually a missing or busy microphone -- Settings > "
+            "Privacy > Microphone, or another app holding it exclusively.")
+
+    def _show_indicator(self, widget: tk.Widget) -> None:
+        top = widget.winfo_toplevel()
+        self.indicator = tk.Label(
+            top, text="\U0001F399 Listening... (Ctrl+D to stop)",
+            bg=_DICTATE_INDICATOR_BG, fg=_DICTATE_INDICATOR_FG,
+            font=("Segoe UI", 8), padx=4, pady=1)
+        # Anchored to the widget itself via `in_=`, not to absolute screen
+        # coordinates, so it tracks the right field even if the window has
+        # moved or the field is inside a scrolled/dialog frame.
+        self.indicator.place(in_=widget, relx=0, y=-2, x=0, anchor="sw")
+
+    def _hide_indicator(self) -> None:
+        if self.indicator is not None:
+            self.indicator.destroy()
+            self.indicator = None
+
+    def _download_then(self, then: Callable[[], None]) -> None:
+        if not messagebox.askyesno(
+            "AgentDesk - dictation",
+            "Dictation needs a one-time download of the local speech "
+            f"model (about {dictate.TOTAL_BYTES // (1024 * 1024)} MB, "
+            "Nemotron-Speech-Streaming-EN-0.6B). Nothing is uploaded and "
+            "no audio ever leaves this machine.\n\nDownload it now?"
+        ):
+            return
+        self._downloading = True
+        win = tk.Toplevel(self.app.root)
+        win.title("AgentDesk - downloading speech model")
+        win.resizable(False, False)
+        ttk.Label(win, text="Downloading the dictation model...",
+                 padding=(12, 12, 12, 4)).pack()
+        bar = ttk.Progressbar(win, length=320, maximum=1000)
+        bar.pack(padx=12, pady=(0, 12))
+        pct_lbl = ttk.Label(win, text="0%")
+        pct_lbl.pack(pady=(0, 12))
+
+        def _progress(done: int, total: int) -> None:
+            self.app.ui_queue.put(
+                lambda: (bar.configure(value=int(1000 * done / total)),
+                         pct_lbl.configure(text=f"{100 * done // total}%")))
+
+        def _worker() -> None:
+            try:
+                dictate.download_model(_progress)
+                self.app.ui_queue.put(lambda: (_finish(), then()))
+            except Exception as exc:
+                self.app.ui_queue.put(lambda: _fail(exc))
+
+        def _finish() -> None:
+            self._downloading = False
+            win.destroy()
+
+        def _fail(exc: Exception) -> None:
+            self._downloading = False
+            win.destroy()
+            messagebox.showerror(
+                "AgentDesk - dictation",
+                f"Could not download the speech model:\n\n{exc}")
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+
 class App:
     POLL_MS = 3000
 
@@ -1511,6 +1700,9 @@ class App:
         self.root.geometry("1000x640")
         self.root.minsize(720, 420)
         self.root.protocol("WM_DELETE_WINDOW", self._hide_to_tray)
+
+        self.dictation = DictationController(self)
+        self.dictation.attach(self.root)
 
         # The dispatcher control sits OUTSIDE the notebook, above it, because it
         # is not a property of any one channel: turning it on starts agents on

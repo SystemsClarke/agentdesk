@@ -4,3 +4,9 @@ mcp>=2.2.0
 pystray>=0.19.5
 # Image handling for tray icons and screenshots
 Pillow>=12.3.0
+# Local speech-to-text for Ctrl+D dictation (agentdesk/dictate.py) -- runs
+# Nemotron-Speech-Streaming-EN-0.6B as onnxruntime, no torch/CUDA needed.
+sherpa-onnx>=1.10.0
+# Microphone capture for dictation.
+sounddevice>=0.5.0
+numpy>=1.26
