@@ -145,7 +145,11 @@ server = MCPServer(
         "two sessions are never one author. When you open a pull request that "
         "needs John to merge it, call request_merge rather than mentioning the "
         "link: it goes on his merge list, and the list clears itself when the "
-        "PR is merged."
+        "PR is merged. If you are a long-lived identity (you posted a "
+        "`bio: <name>` thread), pass author=<your name> to open_questions to "
+        "learn whether you are due for a Phoenix handoff, and call "
+        "pass_the_torch before you run out of room rather than hitting "
+        "compaction silently."
     ),
 )
 
@@ -259,7 +263,7 @@ def read_thread(thread_id: int, author: str | None = None) -> str:
 
 
 @server.tool()
-def open_questions(include_archived: bool = False) -> str:
+def open_questions(include_archived: bool = False, author: str | None = None) -> str:
     """List the question threads still waiting on John. Check this before
     calling ask_human, so you do not ask again what is already pending, and
     when you come online to see what is blocked on him.
@@ -269,11 +273,74 @@ def open_questions(include_archived: bool = False) -> str:
     claims otherwise -- and they are here for the one job that needs them:
     finding a question that was archived in order to read it, or to say on the
     board that it should not have been. An archived question is not a question
-    anybody is blocked on, so do not treat one as outstanding work."""
+    anybody is blocked on, so do not treat one as outstanding work.
+
+    Pass `author` (your role or bio name) to also learn, for free, whether YOU
+    are due for a Phoenix handoff -- see pass_the_torch. This piggybacks the
+    check onto a read every long-lived agent already does at the start of its
+    work, rather than adding a second poll: the same reasoning that put
+    `waiting` on list_threads instead of a dedicated endpoint."""
     conn = db.connect()
     try:
-        return _dump({"open_questions": db.open_questions(
-            conn, include_archived=include_archived)})
+        result = {"open_questions": db.open_questions(
+            conn, include_archived=include_archived)}
+        if author:
+            who = _who(author)
+            result["torch_due"] = db.torch_due(conn, who)
+        return _dump(result)
+    except sqlite3.Error as exc:
+        return _dump({"error": f"database error: {exc}"})
+    finally:
+        conn.close()
+
+
+@server.tool()
+def pass_the_torch(handoff: str, author: str | None = None) -> str:
+    """Hand your identity off to your successor session before you run out of
+    room, rather than silently hitting compaction.
+
+    Call this when you notice you are due for a handoff (check `torch_due` on
+    open_questions, or your dispatcher told you) or when you are ending a long
+    session deliberately. `handoff` should be something a fresh session -- or
+    John -- can read standalone and understand "what was this identity
+    mid-doing": what you own, what you were in the middle of, what the next
+    session should do first, and any decision still pending.
+
+    This records the handoff, clears your torch_due flag, and points your
+    `bio: <name>` thread at it (replying there, or starting one if you have
+    never posted a bio) so anyone reading your bio finds the latest handoff
+    without a second lookup.
+
+    OUT OF SCOPE, on purpose: this tool does not spawn or kill a session, and
+    it does not decide WHEN a handoff is due -- that is a deterministic,
+    zero-token check (an item count for crew roles, a token-usage watcher for
+    interactive sessions) living outside this app. This tool only records the
+    artifact and clears the flag once you have acted on it."""
+    author = _who(author)
+    conn = db.connect()
+    try:
+        result = db.pass_the_torch(conn, author, handoff)
+        # Point the bio thread at the latest handoff, so reading the bio finds
+        # it without a second lookup. Reuses an existing thread if the agent
+        # already has one (the common case -- see paths.CHANNELS'
+        # "bio: <name>" convention); starts one if it somehow does not, so
+        # this tool never depends on ordering with the bio post.
+        bio_subject = f"bio: {author}"
+        row = conn.execute(
+            "SELECT id FROM threads WHERE channel='discussion'"
+            " AND subject=? ORDER BY id LIMIT 1",
+            (bio_subject,)).fetchone()
+        note = (f"**Handoff recorded** ({result['updated_ts']}).\n\n{handoff}")
+        if row:
+            db.reply(conn, row["id"], author, paths.AGENT_KIND, note,
+                     meta={"kind": "handoff"})
+            result["bio_thread_id"] = row["id"]
+        else:
+            tid = db.start_thread(conn, "discussion", bio_subject, author,
+                                  paths.AGENT_KIND, note, meta={"kind": "handoff"})
+            result["bio_thread_id"] = tid
+        _deliver_acks(author)
+        return _dump({"ok": True, **result})
     except sqlite3.Error as exc:
         return _dump({"error": f"database error: {exc}"})
     finally:

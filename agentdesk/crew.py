@@ -284,6 +284,130 @@ def _memory_excerpt(role: str, limit: int = 4000) -> str:
     return text[-limit:]
 
 
+# --- Phoenix: the explicit handoff -----------------------------------------
+#
+# `memory.md` (above) is the running notes file: appended to, spliced in as a
+# tail excerpt, meant to be read by the NEXT SESSION OF THE SAME ROLE. It was
+# never meant to answer "what was this role mid-doing" for a human or a
+# stranger session skimming it cold -- that answer is buried wherever the
+# last append happened to stop.
+#
+# handoff.md is the artifact John asked Phoenix to produce: explicit and
+# discoverable, REWRITTEN (not appended) each reset, so it always holds
+# exactly one thing -- the current state of the world for this role, written
+# to be read standalone. memory.md keeps doing its job for the role itself;
+# this is the one for everyone else.
+
+
+def handoff_path(role: str) -> Path:
+    return MEMORY_DIR / f"{role}-handoff.md"
+
+
+def _vault_thread_path(role: str) -> Path:
+    """Where this role's vault-mirror wiki thread id is remembered.
+
+    One thread per role, reused across every reset -- see db.set_opening_body
+    and vault.mirror_thread's docstring on why reuse (not a fresh thread per
+    reset) is what keeps the note singular instead of colliding on filename.
+    """
+    return MEMORY_DIR / f"{role}-vault-thread.json"
+
+
+def _load_vault_thread(role: str) -> Optional[int]:
+    try:
+        data = json.loads(_vault_thread_path(role).read_text(encoding="utf-8"))
+        tid = data.get("thread_id")
+        return int(tid) if tid is not None else None
+    except (OSError, ValueError, TypeError, KeyError):
+        return None
+
+
+def _save_vault_thread(role: str, thread_id: int) -> None:
+    try:
+        MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+        _vault_thread_path(role).write_text(
+            json.dumps({"thread_id": thread_id}), encoding="utf-8")
+    except OSError as exc:
+        log(f"{role}: could not remember the vault thread id ({exc!r}); the "
+            f"next sync will start a new thread instead of updating this one")
+
+
+_VAULT_TAG = "tooling"
+_VAULT_MOC = "Workstation MOC"
+
+
+def sync_handoff_to_vault(role: str, handoff_text: str) -> Optional[dict]:
+    """Write this role's handoff into the memory vault, via the board.
+
+    Deliberately does NOT touch vault files directly. `agentdesk/vault.py`
+    already has a tested, protocol-compliant path from a board post to a vault
+    note (frontmatter shape, word caps, wikilink count, MOC registration, the
+    secret-shape check) -- writing a second implementation of that protocol
+    here would be exactly the drift vault.py's own docstring warns about
+    ("two-way sync... rejected"). So this POSTS a wiki entry shaped to pass
+    that gate, then calls vault.mirror_thread on it. If it fails the gate, it
+    is PARKED under vault/agentdesk/parked/ with the reasons -- same as any
+    other wiki post that does not qualify -- and this function reports that
+    rather than raising: a vault sync failing must never take down the role's
+    actual work.
+
+    The SAME thread is reused every reset (see _load_vault_thread /
+    db.set_opening_body): a fresh thread every reset would give the note a
+    colliding filename with the one from last time, which vault.py refuses to
+    overwrite (existing_owner != thread_id) rather than silently orphan.
+    """
+    try:
+        from . import vault  # local import: only the vault-sync path needs it
+        today = __import__("datetime").datetime.now().astimezone().date()
+        subject = f"AgentDesk crew handoff {role}"
+        summary = f"The {role} role's latest Phoenix handoff, synced on reset."
+        # Body must satisfy vault.py's protocol: >=20 words, <=420 (type=project
+        # is accretive so the cap is generous), >=2 wikilinks, a Related: line,
+        # no H1. The handoff text itself is free-form prose from the agent, so
+        # it is wrapped rather than trusted to satisfy the shape on its own.
+        body = (
+            f"---\ntype: project\ntags: [{_VAULT_TAG}]\nsummary: {summary}\n"
+            f"updated: {today.isoformat()}\n---\n"
+            f"Phoenix handoff for the AgentDesk crew's **{role}** role, "
+            f"synced automatically on session reset (crew.py RESET_AFTER).\n\n"
+            f"{handoff_text.strip()}\n\n"
+            f"Related: [[AgentDesk is the agent message board]] · "
+            f"[[Reaching the board without the agentdesk tools]]\n"
+        )
+
+        conn = db.connect()
+        try:
+            tid = _load_vault_thread(role)
+            if tid is not None:
+                # Confirm the thread still exists before trusting it -- a
+                # hand-pruned board should not crash the sync, just start a
+                # fresh thread the way a first-ever sync would.
+                row = conn.execute(
+                    "SELECT id FROM threads WHERE id=?", (tid,)).fetchone()
+                if row is None:
+                    tid = None
+            if tid is None:
+                tid = db.start_thread(conn, "wiki", subject, APP_NAME,
+                                      paths.AGENT_KIND, body)
+                _save_vault_thread(role, tid)
+            else:
+                db.set_opening_body(conn, tid, body)
+            result = vault.mirror_thread(conn, tid)
+        finally:
+            conn.close()
+        if result.get("status") == "mirrored":
+            log(f"{role}: handoff synced to the vault -> {result.get('note')}")
+        else:
+            log(f"{role}: handoff NOT mirrored to the vault "
+                f"({result.get('status')}): {result.get('reasons') or result.get('reason')}")
+        return result
+    except Exception as exc:
+        # Never let a vault problem take the role down; this is best-effort
+        # continuity, not the item's own completion.
+        log(f"{role}: vault sync failed: {exc!r}")
+        return None
+
+
 def _prompt(role: roles.Role, item: dict, memory: str) -> str:
     carried = ""
     if memory:
@@ -310,6 +434,18 @@ Before you finish, write anything worth carrying into your next session to:
     {memory_path(role.name)}
 
 Append; do not rewrite. That file is what survives a session reset.
+
+Also keep this file current -- REWRITE it whole, do not append:
+
+    {handoff_path(role.name)}
+
+That is your handoff: a snapshot a fresh session (or a human) can read
+standalone and understand what you, {role.name}, are mid-doing right now --
+what you own, what this item changed, what is still open, what the next
+session should do first. Unlike the notes file above, it is not a log; it is
+always "where things stand as of right now," so rewrite the whole file rather
+than adding to it. It becomes stale the moment you finish this item, so update
+it every time, not just near a reset.
 
 Post to the board through the agentdesk tools you already have, as
 `{role.name}`. Use them: if you need something from another agent, ask on the
@@ -823,6 +959,31 @@ def worker_loop(role_name: str, stop: threading.Event, active: dict,
         if sess["items"] >= RESET_AFTER:
             log(f"{role_name}: {sess['items']} items on this session - starting a "
                 f"fresh one (the memory file carries continuity)")
+            # Phoenix, Part A: the deterministic trigger (RESET_AFTER, a plain
+            # int compare -- unchanged) fires the same handoff a torch_due
+            # flag would for an interactive session. Sync whatever handoff.md
+            # holds into the vault and record it in the handoffs table (which
+            # also clears torch_due, though nothing sets it for a crew role
+            # today -- this just keeps the table honest if something ever
+            # does) BEFORE the session is thrown away, because after this
+            # point the only copy of "what this role was mid-doing" is
+            # whatever made it into that file.
+            try:
+                handoff_text = handoff_path(role_name).read_text(
+                    encoding="utf-8").strip()
+            except OSError:
+                handoff_text = ""
+            if handoff_text:
+                sync_handoff_to_vault(role_name, handoff_text)
+                conn = db.connect()
+                try:
+                    db.pass_the_torch(conn, role_name, handoff_text,
+                                      path=str(handoff_path(role_name)))
+                finally:
+                    conn.close()
+            else:
+                log(f"{role_name}: no handoff.md content at reset - nothing "
+                    f"to sync (the role never wrote one)")
             resume = None
             sess = {"id": None, "items": 0}
 

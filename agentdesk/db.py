@@ -172,6 +172,34 @@ CREATE TABLE IF NOT EXISTS work_events (
 -- The tab reads one item's newest events on every redraw; the poll asks
 -- whether anything has been appended at all.
 CREATE INDEX IF NOT EXISTS idx_work_events ON work_events(work_id, id);
+
+-- Phoenix: the handoff a long-lived identity (a crew role, or an interactive
+-- session's `bio: <name>`) leaves for its successor, plus the one flag that
+-- tells it (or a watcher acting on its behalf) that a handoff is due.
+--
+-- Keyed on NAME, not on a thread or session id, because the identity this
+-- exists for is the durable one -- "builder", "claude-code:FastBuild#6301" --
+-- and a session is disposable compute against it. One row per name is the
+-- whole model: the latest handoff a name has, and whether one is owed.
+--
+-- torch_due is the deterministic, zero-token trigger John asked for: a plain
+-- int compared in SQL, never an LLM judging its own degradation. Something
+-- outside this app decides WHEN to set it (crew.py's RESET_AFTER for crew
+-- roles; a separate scheduled watcher polling session usage for interactive
+-- sessions -- see agentdesk/mcp_server.py's pass_the_torch docstring for the
+-- boundary). This table only stores the flag and the artifact; it does not
+-- decide either.
+--
+-- CREATE TABLE IF NOT EXISTS, so an existing board gains the empty table and
+-- keeps every row it had. No ALTER, so no migration to get wrong.
+CREATE TABLE IF NOT EXISTS handoffs (
+    name        TEXT PRIMARY KEY,
+    body        TEXT NOT NULL DEFAULT '',
+    path        TEXT,
+    updated_ts  TEXT NOT NULL,
+    updated_by  TEXT NOT NULL,
+    torch_due   INTEGER NOT NULL DEFAULT 0
+);
 """
 
 # The work_events kinds, as a shared vocabulary rather than loose strings: the
@@ -530,6 +558,28 @@ def reply(conn, thread_id, author, author_kind, body, reply_to=None, meta=None) 
     conn.execute("UPDATE threads SET updated_ts=? WHERE id=?", (ts, thread_id))
     _touch_presence(conn, author, author_kind)
     return int(cur.lastrowid)
+
+
+def set_opening_body(conn, thread_id, body) -> None:
+    """Rewrite a thread's OPENING message in place. Touches updated_ts.
+
+    A normal reply appends; this is the one place a wiki thread's body is
+    edited rather than replied to, and it exists for exactly one caller:
+    crew.py's Phoenix vault sync, which re-mirrors the SAME crew-role handoff
+    note on every reset. `vault.mirror_thread` only ever reads a thread's
+    opening message (its own docstring: "replies are conversation, not
+    memory"), so the only way to make a second reset UPDATE the note instead
+    of orphaning a new thread with a colliding filename is to update the post
+    the mirror already owns, keyed to the same thread_id it already recorded
+    in the note's marker. Anything wanting a normal appended message should
+    call reply(), not this.
+    """
+    ts = now_iso()
+    conn.execute(
+        "UPDATE messages SET body=? WHERE id ="
+        " (SELECT id FROM messages WHERE thread_id=? ORDER BY id LIMIT 1)",
+        (body, thread_id))
+    conn.execute("UPDATE threads SET updated_ts=? WHERE id=?", (ts, thread_id))
 
 
 def set_thread_status(conn, thread_id, status, meta_updates=None) -> None:
@@ -1376,6 +1426,72 @@ def open_questions(conn, include_archived=False) -> list:
             (paths.STATUS_OPEN, paths.STATUS_ARCHIVED))]
     return [dict(r) for r in conn.execute(
         "SELECT * FROM open_questions ORDER BY updated_ts DESC")]
+
+
+# --- Phoenix: handoffs and the torch -------------------------------------------
+#
+# `name` is whatever a durable identity calls itself: a crew role ("builder"),
+# or the bio name an interactive session posts ("claude-code:FastBuild#6301").
+# There is no author_kind split here the way threads/messages have one -- a
+# handoff belongs to the NAME, and both kinds of agent use the same name space
+# already (mentions, presence, receipts all key on the bare string).
+
+
+def pass_the_torch(conn, name: str, body: str, path: Optional[str] = None) -> dict:
+    """Record `name`'s handoff document and clear its torch_due flag.
+
+    An UPSERT, not an insert-then-update: the first handoff a name ever writes
+    and the hundredth take the same path, which is what keeps this callable
+    from a fresh board with no prior row for the name. Clearing torch_due HERE,
+    in the same statement that records the handoff, is the whole point --
+    it is what makes "I passed the torch" and "I am no longer due" the same
+    fact rather than two writes that could land apart.
+    """
+    ts = now_iso()
+    conn.execute(
+        "INSERT INTO handoffs (name, body, path, updated_ts, updated_by, torch_due)"
+        " VALUES (?, ?, ?, ?, ?, 0)"
+        " ON CONFLICT(name) DO UPDATE SET"
+        "   body=excluded.body, path=excluded.path,"
+        "   updated_ts=excluded.updated_ts, updated_by=excluded.updated_by,"
+        "   torch_due=0",
+        (name, body, path, ts, name))
+    conn.commit()
+    return {"name": name, "updated_ts": ts, "path": path}
+
+
+def get_handoff(conn, name: str) -> Optional[dict]:
+    """The latest handoff row for `name`, or None if it has never passed one."""
+    row = conn.execute("SELECT * FROM handoffs WHERE name=?", (name,)).fetchone()
+    return dict(row) if row else None
+
+
+def set_torch_due(conn, name: str, due: bool = True) -> None:
+    """Flag (or clear) that `name` is due for a handoff.
+
+    This is the deterministic trigger's write side, and it is deliberately a
+    plain UPDATE-or-INSERT rather than an MCP tool of its own: John's ask was a
+    RAW DATABASE ENTRY a watcher can set, the same way crew.py's
+    `_set_meta_flag` sets `blocked_noted` directly rather than through a tool.
+    A future watcher (polling `ccd_session_mgmt.get_usage` for an interactive
+    session, or crew.py checking RESET_AFTER) can call this directly against
+    `db.connect()`, exactly like `_set_meta_flag` does today -- no MCP round
+    trip, no LLM judgement, just a row.
+    """
+    ts = now_iso()
+    conn.execute(
+        "INSERT INTO handoffs (name, body, path, updated_ts, updated_by, torch_due)"
+        " VALUES (?, '', NULL, ?, ?, ?)"
+        " ON CONFLICT(name) DO UPDATE SET torch_due=excluded.torch_due",
+        (name, ts, name, 1 if due else 0))
+    conn.commit()
+
+
+def torch_due(conn, name: str) -> bool:
+    """Whether `name` is due for a handoff right now."""
+    row = conn.execute(
+        "SELECT torch_due FROM handoffs WHERE name=?", (name,)).fetchone()
+    return bool(row and row["torch_due"])
 
 
 def search(conn, query, limit=50) -> list:
