@@ -540,9 +540,11 @@ def run_claude(role: roles.Role, prompt: str, resume: Optional[str],
     for name, base_env in _provider_envs():
         child_env = dict(base_env)
         child_env["AGENTDESK_AUTHOR"] = role.name
+        effort = providers.effort_for(name)
+        run_cmd = cmd + ["--effort", effort] if effort else cmd
 
         proc = subprocess.Popen(
-            cmd, cwd=str(REPO), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            run_cmd, cwd=str(REPO), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, encoding="utf-8", errors="replace", env=child_env,
             **_no_window())
         # Registered so a Stop can reach it; see _CHILDREN.
@@ -708,12 +710,7 @@ def _mentioned_role(subject: str, body: str) -> Optional[str]:
 
 def _route(item: dict) -> tuple:
     """(role_name, why). An explicit @mention wins outright; otherwise the
-    heuristic, then a model confirms. Never fails.
-
-    The model call is deliberately tiny and bounded: three candidate names and
-    nothing else. If it errors, times out, or answers with something that is not
-    a role name, the heuristic stands.
-    """
+    keyword heuristic. Never fails."""
     subject = str(item.get("subject") or "")
     body = str(item.get("last_body") or "")
 
@@ -721,74 +718,10 @@ def _route(item: dict) -> tuple:
     if mentioned:
         return mentioned, f"explicit @{mentioned} mention"
 
-    guess = _heuristic_route(subject, body)
-
-    # Routing is a one-word classification over ~2KB of text -- exactly the
-    # bulk-mechanical case Ladder's rung 0 exists for, and nothing here needs
-    # the full agentic `claude -p` harness (tools, file access, multi-turn).
-    # This used to spawn a whole `claude -p` process per item just to pick a
-    # role, and that process inherited every fragility of the crew's own
-    # failover chain (Fireworks billing, provider env bugs, `local`'s ~61s
-    # cold start and empty answers under the full harness -- see
-    # providers.json). A direct in-process Ladder call has none of that: it
-    # is one HTTP round trip to a model that is either warm or isn't, and any
-    # failure (Ladder not installed, no model warm, a bad response shape)
-    # falls back to the keyword heuristic exactly as the old path did.
-    word = _ladder_route(subject, body)
-    if word is None:
-        return guess, "heuristic (Ladder gave no usable answer)"
-    if word == guess:
-        return word, "the router agreed with the keyword read (ladder rung 0)"
-    return word, f"the router overrode the keyword read ({guess}) (ladder rung 0)"
-
-
-_LADDER_PARENT = Path(r"C:\Users\palencharj\NoOneDrive\LocalBuildFastCode")
-
-_ROUTE_SYSTEM = (
-    "You are routing one work item to the single best-suited agent.\n"
-    "Answer with EXACTLY ONE WORD, one of: builder, verifier, researcher.\n\n"
-    "builder    - implements or edits something; the default.\n"
-    "verifier   - independently reproduces a claim someone else made.\n"
-    "researcher - answers a question from existing knowledge; no code change."
-)
-
-
-def _ladder_router():
-    """The Router this routing call runs on. Raises if unavailable -- the
-    caller is the one place that decides what "unavailable" degrades to."""
-    if str(_LADDER_PARENT) not in sys.path:
-        sys.path.insert(0, str(_LADDER_PARENT))
-    from ladder.router import Router  # type: ignore
-    return Router()
-
-
-def _ladder_route(subject: str, body: str) -> Optional[str]:
-    """A role name from Ladder's local rung, or None on ANY failure.
-
-    Never raises and never falls through to a paid rung: `max_rung=0` pins
-    this to the free local tier deliberately, because a wrong routing guess
-    costs nothing (the heuristic is the fallback) and is not worth spending
-    allowance to avoid.
-    """
-    try:
-        router = _ladder_router()
-        result = router.run_job(
-            prompt=f"SUBJECT: {subject}\n\nITEM:\n{body[:2000]}\n\nONE WORD:",
-            kind="classify",
-            rung=0, max_rung=0,
-            system_extra=_ROUTE_SYSTEM,
-            max_tokens=16,
-            title="route work item",
-        )
-        if not result.get("ok"):
-            return None
-        word = str(result.get("result") or "").strip().lower().strip(".\"'`* \n")
-        return word if word in roles.BY_NAME else None
-    except Exception:
-        # Ladder not importable, no model warm, network hiccup, an
-        # unexpected response shape -- all of it means "the heuristic
-        # decides", never "crash the dispatcher's routing pass".
-        return None
+    # Keyword heuristic only. The model confirmation ran on Ladder rung 0,
+    # which is Ollama, and John does not want Ollama in the loop (2026-09-22).
+    # An @mention above is how to override a wrong guess.
+    return _heuristic_route(subject, body), "keyword heuristic"
 
 
 def post_blocked(tid: int, subject: str, attempts: int) -> None:

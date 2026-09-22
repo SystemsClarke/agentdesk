@@ -114,6 +114,20 @@ def env_for(profile: Optional[str] = None,
     return env
 
 
+def effort_for(profile: Optional[str] = None) -> Optional[str]:
+    """The `--effort` level a profile asks for, or None to leave the CLI default.
+
+    A CLI flag rather than part of env_for's environment: effort is not an
+    endpoint setting, and a profile pointed at a non-Anthropic model (`local`)
+    should not be handed a flag its model cannot use.
+    """
+    profiles = _load().get("profiles", {})
+    name = profile if (profile and profile in profiles) else DEFAULT_PROFILE
+    spec = profiles.get(name) or _FALLBACK_SPEC
+    effort = spec.get("effort")
+    return str(effort) if effort else None
+
+
 def chain(preferred: Optional[str] = None) -> list[str]:
     """Profile names to try, in order: `preferred` first, then the configured
     `order`, then anything else defined. Deduped, and never empty.

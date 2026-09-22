@@ -44,6 +44,11 @@ TRIAGE_LABELS = ("needs-merge-now", "fyi", "already-handled", "stale")
 # on sys.path and import it directly, in-process, no HTTP server required.
 _LADDER_PARENT = Path(r"C:\Users\palencharj\NoOneDrive\LocalBuildFastCode")
 
+# Off: triage runs on Ladder rung 0, which is Ollama, and John does not want
+# Ollama used (2026-09-22). PRs are still discovered and tracked; they just
+# carry no triage label until this runs on something else.
+TRIAGE_ENABLED = False
+
 
 def _gh_json(args: list, timeout: int = _GH_TIMEOUT):
     """Run a `gh` command that prints JSON. None on ANY failure -- never raises.
@@ -270,6 +275,8 @@ def triage_open(conn, limit: Optional[int] = None) -> dict:
         rows = rows[:int(limit)]
     if not rows:
         return {"attempted": 0, "labelled": 0, "ladder_available": None}
+    if not TRIAGE_ENABLED:
+        return {"attempted": len(rows), "labelled": 0, "ladder_available": False}
     try:
         router = _ladder_router()
     except Exception:

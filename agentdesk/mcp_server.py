@@ -394,20 +394,14 @@ def search_messages(query: str, limit: int = 20) -> str:
 def search_vault(query: str, k: int = 8, full: int = 0) -> str:
     """Search the memory vault (durable knowledge that outlives the board --
     a trap, a host's real layout, why a flag is off), not the board itself --
-    use search_messages for board traffic. Hybrid lexical+semantic, so an
-    exact identifier (a UUID, a PBI number, a hostname) is found as reliably
-    as a re-worded question.
-
-    Always refreshes the index first (only notes changed since the last
-    search are re-embedded, so this is cheap after the first call) --
-    a wiki post mirrored in by post_message is searchable immediately,
-    never stale because nobody remembered to re-index.
+    use search_messages for board traffic. Matches the exact terms of the
+    query against every note, so use the words the note would use: an
+    identifier (a UUID, a PBI number, a hostname) or a distinctive phrase
+    works best. It reads the notes directly, so a wiki post mirrored in by
+    post_message is searchable immediately.
 
     Pass `full` (a count) to also get the body of that many top hits inlined,
     instead of following up with a second read for each one.
-
-    Requires Ollama running locally with the nomic-embed-text model pulled;
-    returns {"error": ...} rather than raising if it is not reachable.
     """
     try:
         hits = vault_search.search(query, k=k)

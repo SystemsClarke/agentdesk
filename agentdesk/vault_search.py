@@ -54,6 +54,14 @@ META_PATH = INDEX_DIR / "vault_meta.json"
 OLLAMA = "http://127.0.0.1:11434/api/embed"
 MODEL = "nomic-embed-text"
 
+# Off: embeddings come from Ollama, and John does not want Ollama used
+# (2026-09-22). With it off, search() is lexical-only -- exact-term matching
+# over notes/, which needs no index and no model. That is the half that finds
+# identifiers (UUIDs, PBI numbers, hostnames); what is lost is recall on a
+# question worded differently from the note. The index code stays so turning
+# this back on is one line.
+SEMANTIC_ENABLED = False
+
 # Only notes/ get embedded -- MOCs are navigation, not the fact itself, and
 # long enough to exceed the embedding model's practical context (the 8.3 KB
 # GoCD MOC hung the endpoint outright, measured). _meta/ is boilerplate and
@@ -251,6 +259,11 @@ def search(query: str, k: int = 10, *, semantic_only: bool = False,
     a caller that has already refreshed in the same batch and wants to avoid
     re-hashing every note per query.
     """
+    if not SEMANTIC_ENABLED:
+        lex, _rarest = _lexical(query)
+        return [_hit(key, 1.0 / (RRF_K + i), None)
+                for i, key in enumerate(lex[:k], 1)]
+
     if refresh:
         _build_or_refresh(rebuild=False)
     elif not (VEC_PATH.exists() and META_PATH.exists()):
@@ -282,13 +295,18 @@ def search(query: str, k: int = 10, *, semantic_only: bool = False,
         fused = _rrf([(sem[:40], 1.0), (lex, lex_w)])
 
     top = sorted(fused, key=lambda kk: -fused[kk])[:k]
-    hits = []
-    for key in top:
-        m = meta["meta"].get(key, {})
-        hits.append({"path": key, "score": round(fused[key], 4),
-                    "type": m.get("type", "?"),
-                    "summary": m.get("summary", "") or "(no summary)"})
-    return hits
+    return [_hit(key, fused[key], meta["meta"].get(key, {})) for key in top]
+
+
+def _hit(key: str, score: float, meta: Optional[dict]) -> dict:
+    """One result row. `meta` is the index's entry for the note; None means
+    there is no index in play (lexical-only), so read the frontmatter directly."""
+    if meta is None:
+        rec = _parse_note(VAULT / key)
+        meta = {"type": rec["type"], "summary": rec["summary"]}
+    return {"path": key, "score": round(score, 4),
+            "type": meta.get("type", "?"),
+            "summary": meta.get("summary", "") or "(no summary)"}
 
 
 def read_note(rel_path: str) -> str:
