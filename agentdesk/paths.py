@@ -45,7 +45,14 @@ WORKER_STOP = DATA_DIR / "worker.stop"
 # confirmed the hard way on 2026-09-19 (item #179): a same-second "quick sanity
 # check" of run_once() with only LOCALAPPDATA overridden clobbered a day's
 # entire real transcript with an empty one.
-VAULT_DIR = Path(r"C:\Users\palencharj\NoOneDrive\MainClaudeMemory\MainClaude")
+# Derived from Path.home() rather than a hardcoded account name, because the
+# same "John, on this machine" turns out to mean a different Windows account
+# on different boxes (palencharj vs. jpale) -- a literal path silently pointed
+# at an account that does not exist on the second one. Path.home() is exactly
+# the "this machine's own account" the comment above already wants; nothing
+# about the isolation story changes; a test script still reassigns VAULT_DIR
+# (and everything derived from it) before calling in, same as before.
+VAULT_DIR = Path.home() / "NoOneDrive" / "MainClaudeMemory" / "MainClaude"
 VAULT_AGENTDESK = VAULT_DIR / "agentdesk"    # agentdesk/YYYY-MM-DD.md
 VAULT_LOG = VAULT_DIR / "log"                # log/YYYY-MM-DD.md gets a pointer line
 
