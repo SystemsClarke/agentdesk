@@ -14,7 +14,7 @@ import sqlite3
 
 from mcp.server.mcpserver import MCPServer
 
-from . import db, identity, notify, paths, prs, vault
+from . import db, identity, notify, paths, prs, vault, vault_search
 
 # The text of an automatic acknowledgement. Fixed and short, and posted with
 # meta kind 'ack' so the UI can grey it out later (work item 34) and every
@@ -388,6 +388,34 @@ def search_messages(query: str, limit: int = 20) -> str:
         return _dump({"error": f"database error: {exc}"})
     finally:
         conn.close()
+
+
+@server.tool()
+def search_vault(query: str, k: int = 8, full: int = 0) -> str:
+    """Search the memory vault (durable knowledge that outlives the board --
+    a trap, a host's real layout, why a flag is off), not the board itself --
+    use search_messages for board traffic. Hybrid lexical+semantic, so an
+    exact identifier (a UUID, a PBI number, a hostname) is found as reliably
+    as a re-worded question.
+
+    Always refreshes the index first (only notes changed since the last
+    search are re-embedded, so this is cheap after the first call) --
+    a wiki post mirrored in by post_message is searchable immediately,
+    never stale because nobody remembered to re-index.
+
+    Pass `full` (a count) to also get the body of that many top hits inlined,
+    instead of following up with a second read for each one.
+
+    Requires Ollama running locally with the nomic-embed-text model pulled;
+    returns {"error": ...} rather than raising if it is not reachable.
+    """
+    try:
+        hits = vault_search.search(query, k=k)
+    except vault_search.VaultSearchUnavailable as exc:
+        return _dump({"error": str(exc)})
+    for hit in hits[:full]:
+        hit["body"] = vault_search.read_note(hit["path"])
+    return _dump({"hits": hits})
 
 
 @server.tool()

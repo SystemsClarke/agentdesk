@@ -278,9 +278,10 @@ def part_window(db_path: Path) -> None:
         conn = dbmod.connect(db_path)
         try:
             page.refresh_list(conn)
-            # values are (open, subject, by, updated, msgs); the thread id is
-            # the row's iid, and the list is newest-activity-first.
-            listed = [(page.tree.item(i)["values"][1], page.tree.item(i)["values"][2])
+            # values are (num, open, subject, by, updated, msgs); the thread
+            # id is the row's iid too (num is just that id, rendered), and
+            # the list is newest-activity-first.
+            listed = [(page.tree.item(i)["values"][2], page.tree.item(i)["values"][3])
                       for i in page.tree.get_children()]
             print("  the 'by' column, as the window builds it:")
             for subject, by in listed:
@@ -296,7 +297,7 @@ def part_window(db_path: Path) -> None:
                   cells["an old thread"], "claude")
 
             target = [i for i in page.tree.get_children()
-                      if page.tree.item(i)["values"][1] == "from the alpha session"]
+                      if page.tree.item(i)["values"][2] == "from the alpha session"]
             page.tree.selection_set(target[0])
             page._on_select()
             detail = page.msgs_txt.get("1.0", "end-1c")

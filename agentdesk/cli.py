@@ -11,6 +11,7 @@ allow-list, and register in Scheduled Tasks:
     AgentDesk.exe notify TITLE BODY   Windows toast, diagnostic CLI
     AgentDesk.exe prs [...]        PR-tracking CLI, args forwarded
     AgentDesk.exe vault [...]      vault archive CLI, args forwarded
+    AgentDesk.exe vault-search Q   search the memory vault (`agentdesk.vault_search`)
 
 This module is a thin dispatcher: it does not reimplement any behavior, it
 only imports the existing module's `main()`/`_main()` and calls it. Keeping
@@ -74,6 +75,10 @@ def main(argv: list[str] | None = None) -> int:
         sys.argv = ["agentdesk-vault", *rest]
         vault.main()
         return 0
+
+    if cmd == "vault-search":
+        from agentdesk import vault_search
+        return vault_search.main(rest)
 
     if cmd in ("-h", "--help", "help"):
         print(__doc__)

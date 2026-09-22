@@ -59,6 +59,20 @@ VAULT_NOTES = VAULT_DIR / "notes"
 VAULT_MAPS = VAULT_DIR / "maps"
 VAULT_PARKED = VAULT_AGENTDESK / "parked"
 
+# The search index's DATA half. This is derived from every note's text (an
+# embedding is a lossy but real encoding of what it was built from), so it is
+# as proprietary as the notes themselves and lives inside the vault repo for
+# the same reason VAULT_PARKED does -- never in agentdesk's own repo, which is
+# a different trust boundary. `_meta/` already holds non-note vault state
+# (Memory Protocol.md, Librarian state.md), so this is one more thing there,
+# not a new top-level folder to explain.
+#
+# The search SOFTWARE that reads and writes this folder is agentdesk/
+# vault_search.py -- code, not data, so it lives in this repo like every other
+# module. This split (code here, data there) is deliberate: see that module's
+# docstring.
+VAULT_SEARCH_DIR = VAULT_DIR / "_meta" / "search-index"
+
 # A settled question's full transcript. A subfolder of the app's own folder,
 # for the reason VAULT_AGENTDESK's comment already gives -- raw text does not go
 # in notes/ -- plus one of its own: the daily traffic file is one file per day
