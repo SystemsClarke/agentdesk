@@ -20,7 +20,7 @@ import webbrowser
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from agentdesk import db, identity, mdview, notify, paths, screech, settings, usage
+from agentdesk import db, identity, mdview, notify, paths, screech, settings, usage, vscode_themes
 
 PALETTES = {
     "monokai-pro": {
@@ -38,7 +38,6 @@ PALETTES = {
         "cy": "#1c8ca8", "pu": "#7058be", "on_bar": "#faf4f2", "textsel": "#d3cdcc",
     },
 }
-THEME_ORDER = ["monokai-pro", "monokai-pro-light"]
 
 LOGO = [("█▀█", "█▀█"), ("█▀▀", "█▄█"), ("█▀▀", "██▄"), ("█▄ █", "█ ▀█"), ("▀█▀", " █ "),
         ("█▀▄", "█▄▀"), ("█▀▀", "██▄"), ("█▀", "▄█"), ("█▄▀", "█ █")]
@@ -193,9 +192,16 @@ class TerminalView:
         self.app = app
         self.root = root
         self.prefs = settings.load()
-        if self.prefs.get("theme") not in PALETTES:
-            self.prefs["theme"] = THEME_ORDER[0]
-        self.pal = PALETTES[self.prefs["theme"]]
+        self.palettes = dict(PALETTES)
+        try:
+            found = vscode_themes.cached()
+            self.palettes.update({k: v for k, v in found.items() if v["label"] not in ("Monokai Pro",)})
+        except Exception:
+            pass  # no VS Code, or an unreadable theme: the two built-in palettes still work
+        self.theme_order = list(self.palettes)
+        if self.prefs.get("theme") not in self.palettes:
+            self.prefs["theme"] = "monokai-pro"
+        self.pal = self.palettes[self.prefs["theme"]]
 
         self.screen = "main"
         self.channel = "question"
@@ -1205,7 +1211,8 @@ class TerminalView:
 
     def _option_items(self) -> list:
         return [
-            ("Theme", self.pal["label"], "theme"),
+            ("Theme", f"{self.pal['label']}   ({self.theme_order.index(self.prefs['theme']) + 1} of "
+                      f"{len(self.theme_order)}, ←/→ to browse, from your VS Code themes)", "theme"),
             ("Modem screech on connect", "ON" if self.prefs.get("screech") else "off", "screech"),
             ("Play the screech now", "↵", "play"),
             ("Font size", f"{self.prefs.get('font_size', 11)} pt   (←/→ or Ctrl +/-)", "font"),
@@ -1315,8 +1322,8 @@ class TerminalView:
     def _change_option(self, delta: int) -> None:
         key = self._option_items()[self.sel_opt][2]
         if key == "theme":
-            i = THEME_ORDER.index(self.prefs["theme"])
-            self.set_theme(THEME_ORDER[(i + (delta or 1)) % len(THEME_ORDER)])
+            i = self.theme_order.index(self.prefs["theme"])
+            self.set_theme(self.theme_order[(i + (delta or 1)) % len(self.theme_order)])
         elif key == "screech":
             self.prefs["screech"] = not self.prefs.get("screech")
             settings.save(self.prefs)
@@ -1348,7 +1355,7 @@ class TerminalView:
     def set_theme(self, key: str) -> None:
         self.prefs["theme"] = key
         settings.save(self.prefs)
-        self.pal = PALETTES[key]
+        self.pal = self.palettes[key]
         self._apply_theme()
         self.render()
 
@@ -1604,8 +1611,8 @@ class TerminalView:
             self.goto("main")
             return "break"
         if ch == "t":
-            i = THEME_ORDER.index(self.prefs["theme"])
-            self.set_theme(THEME_ORDER[(i + 1) % len(THEME_ORDER)])
+            i = self.theme_order.index(self.prefs["theme"])
+            self.set_theme(self.theme_order[(i + 1) % len(self.theme_order)])
             return "break"
         if ch == "g":
             self.flash("+++ATH0 · NO CARRIER", "or", "b")

@@ -267,6 +267,16 @@ def main() -> int:
     v.read_view.yview_moveto(1.0)
     shot("12-markdown-bottom")
 
+    broken = []
+    for key in list(v.theme_order):
+        try:
+            v.set_theme(key)
+            app.root.update_idletasks()
+        except Exception as exc:
+            broken.append(f"{key}: {exc}")
+    check("every installed theme applies cleanly", not broken, f"{len(v.theme_order)} themes; {broken[:2]}")
+    v.set_theme("monokai-pro")
+
     v.zoom(1)
     app.root.update()
     consistent(app, "after zoom in")
