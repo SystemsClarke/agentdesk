@@ -230,6 +230,11 @@ def main() -> int:
         "    return [t + i * gap for i, t in enumerate(timers)]",
         "```",
         "",
+        "```chart",
+        '{"type":"line","title":"Compile time","unit":"min","x":["09-01","09-08","09-15","09-22"],'
+        '"series":{"JAWS":[41,38,33,29]},"goal":25}',
+        "```",
+        "",
         "- [x] stagger the nightly timers",
         "- [ ] add SYMTOOLS to more agents",
         "  - survey the fleet first",
@@ -244,7 +249,9 @@ def main() -> int:
     v.open_thread(md_tid)
     app.root.update()
     shown = v.read_view.get("1.0", "end")
-    check("a markdown table renders as a boxed grid", "┌" in shown and "┼" in shown and "└" in shown)
+    images = len(v.read_view.image_names())
+    check("the markdown table and the ```chart render as images", images >= 2, f"{images} images")
+    check("no raw table or chart JSON is left in the text", "| lane |" not in shown and '"type":"line"' not in shown)
     check("a mermaid flowchart is drawn, not shown as source", "►" in shown and "graph LR" not in shown)
     check("a mermaid sequence diagram is drawn", "OK to land?" in shown and "->>" not in shown)
     check("a mermaid pie renders as bars", "█" in shown and "Where the time goes" in shown)

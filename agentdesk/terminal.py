@@ -416,6 +416,8 @@ class TerminalView:
         b.tag_configure("md-diagram", font=(mono, size))
         b.tag_configure("md-zebra", background=p["panel"])
         b._md_char_px = self.font.measure("0")
+        from agentdesk import charts
+        b._md_chart_theme = charts.theme_from_palette(p)
         b.tag_raise("rcpt")
         self.lines_view.tag_raise("sel")
         _titlebar(self.root, p)

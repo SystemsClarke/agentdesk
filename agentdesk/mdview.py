@@ -16,7 +16,7 @@ import tkinter as tk
 import tkinter.font as tkfont
 import webbrowser
 
-from agentdesk import mdrich
+from agentdesk import charts, mdrich
 
 # Inline spans. Code first so a backtick span is never further marked up, bold before
 # italic so **x** is never two *x*, images before links, explicit links before bare URLs.
@@ -132,6 +132,7 @@ def render(widget: tk.Text, text: str) -> None:
     """
     if widget.index("end-1c") == "1.0":
         widget._md_links = {}
+        widget._md_images = []
     lines = text.split("\n")
     i = 0
     while i < len(lines):
@@ -212,9 +213,38 @@ def _width(widget: tk.Text) -> int:
     return capacity_chars(widget) or 60
 
 
+def _scale(widget: tk.Text) -> float:
+    try:
+        return max(1.0, widget.winfo_fpixels("1i") / 96.0)
+    except tk.TclError:
+        return 1.0
+
+
+def _chart_theme(widget: tk.Text):
+    return getattr(widget, "_md_chart_theme", None) or "light"
+
+
+def _image(widget: tk.Text, img) -> None:
+    from PIL import ImageTk
+    photo = ImageTk.PhotoImage(img, master=widget)
+    if not hasattr(widget, "_md_images"):
+        widget._md_images = []
+    widget._md_images.append(photo)  # Tk only holds a weak reference; this keeps it alive
+    widget.image_create("end", image=photo, padx=12, pady=6)
+    _newline(widget)
+
+
 def _fence(widget: tk.Text, lang: str, block: list) -> None:
-    """A code block with a language label and highlighting; Mermaid is drawn as a diagram."""
+    """A code block with a language label and highlighting; Mermaid is drawn as a diagram,
+    and a ```chart JSON spec as a chart image (see charts.CHART_HELP)."""
     width = _width(widget)
+    if lang == "chart":
+        try:
+            spec = charts.parse("\n".join(block))
+            _image(widget, charts.render(spec, _chart_theme(widget), _scale(widget)))
+            return
+        except charts.ChartError as exc:
+            lang = f"chart · {exc}"
     if lang == "mermaid":
         drawn, ok = mdrich.mermaid(block, width)
         if ok and max(sum(len(t) for t, _ in segs) for segs in drawn) <= width:
@@ -510,8 +540,18 @@ def _boxed_row(widget: tk.Text, parts: list, widths: list, aligns: list, tags: t
 
 
 def _table(widget: tk.Text, header: list, delim: list, rows: list) -> None:
-    """A table as a boxed monospace grid, fitted to the pane. No cell is ever dropped."""
+    """A table as a boxed monospace grid, fitted to the pane. No cell is ever dropped.
+    In the terminal view (which sets _md_chart_theme) it is drawn as a crisp image instead."""
     ncols = max([len(header), len(delim)] + [len(r) for r in rows])
+    if getattr(widget, "_md_chart_theme", None):
+        px = widget.winfo_width()
+        k = _scale(widget)
+        max_w = int((px - 60) / k) if px > 100 else 900
+        aligns = ["r" if a == "r" else "c" if a == "c" else "l" for a in _aligns(delim, ncols)]
+        explicit = any(_DELIM_CELL.match(c) and ":" in c for c in delim)
+        _image(widget, charts.table([_plain(c) for c in header], [[_plain(c) for c in r] for r in rows],
+                                    widget._md_chart_theme, aligns if explicit else None, max_w, k))
+        return
 
     def cells_of(row: list) -> list:
         return [row[j] if j < len(row) else "" for j in range(ncols)]
