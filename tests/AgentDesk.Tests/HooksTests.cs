@@ -48,6 +48,19 @@ public sealed class HooksTests : IDisposable
     }
 
     [Fact]
+    public async Task Merge_notice_reaches_the_requesting_session_labelled_as_GitHub_not_John()
+    {
+        using (var db = store.Open())
+            db.Reply(thread, "agentdesk", BoardDb.Agent, "Merged: Fix the build", meta: new System.Text.Json.Nodes.JsonObject { ["kind"] = "pr-merged" });
+        Assert.Equal("", await hooks.Run("context", Input("S2")));
+        var text = await hooks.Run("context", Input("S1"));
+        Assert.Contains("PULL REQUEST UPDATE from GitHub", text);
+        Assert.Contains("Merged: Fix the build", text);
+        Assert.DoesNotContain("JOHN REPLIED", text);
+        Assert.Equal("", await hooks.Run("context", Input("S1")));
+    }
+
+    [Fact]
     public async Task Wait_returns_as_soon_as_John_replies()
     {
         var waiting = hooks.Wait((int)thread, default);

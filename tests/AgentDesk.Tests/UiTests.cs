@@ -135,7 +135,7 @@ public sealed class UiTests : IDisposable
         Assert.Equal("merged|", Row(merged));
         Assert.Equal("open|gh auth login", Row(failing));
         using (var db = store.Open())
-            Assert.StartsWith("agentdesk|pr-merged|Merged: One!\n\no/r#1 - https://github.com/o/r/pull/1\n\nThis was the pull request claude in proj, session ab12 asked",
+            Assert.StartsWith("agentdesk|pr-merged|Merged: One!\n\no/r#1 - https://github.com/o/r/pull/1\n\nclaude in proj, session ab12: your pull request is merged",
                 db.Scalar("SELECT author || '|' || json_extract(meta, '$.kind') || '|' || body FROM messages WHERE thread_id=$t ORDER BY id DESC LIMIT 1", ("t", thread)) as string);
         var data = Directory.CreateDirectory(path + ".prs").FullName;
         Assert.Equal(2, JsonDocument.Parse(await board.Heartbeats(data)).RootElement.GetProperty("prs").GetArrayLength());

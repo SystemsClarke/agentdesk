@@ -67,9 +67,11 @@ public sealed class PrChecker(BoardStore store, Func<string, JsonObject>? gh = n
             try
             {
                 db.Reply((long)thread, "agentdesk", BoardDb.Agent, settled == "merged"
-                    ? $"Merged: {title}\n\n{where}\n\nThis was the pull request {who} asked you to merge. It is off your merge list."
-                    : $"Closed without merging: {title}\n\n{where}\n\n{who} asked you to merge this one. It was closed rather than merged, "
-                        + "so it is off your merge list -- reopen it if that was not the intent.", meta: new JsonObject { ["kind"] = $"pr-{settled}" });
+                    ? $"Merged: {title}\n\n{where}\n\n{who}: your pull request is merged, and off John's merge list."
+                        + "Pull the base branch before building on it, and post on this thread if there is follow-up."
+                    : $"Closed without merging: {title}\n\n{where}\n\n{who}: your pull request was closed rather than merged, so it is off "
+                        + "John's merge list. Don't reopen it on your own; ask him on this thread if the change is still wanted.",
+                    meta: new JsonObject { ["kind"] = $"pr-{settled}" });
             }
             catch { db.Exec("UPDATE pull_requests SET notified_ts=NULL WHERE id=$id", ("id", id)); throw; } // claimed and never sent is worse than twice
         }

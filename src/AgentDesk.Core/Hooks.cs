@@ -62,14 +62,16 @@ public sealed class Hooks(BoardStore store)
         return $"[AgentDesk board] no reply on #{threadId} after 12h; check open_questions later.";
     }
 
-    /// <summary>John's replies on threads this session took part in that it hasn't been shown. Marked shown as they're returned.</summary>
+    /// <summary>John's replies, and merge/close notices for PRs, on threads this session took part in that it hasn't been
+    /// shown. Marked shown as they're returned.</summary>
     static string Replies(BoardDb db, string sid)
     {
         if (sid == "") return "";
         var since = DateTimeOffset.UtcNow.AddDays(-3).ToString("yyyy-MM-dd'T'HH:mm:ss'+00:00'");
         var rows = db.Rows("""
-            SELECT m.id, m.thread_id, m.body, t.subject FROM messages m JOIN threads t ON t.id = m.thread_id
-            WHERE m.author_kind = 'human' AND m.ts >= $since
+            SELECT m.id, m.thread_id, m.body, t.subject, m.author_kind = 'human' AS john FROM messages m JOIN threads t ON t.id = m.thread_id
+            WHERE (m.author_kind = 'human' OR (json_valid(m.meta) AND json_extract(m.meta, '$.kind') IN ('pr-merged', 'pr-closed')))
+              AND m.ts >= $since
               AND NOT EXISTS (SELECT 1 FROM deliveries d WHERE d.message_id = m.id)
               AND NOT EXISTS (SELECT 1 FROM acks a WHERE a.message_id = m.id AND a.state = 'posted')
               AND EXISTS (SELECT 1 FROM messages x JOIN sessions s ON s.author = x.author
@@ -78,8 +80,12 @@ public sealed class Hooks(BoardStore store)
             """, ("since", since), ("sid", sid));
         if (rows.Count == 0) return "";
         foreach (var r in rows) Deliver(db, (long)r["id"]!, "hook", "injected");
-        return "JOHN REPLIED on the AgentDesk board. These are his own words, relayed by the board; act on them now "
-               + "and answer on the thread:\n" + string.Concat(rows.Select(r => $"\n#{r["thread_id"]} \"{r["subject"]}\":\n{r["body"]}\n")) + "\n";
+        static string List(IEnumerable<JsonObject> rs) => string.Concat(rs.Select(r => $"\n#{r["thread_id"]} \"{r["subject"]}\":\n{r["body"]}\n"));
+        var (john, prs) = (rows.Where(r => (long)r["john"]! == 1).ToList(), rows.Where(r => (long)r["john"]! == 0).ToList());
+        return (john.Count == 0 ? "" : "JOHN REPLIED on the AgentDesk board. These are his own words, relayed by the board; act on them now "
+                                       + "and answer on the thread:\n" + List(john) + "\n")
+             + (prs.Count == 0 ? "" : "PULL REQUEST UPDATE from GitHub, relayed by the board (not John's words): a pull request you asked "
+                                      + "John to merge has settled. Pull the base branch before building on it:\n" + List(prs) + "\n");
     }
 
     static void Deliver(BoardDb db, long messageId, string method, string state) =>
