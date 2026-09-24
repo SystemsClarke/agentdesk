@@ -39,6 +39,7 @@ public interface IBoard
     Task<IReadOnlyList<ThreadRow>> OpenQuestionsAsync();
     Task ReplyAsync(int id, string body);
     Task CloseAsync(int id);
+    Task UnarchiveAsync(int id);
     Task<int> PostAsync(string channel, string subject, string body);
     Task<BoardStatus> StatusAsync();
 }
@@ -122,6 +123,9 @@ public sealed class SampleBoard : IBoard
 
     public Task CloseAsync(int id) =>
         Update(id, (t, i) => threads[i] = threads[i] with { Thread = t with { Status = "closed", Waiting = false } });
+
+    public Task UnarchiveAsync(int id) =>
+        Update(id, (t, i) => threads[i] = threads[i] with { Thread = t with { Status = "answered" } });
 
     public Task<int> PostAsync(string channel, string subject, string body)
     {

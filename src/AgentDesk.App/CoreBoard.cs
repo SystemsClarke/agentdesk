@@ -48,7 +48,7 @@ public sealed class CoreBoard : IBoard, IDisposable
 
     static ThreadRow Row(JsonElement t) => new(Int(t, "id") is var id and > 0 ? id : Int(t, "thread_id"), Str(t, "channel") ?? "question",
         Str(t, "status") ?? "open", Str(t, "subject") ?? "", Str(t, "opened_by") ?? "", Ts(t, "created_ts"), Ts(t, "updated_ts"),
-        Int(t, "message_count"), Int(t, "waiting") != 0, Holder: Meta(t, "assignee"));
+        Int(t, "message_count"), Int(t, "waiting") != 0, Str(t, "last_author"), Str(t, "delivery"), Meta(t, "assignee"));
 
     static Post ToPost(JsonElement m) => new(Str(m, "author") ?? "", Ts(m, "ts"), Int(m, "thread_id"), Str(m, "subject") ?? "",
         Str(m, "channel") ?? "", Kind: Meta(m, "kind"), Via: Meta(m, "via"));
@@ -79,8 +79,10 @@ public sealed class CoreBoard : IBoard, IDisposable
 
     public Task CloseAsync(int id) => Call("ui:close", new { thread_id = id });
 
-    public Task<int> PostAsync(string channel, string subject, string body) =>
-        throw new NotSupportedException("new posts need a ui:post request in the core");
+    public Task UnarchiveAsync(int id) => Call("ui:unarchive", new { thread_id = id });
+
+    public async Task<int> PostAsync(string channel, string subject, string body) =>
+        Int(await Call("ui:post", new { channel, subject, body }), "thread_id");
 
     public async Task<BoardStatus> StatusAsync()
     {
@@ -90,9 +92,17 @@ public sealed class CoreBoard : IBoard, IDisposable
         var bios = (await List(new { channel = "discussion", limit = 300 })).Where(t => t.Subject.StartsWith("bio: "))
             .GroupBy(t => t.Subject[5..].Trim()).ToDictionary(g => g.Key, g => g.First().Id);
         var filed = (await List(new { channel = "question", status = "archived", limit = 1 })).FirstOrDefault();
+        var beat = await Call("ui:status");
+        var worker = beat.GetProperty("worker");
+        var slack = beat.GetProperty("slack") is { ValueKind: JsonValueKind.Object } s ? s : default;
+        var relay = slack.ValueKind == JsonValueKind.Object && slack.TryGetProperty("last_relay", out var r) && r.ValueKind == JsonValueKind.Object
+            ? new Post("john", Ts(r, "ts"), Int(r, "thread_id"), "", "question") : null;
         return new([], [.. recent.Take(5)], [.. recent.Where(p => p.Author != "john" && p.Ts > DateTimeOffset.Now.AddDays(-1)).DistinctBy(p => p.Author)],
             bios, john, recent.TakeWhile(p => p.Author != "john").Count(p => p.Kind != "read-receipt"), filed,
-            false, null, [], null, 15, null, [], [], "no feed yet (add scripts/claude_usage_feed.py to your status line)", [], "");
+            worker.GetProperty("running").GetBoolean(), Int(worker, "held") is var held and > 0 ? held : null,
+            [.. worker.GetProperty("events").EnumerateArray().Select(e => new WorkEvent(Ts(e, "ts"), Str(e, "kind") ?? "", Str(e, "body") ?? ""))],
+            slack.ValueKind == JsonValueKind.Object ? Ts(slack, "ts") : null, slack.ValueKind == JsonValueKind.Object && Int(slack, "poll_s") is var poll and > 0 ? poll : 15,
+            relay, [], [], "no feed yet (add scripts/claude_usage_feed.py to your status line)", [], "");
     }
 
     public void Dispose() => core.Dispose();

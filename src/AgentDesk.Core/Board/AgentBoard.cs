@@ -126,6 +126,31 @@ public sealed partial class AgentBoard(BoardStore store, IPythonPlugins plugins,
 
     public Task<string> CloseQuestion(int threadId) => Run(db => Ok(("closed", db.CloseQuestion(threadId))));
 
+    public Task<string> JohnPosts(string channel, string subject, string body) => string.IsNullOrWhiteSpace(body) ? Error("body must not be blank")
+        : Run(db => Ok(("thread_id", db.StartThread(channel, string.IsNullOrWhiteSpace(subject) ? "(no subject)" : subject, BoardDb.John, BoardDb.Human, body))));
+
+    public Task<string> Unarchive(int threadId) => Run(db => Ok(("unarchived", db.Unarchive(threadId))));
+
+    /// <summary>The heartbeats the Slack bridge and the crew worker write into the data folder, read as the Tk window read them.</summary>
+    public Task<string> Heartbeats(string data) => Run(db =>
+    {
+        static JsonObject? Load(string file) { try { return JsonNode.Parse(File.ReadAllText(file)) as JsonObject; } catch (Exception) { return null; } }
+        var worker = Load(Path.Combine(data, "worker.state")) ?? [];
+        worker["running"] = worker["pid"] is JsonValue p && p.TryGetValue(out int pid) && Alive(pid);
+        var item = worker["item"] is JsonValue i && i.TryGetValue(out int id) ? id
+            : db.Scalar("SELECT id FROM threads WHERE channel='work' AND status='claimed' ORDER BY updated_ts DESC LIMIT 1") as long?;
+        worker["held"] = item;
+        worker["events"] = BoardDb.Arr(item is null ? [] : db.Rows(
+            "SELECT * FROM (SELECT ts, kind, body, id FROM work_events WHERE work_id=$w ORDER BY id DESC LIMIT 80) ORDER BY id", ("w", item)));
+        return new JsonObject { ["slack"] = Load(Path.Combine(data, "slack_bridge.state")), ["worker"] = worker };
+    });
+
+    static bool Alive(int pid)
+    {
+        try { using var p = System.Diagnostics.Process.GetProcessById(pid); return !p.HasExited; }
+        catch (Exception) { return false; }
+    }
+
     public Task<string> OpenQuestions(Caller caller, bool includeArchived, string? author) => Run(db =>
     {
         var result = new JsonObject { ["open_questions"] = BoardDb.Arr(db.OpenQuestions(includeArchived)) };

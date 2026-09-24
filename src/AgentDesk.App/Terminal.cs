@@ -735,8 +735,16 @@ public partial class MainWindow
 
     void ReaderUnarchive()
     {
-        if (channel == "question" && readTid != null)
-            Flash($"Bringing #{readTid} back needs the core; it lands with CoreBoard.", "ye");
+        if (channel == "question" && readTid is int tid)
+            _ = Unarchive(tid);
+    }
+
+    async Task Unarchive(int tid)
+    {
+        await board.UnarchiveAsync(tid);
+        showArchived = false; // it lives on the Active list now
+        await RefreshAsync();
+        Flash($"#{tid} is back on the desk.", "gr");
     }
 
     void Page()
@@ -856,7 +864,10 @@ public partial class MainWindow
             _ = RefreshAsync();
         }
         else if (s == "list" && ch == 'u' && channel == "question" && showArchived)
-            Flash("Bringing a question back needs the core; it lands with CoreBoard.", "ye");
+        {
+            if (rows["question"].Count > 0)
+                _ = Unarchive(rows["question"][Sel].Id);
+        }
         else if (s == "prs" && ch == 'c')
             Flash("Checking GitHub for merges...", "cy");
         else if (s == "prs" && ch == 'h')

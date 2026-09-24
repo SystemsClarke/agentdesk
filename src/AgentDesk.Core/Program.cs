@@ -38,6 +38,9 @@ Task<string> Ui(string op, Args a, Func<string, Task> push, CancellationToken go
     "reply" => board.JohnReplies(a.Int("thread_id"), a.String("body")),
     "thread" => board.PeekThread(a.Int("thread_id")),
     "close" => board.CloseQuestion(a.Int("thread_id")),
+    "post" => board.JohnPosts(a.String("channel"), a.String("subject", ""), a.String("body")),
+    "unarchive" => board.Unarchive(a.Int("thread_id")),
+    "status" => board.Heartbeats(data),
     "subscribe" => Task.FromResult(watch.Subscribe(push, gone)),
     _ => Task.FromResult(Tools.Error($"unknown request: ui:{op}")),
 };

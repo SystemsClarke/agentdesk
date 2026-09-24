@@ -43,6 +43,63 @@ public sealed class UiTests : IDisposable
     }
 
     [Fact]
+    public async Task List_threads_carries_the_last_word_and_how_johns_reply_landed()
+    {
+        await board.JohnReplies((int)thread, "dev");
+        using (var db = store.Open()) db.DeliverPendingAcks("builder", "ack");
+        var row = JsonDocument.Parse(await board.ListThreads("question", null, 10, true)).RootElement.GetProperty("threads")[0];
+        Assert.Equal("john", row.GetProperty("last_author").GetString());
+        Assert.StartsWith("picked-up|", row.GetProperty("delivery").GetString());
+    }
+
+    [Fact]
+    public async Task Post_starts_a_thread_as_john()
+    {
+        var tid = JsonDocument.Parse(await board.JohnPosts("discussion", "Hello", "hi all")).RootElement.GetProperty("thread_id").GetInt64();
+        using var db = store.Open();
+        Assert.Equal("john|human|fyi", db.Scalar("SELECT m.author || '|' || m.author_kind || '|' || t.status FROM messages m JOIN threads t ON t.id=m.thread_id WHERE t.id=$t", ("t", tid)));
+        Assert.Contains("\"error\"", await board.JohnPosts("discussion", "x", " "));
+        Assert.Contains("\"error\"", await board.JohnPosts("nope", "x", "y"));
+    }
+
+    [Fact]
+    public async Task Unarchive_restores_the_settled_status_and_holds_it_off_the_sweep()
+    {
+        using (var db = store.Open()) db.Exec("UPDATE threads SET status='archived', meta='{\"archived_from\": \"closed\"}' WHERE id=$t", ("t", thread));
+        Assert.Contains("\"unarchived\": true", await board.Unarchive((int)thread));
+        using (var db = store.Open())
+            Assert.Equal("closed|1|", db.Scalar("SELECT status || '|' || json_extract(meta,'$.archive_hold') || '|' || COALESCE(json_extract(meta,'$.archived_from'),'') FROM threads WHERE id=$t", ("t", thread)));
+        Assert.Contains("\"unarchived\": false", await board.Unarchive((int)thread));
+    }
+
+    [Fact]
+    public async Task Status_reads_the_slack_and_worker_heartbeats()
+    {
+        var data = Directory.CreateDirectory(path + ".data").FullName;
+        File.WriteAllText(Path.Combine(data, "slack_bridge.state"), """{"ts": "2026-09-24T17:53:04+00:00", "poll_s": 15, "last_relay": {"ts": "2026-09-24T17:50:48+00:00", "thread_id": 3}}""");
+        File.WriteAllText(Path.Combine(data, "worker.state"), $$"""{"pid": {{Environment.ProcessId}}, "item": null}""");
+        long work;
+        using (var db = store.Open())
+        {
+            work = db.StartThread("work", "Do it", "builder", "agent", "please");
+            db.ClaimTask(work, "crew");
+            db.Exec("INSERT INTO work_events (work_id, ts, kind, body) VALUES ($w, '2026-09-24T17:00:00+00:00', 'start', 'claimed')", ("w", work));
+        }
+        var doc = JsonDocument.Parse(await board.Heartbeats(data)).RootElement;
+        var w = doc.GetProperty("worker");
+        Assert.True(w.GetProperty("running").GetBoolean());
+        Assert.Equal(work, w.GetProperty("held").GetInt64());
+        Assert.Equal("start", w.GetProperty("events")[0].GetProperty("kind").GetString());
+        Assert.Equal(3, doc.GetProperty("slack").GetProperty("last_relay").GetProperty("thread_id").GetInt32());
+        File.Delete(Path.Combine(data, "worker.state"));
+        File.Delete(Path.Combine(data, "slack_bridge.state"));
+        doc = JsonDocument.Parse(await board.Heartbeats(data)).RootElement;
+        Assert.False(doc.GetProperty("worker").GetProperty("running").GetBoolean());
+        Assert.Equal(JsonValueKind.Null, doc.GetProperty("slack").ValueKind);
+        Directory.Delete(data);
+    }
+
+    [Fact]
     public async Task A_subscriber_is_pushed_a_write_made_elsewhere()
     {
         Log.Path = path + ".log";

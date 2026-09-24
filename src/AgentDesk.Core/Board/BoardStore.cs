@@ -296,6 +296,18 @@ public sealed partial class BoardDb : IDisposable
         return Exec("UPDATE threads SET status='closed', updated_ts=$ts, meta=$meta WHERE id=$tid", ("ts", NowIso()), ("meta", Py.Dumps(meta)), ("tid", threadId)) == 1;
     }
 
+    /// <summary>John brings an archived question back (db.py unarchive_thread): the status it was settled with, held off the sweep. False if not archived.</summary>
+    public bool Unarchive(long threadId)
+    {
+        var t = Thread(threadId);
+        if (Str(t["status"]) != "archived") return false;
+        var meta = ParseObject(Str(t["meta"])) ?? [];
+        var settled = Str(meta["archived_from"]) is { Length: > 0 } s ? s : "answered";
+        meta.Remove("archived_from");
+        meta["archive_hold"] = true;
+        return Exec("UPDATE threads SET status=$s, updated_ts=$ts, meta=$meta WHERE id=$tid", ("s", settled), ("ts", NowIso()), ("meta", Py.Dumps(meta)), ("tid", threadId)) == 1;
+    }
+
     // ---- read receipts: once per (agent, thread) by PRIMARY KEY; no presence, no updated_ts bump
 
     public bool PostReadReceipt(long threadId, string agent, string body)
