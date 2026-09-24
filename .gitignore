@@ -17,7 +17,7 @@ __pycache__/
 *.db-shm
 archive/
 
-# Nuitka packaging build output -- rebuilt from agentdesk/cli.py, not source.
+# Local build state: build/agentdesk-cert-thumbprint.txt names this machine's signing cert for build.ps1 -Package.
 build/
 
 # .NET build output

@@ -201,7 +201,6 @@ public sealed class UiTests : IDisposable
     [Fact]
     public async Task A_subscriber_is_pushed_a_write_made_elsewhere()
     {
-        Log.Path = path + ".log";
         Environment.SetEnvironmentVariable("AGENTDESK_DATA", Path.GetTempPath()); // were the core ever auto-started, not the live board
         Environment.SetEnvironmentVariable("AGENTDESK_PIPE", $"agentdesk-test-{Guid.NewGuid():N}");
         var watch = new BoardWatch(store);

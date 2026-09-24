@@ -1,12 +1,7 @@
-# MCP client/server SDK for agent communication over stdio/HTTP
-mcp>=2.2.0
-# System tray icon support for the desktop agent UI
-pystray>=0.19.5
-# Image handling for tray icons and screenshots
+# The Python half (see README): the crew, the core's vault plugin, backup and the Slack bridge.
+# Chart images for the Slack bridge (agentdesk/charts.py)
 Pillow>=12.3.0
-# Local speech-to-text for Ctrl+D dictation (agentdesk/dictate.py) -- runs
-# Nemotron-Speech-Streaming-EN-0.6B as onnxruntime, no torch/CUDA needed.
-sherpa-onnx>=1.10.0
-# Microphone capture for dictation.
-sounddevice>=0.5.0
+# Embedding search over the memory vault (agentdesk/vault_search.py)
 numpy>=1.26
+# Slack Socket Mode for scripts/slack_bridge.py
+slack_bolt>=1.30.0
