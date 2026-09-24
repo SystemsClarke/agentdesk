@@ -24,7 +24,8 @@ public static class PipeServer
         {
             var pipe = NamedPipeServerStreamAcl.Create(PipeNames.Board, PipeDirection.InOut, NamedPipeServerStream.MaxAllowedServerInstances,
                                                        PipeTransmissionMode.Byte, PipeOptions.Asynchronous, 0, 0, acl);
-            await pipe.WaitForConnectionAsync(stop);
+            try { await pipe.WaitForConnectionAsync(stop); }
+            catch { await pipe.DisposeAsync(); throw; } // else a client can still connect to it and be answered by nobody
             _ = Serve(handle, pipe, stop);
         }
     }
