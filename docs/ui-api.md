@@ -22,7 +22,8 @@ Every reply is a JSON document. A failure is `{"error": "..."}` (bad or missing 
 | `ui:close` | `thread_id` | John closes a question without answering: status `closed`, `archive_hold` cleared so the sweep files it. Not a question, or already archived: nothing changes. | `{"ok": true, "closed": true\|false}` |
 | `ui:post` | `channel`, `subject`, `body` | Starts a thread as John (`john`, kind `human`). A blank subject becomes `(no subject)`; a blank body or an unknown channel is an error. | `{"ok": true, "thread_id": N}` |
 | `ui:unarchive` | `thread_id` | Brings an archived question back with the status it was settled with (`archived_from`, else `answered`) and sets `archive_hold` so the sweep leaves it. Posts nothing. Not archived: nothing changes. | `{"ok": true, "unarchived": true\|false}` |
-| `ui:status` | none | The heartbeat files in the data folder, read as the Tk window read them. `slack` is `slack_bridge.state` as written (`ts`, `poll_s`, `last_relay`), or `null`; up means `ts` is under 90 s old. `worker` is `worker.state` plus `running` (its pid is alive), `held` (its `item`, else the newest claimed work item) and `events` (that item's newest 80 `work_events`, oldest first). `usage` is the Claude plan meter from `claude_usage.json` (usage.py): `lines` rotate on the main menu prompt, `summary` is SysOp's Claude plan row. | `{"slack": {...}\|null, "worker": {...}, "usage": {"lines": [...], "summary": "..."}}` |
+| `ui:status` | none | The heartbeat files in the data folder, read as the Tk window read them. `slack` is `slack_bridge.state` as written (`ts`, `poll_s`, `last_relay`), or `null`; up means `ts` is under 90 s old. `worker` is `worker.state` plus `running` (its pid is alive), `held` (its `item`, else the newest claimed work item) and `events` (that item's newest 80 `work_events`, oldest first). `usage` is the Claude plan meter from `claude_usage.json` (usage.py): `lines` rotate on the main menu prompt, `summary` is SysOp's Claude plan row. `prs` is the merge list, `pull_requests` rows newest first (200 at most, settled ones included; the window filters). | `{"slack": {...}\|null, "worker": {...}, "usage": {"lines": [...], "summary": "..."}, "prs": [...]}` |
+| `ui:check_prs` | none | Runs a merge-list check now instead of at the next minute (prs.py). The core checks every open PR through `gh pr view` 5 s after it starts and every minute after; only GitHub saying merged or closed takes a row off, and posts the notice on its thread as `agentdesk`. A failed check leaves the row open with `last_error`. | `{"ok": true}` |
 
 The agents' tools (`list_threads`, `open_questions`, `recent_messages`, `search_messages`, ...) are
 callable too, with the same names and arguments as the MCP server; the list reads are side-effect free.
@@ -35,8 +36,9 @@ read receipt) and `delivery`, `<state>|<ts>` for John's newest message on the th
 While a window is subscribed, the core refreshes the usage meter every 5 minutes (`claude -p /usage`, no model call)
 and pushes `board.changed` when it lands, as the Tk app did while it was open.
 
-Not in the core yet, so the window still shows placeholders for them: the PR list and its checker, the crew roster
-and Options' backend note, disabled notifier sinks, and the worker start/stop and Wake actions.
+Not in the core yet, so the window still shows placeholders for them: the crew roster and Options' backend note,
+disabled notifier sinks, the worker start/stop and Wake actions, and pr_scan.py (finding unregistered PRs on GitHub
+and their ladder triage line).
 
 ## Push events
 

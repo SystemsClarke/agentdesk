@@ -42,6 +42,8 @@ public interface IBoard
     Task UnarchiveAsync(int id);
     Task<int> PostAsync(string channel, string subject, string body);
     Task<BoardStatus> StatusAsync();
+    /// <summary>One of John's actions the core carries out (ui:check_prs, ...); returns its "said" line for the flash, if any.</summary>
+    Task<string?> ActAsync(string request, object? args = null);
 }
 
 /// <summary>A fake board with every state the screens draw, for building the window before the core API lands.</summary>
@@ -162,6 +164,8 @@ public sealed class SampleBoard : IBoard
             [new("builder"), new("app-dev", now.AddMinutes(-150), Resumed: true, SessionId: "7f3a91c2e4", Items: 4), new("verifier", FreshDue: true)],
             "the claude CLI on this PC, your subscription"));
     }
+
+    public Task<string?> ActAsync(string request, object? args = null) => Task.FromResult<string?>(null);
 
     Task Update(int id, Action<ThreadRow, int> change)
     {

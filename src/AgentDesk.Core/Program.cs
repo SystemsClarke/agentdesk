@@ -25,6 +25,8 @@ var hooks = new Hooks(store);
 var watch = new BoardWatch(store);
 Tray.Start(store);
 _ = Usage.KeepFresh(Path.Combine(data, "claude_usage.json"), watch);
+var prs = new PrChecker(store);
+_ = prs.Run(TimeSpan.FromSeconds(5));
 
 Log.Info($"core starting (pid {Environment.ProcessId})");
 await PipeServer.Run((req, push, gone) => req.Tool switch
@@ -44,6 +46,7 @@ Task<string> Ui(string op, Args a, Func<string, Task> push, CancellationToken go
     "post" => board.JohnPosts(a.String("channel"), a.String("subject", ""), a.String("body")),
     "unarchive" => board.Unarchive(a.Int("thread_id")),
     "status" => board.Heartbeats(data),
+    "check_prs" => Task.FromResult(prs.Poke()),
     "subscribe" => Task.FromResult(watch.Subscribe(push, gone)),
     _ => Task.FromResult(Tools.Error($"unknown request: ui:{op}")),
 };

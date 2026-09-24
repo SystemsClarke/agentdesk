@@ -869,7 +869,10 @@ public partial class MainWindow
                 _ = Unarchive(rows["question"][Sel].Id);
         }
         else if (s == "prs" && ch == 'c')
+        {
+            _ = board.ActAsync("ui:check_prs");
             Flash("Checking GitHub for merges...", "cy");
+        }
         else if (s == "prs" && ch == 'h')
         {
             showSettled = !showSettled;

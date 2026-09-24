@@ -119,6 +119,30 @@ public sealed class UiTests : IDisposable
     }
 
     [Fact]
+    public async Task Check_prs_settles_only_what_github_reports()
+    {
+        const string merged = "https://github.com/o/r/pull/1", failing = "https://github.com/o/r/pull/2";
+        using (var db = store.Open())
+        {
+            db.RegisterPr(merged, "o/r", 1, "one", "claude:proj#ab12", thread);
+            db.RegisterPr(failing, "o/r", 2, "two", "builder", null);
+        }
+        var checker = new PrChecker(store, url => url == merged ? new() { ["state"] = "MERGED", ["title"] = "One!" } : throw new GhError("gh auth login"));
+        _ = checker.Run(TimeSpan.FromHours(1));
+        Assert.Contains("\"ok\": true", checker.Poke());
+        string? Row(string url) { using var db = store.Open(); return db.Scalar("SELECT state || '|' || COALESCE(last_error, '') FROM pull_requests WHERE url=$u AND checked_ts IS NOT NULL", ("u", url)) as string; }
+        for (var i = 0; i < 100 && Row(failing) is null; i++) await Task.Delay(50);
+        Assert.Equal("merged|", Row(merged));
+        Assert.Equal("open|gh auth login", Row(failing));
+        using (var db = store.Open())
+            Assert.StartsWith("agentdesk|pr-merged|Merged: One!\n\no/r#1 - https://github.com/o/r/pull/1\n\nThis was the pull request claude in proj, session ab12 asked",
+                db.Scalar("SELECT author || '|' || json_extract(meta, '$.kind') || '|' || body FROM messages WHERE thread_id=$t ORDER BY id DESC LIMIT 1", ("t", thread)) as string);
+        var data = Directory.CreateDirectory(path + ".prs").FullName;
+        Assert.Equal(2, JsonDocument.Parse(await board.Heartbeats(data)).RootElement.GetProperty("prs").GetArrayLength());
+        Directory.Delete(data);
+    }
+
+    [Fact]
     public async Task A_subscriber_is_pushed_a_write_made_elsewhere()
     {
         Log.Path = path + ".log";
