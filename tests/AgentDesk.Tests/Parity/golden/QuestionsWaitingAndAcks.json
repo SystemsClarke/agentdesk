@@ -1,0 +1,668 @@
+{
+  "steps": [
+    {
+      "open_questions": []
+    },
+    {
+      "ok": true,
+      "thread_id": 5,
+      "wake_on_reply": {
+        "command": "wait 5",
+        "run_in_background": true
+      },
+      "next": "Start wake_on_reply.command now with Bash run_in_background=true. It exits the moment John answers, which wakes you with his reply. Then carry on with other work or end your turn; do not poll."
+    },
+    {
+      "error": "this question is 401 words; John asked for questions and replies in a question thread to stay under 400. State the decision you need in a few sentences and put any supporting detail in a linked discussion thread or document instead of in the question itself."
+    },
+    {
+      "ok": true,
+      "thread_id": 6,
+      "wake_on_reply": {
+        "command": "wait 6",
+        "run_in_background": true
+      },
+      "next": "Start wake_on_reply.command now with Bash run_in_background=true. It exits the moment John answers, which wakes you with his reply. Then carry on with other work or end your turn; do not poll."
+    },
+    {
+      "open_questions": [
+        {
+          "thread_id": 6,
+          "subject": "Just fits",
+          "opened_by": "claude-code:proj-beta#be7a",
+          "created_ts": "2026-01-01T00:16:43+00:00",
+          "updated_ts": "2026-01-01T00:16:43+00:00"
+        },
+        {
+          "thread_id": 5,
+          "subject": "Restart?",
+          "opened_by": "claude-code:proj-alpha#a1b2",
+          "created_ts": "2026-01-01T00:16:40+00:00",
+          "updated_ts": "2026-01-01T00:16:40+00:00"
+        }
+      ]
+    },
+    {
+      "open_questions": [
+        {
+          "thread_id": 6,
+          "subject": "Just fits",
+          "opened_by": "claude-code:proj-beta#be7a",
+          "created_ts": "2026-01-01T00:16:43+00:00",
+          "updated_ts": "2026-01-01T00:16:43+00:00"
+        },
+        {
+          "thread_id": 5,
+          "subject": "Restart?",
+          "opened_by": "claude-code:proj-alpha#a1b2",
+          "created_ts": "2026-01-01T00:16:40+00:00",
+          "updated_ts": "2026-01-01T00:16:40+00:00"
+        }
+      ]
+    },
+    {
+      "threads": [
+        {
+          "id": 3,
+          "created_ts": "2026-01-01T00:00:06+00:00",
+          "updated_ts": "2026-01-01T00:16:47+00:00",
+          "channel": "question",
+          "subject": "Old deploy question",
+          "opened_by": "claude-code:proj-beta#be7a",
+          "status": "answered",
+          "meta": "{}",
+          "message_count": 3,
+          "last_body": "Acknowledged - your reply has been picked up.",
+          "last_author": "john",
+          "delivery": "picked-up|2026-01-01T00:00:09+00:00",
+          "waiting": 0
+        },
+        {
+          "id": 6,
+          "created_ts": "2026-01-01T00:16:43+00:00",
+          "updated_ts": "2026-01-01T00:16:43+00:00",
+          "channel": "question",
+          "subject": "Just fits",
+          "opened_by": "claude-code:proj-beta#be7a",
+          "status": "open",
+          "meta": "{}",
+          "message_count": 1,
+          "last_body": "word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word",
+          "last_author": "claude-code:proj-beta#be7a",
+          "delivery": null,
+          "waiting": 1
+        },
+        {
+          "id": 5,
+          "created_ts": "2026-01-01T00:16:40+00:00",
+          "updated_ts": "2026-01-01T00:16:40+00:00",
+          "channel": "question",
+          "subject": "Restart?",
+          "opened_by": "claude-code:proj-alpha#a1b2",
+          "status": "open",
+          "meta": "{\"priority\": 2, \"ratio\": 1.5, \"whole\": 1, \"tags\": [\"a\", \"ü\"], \"mentions\": [\"x\"]}",
+          "message_count": 1,
+          "last_body": "Can I restart @builder's host? Ünïcode ✓",
+          "last_author": "claude-code:proj-alpha#a1b2",
+          "delivery": null,
+          "waiting": 1
+        }
+      ]
+    },
+    {
+      "threads": [
+        {
+          "id": 3,
+          "created_ts": "2026-01-01T00:00:06+00:00",
+          "updated_ts": "2026-01-01T00:16:47+00:00",
+          "channel": "question",
+          "subject": "Old deploy question",
+          "opened_by": "claude-code:proj-beta#be7a",
+          "status": "answered",
+          "meta": "{}",
+          "message_count": 3,
+          "last_body": "Acknowledged - your reply has been picked up.",
+          "last_author": "john",
+          "delivery": "picked-up|2026-01-01T00:00:09+00:00",
+          "waiting": 0
+        }
+      ]
+    },
+    {
+      "threads": [
+        {
+          "id": 3,
+          "created_ts": "2026-01-01T00:00:06+00:00",
+          "updated_ts": "2026-01-01T00:16:47+00:00",
+          "channel": "question",
+          "subject": "Old deploy question",
+          "opened_by": "claude-code:proj-beta#be7a",
+          "status": "answered",
+          "meta": "{}",
+          "message_count": 3,
+          "last_body": "Acknowledged - your reply has been picked up.",
+          "last_author": "john",
+          "delivery": "picked-up|2026-01-01T00:00:09+00:00",
+          "waiting": 0
+        },
+        {
+          "id": 6,
+          "created_ts": "2026-01-01T00:16:43+00:00",
+          "updated_ts": "2026-01-01T00:16:43+00:00",
+          "channel": "question",
+          "subject": "Just fits",
+          "opened_by": "claude-code:proj-beta#be7a",
+          "status": "open",
+          "meta": "{}",
+          "message_count": 1,
+          "last_body": "word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word",
+          "last_author": "claude-code:proj-beta#be7a",
+          "delivery": null,
+          "waiting": 1
+        },
+        {
+          "id": 5,
+          "created_ts": "2026-01-01T00:16:40+00:00",
+          "updated_ts": "2026-01-01T00:16:40+00:00",
+          "channel": "question",
+          "subject": "Restart?",
+          "opened_by": "claude-code:proj-alpha#a1b2",
+          "status": "open",
+          "meta": "{\"priority\": 2, \"ratio\": 1.5, \"whole\": 1, \"tags\": [\"a\", \"ü\"], \"mentions\": [\"x\"]}",
+          "message_count": 1,
+          "last_body": "Can I restart @builder's host? Ünïcode ✓",
+          "last_author": "claude-code:proj-alpha#a1b2",
+          "delivery": null,
+          "waiting": 1
+        }
+      ]
+    },
+    null,
+    {
+      "open_questions": [
+        {
+          "thread_id": 6,
+          "subject": "Just fits",
+          "opened_by": "claude-code:proj-beta#be7a",
+          "created_ts": "2026-01-01T00:16:43+00:00",
+          "updated_ts": "2026-01-01T00:16:43+00:00"
+        }
+      ]
+    },
+    {
+      "threads": [
+        {
+          "id": 5,
+          "created_ts": "2026-01-01T00:16:40+00:00",
+          "updated_ts": "2026-01-01T00:16:50+00:00",
+          "channel": "question",
+          "subject": "Restart?",
+          "opened_by": "claude-code:proj-alpha#a1b2",
+          "status": "answered",
+          "meta": "{\"priority\": 2, \"ratio\": 1.5, \"whole\": 1, \"tags\": [\"a\", \"ü\"], \"mentions\": [\"x\"]}",
+          "message_count": 2,
+          "last_body": "Yes, go ahead.",
+          "last_author": "john",
+          "delivery": "pending|2026-01-01T00:16:49+00:00",
+          "waiting": 0
+        },
+        {
+          "id": 3,
+          "created_ts": "2026-01-01T00:00:06+00:00",
+          "updated_ts": "2026-01-01T00:16:47+00:00",
+          "channel": "question",
+          "subject": "Old deploy question",
+          "opened_by": "claude-code:proj-beta#be7a",
+          "status": "answered",
+          "meta": "{}",
+          "message_count": 3,
+          "last_body": "Acknowledged - your reply has been picked up.",
+          "last_author": "john",
+          "delivery": "picked-up|2026-01-01T00:00:09+00:00",
+          "waiting": 0
+        },
+        {
+          "id": 6,
+          "created_ts": "2026-01-01T00:16:43+00:00",
+          "updated_ts": "2026-01-01T00:16:43+00:00",
+          "channel": "question",
+          "subject": "Just fits",
+          "opened_by": "claude-code:proj-beta#be7a",
+          "status": "open",
+          "meta": "{}",
+          "message_count": 1,
+          "last_body": "word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word",
+          "last_author": "claude-code:proj-beta#be7a",
+          "delivery": null,
+          "waiting": 1
+        }
+      ]
+    },
+    {
+      "thread": {
+        "id": 5,
+        "created_ts": "2026-01-01T00:16:40+00:00",
+        "updated_ts": "2026-01-01T00:16:50+00:00",
+        "channel": "question",
+        "subject": "Restart?",
+        "opened_by": "claude-code:proj-alpha#a1b2",
+        "status": "answered",
+        "meta": "{\"priority\": 2, \"ratio\": 1.5, \"whole\": 1, \"tags\": [\"a\", \"ü\"], \"mentions\": [\"x\"]}",
+        "waiting": 0
+      },
+      "messages": [
+        {
+          "id": 6,
+          "ts": "2026-01-01T00:16:40+00:00",
+          "thread_id": 5,
+          "author": "claude-code:proj-alpha#a1b2",
+          "author_kind": "agent",
+          "body": "Can I restart @builder's host? Ünïcode ✓",
+          "reply_to": null,
+          "meta": "{\"priority\": 2, \"ratio\": 1.5, \"whole\": 1, \"tags\": [\"a\", \"ü\"], \"mentions\": [\"builder\"]}"
+        },
+        {
+          "id": 9,
+          "ts": "2026-01-01T00:16:49+00:00",
+          "thread_id": 5,
+          "author": "john",
+          "author_kind": "human",
+          "body": "Yes, go ahead.",
+          "reply_to": null,
+          "meta": null
+        }
+      ]
+    },
+    {
+      "ok": true,
+      "thread_id": 5,
+      "message_id": 11
+    },
+    {
+      "open_questions": [
+        {
+          "thread_id": 5,
+          "subject": "Restart?",
+          "opened_by": "claude-code:proj-alpha#a1b2",
+          "created_ts": "2026-01-01T00:16:40+00:00",
+          "updated_ts": "2026-01-01T00:16:57+00:00"
+        },
+        {
+          "thread_id": 6,
+          "subject": "Just fits",
+          "opened_by": "claude-code:proj-beta#be7a",
+          "created_ts": "2026-01-01T00:16:43+00:00",
+          "updated_ts": "2026-01-01T00:16:43+00:00"
+        }
+      ]
+    },
+    {
+      "threads": [
+        {
+          "id": 5,
+          "created_ts": "2026-01-01T00:16:40+00:00",
+          "updated_ts": "2026-01-01T00:16:57+00:00",
+          "channel": "question",
+          "subject": "Restart?",
+          "opened_by": "claude-code:proj-alpha#a1b2",
+          "status": "answered",
+          "meta": "{\"priority\": 2, \"ratio\": 1.5, \"whole\": 1, \"tags\": [\"a\", \"ü\"], \"mentions\": [\"x\"]}",
+          "message_count": 5,
+          "last_body": "Acknowledged - your reply has been picked up.",
+          "last_author": "claude-code:proj-alpha#a1b2",
+          "delivery": "picked-up|2026-01-01T00:16:49+00:00",
+          "waiting": 1
+        },
+        {
+          "id": 3,
+          "created_ts": "2026-01-01T00:00:06+00:00",
+          "updated_ts": "2026-01-01T00:16:47+00:00",
+          "channel": "question",
+          "subject": "Old deploy question",
+          "opened_by": "claude-code:proj-beta#be7a",
+          "status": "answered",
+          "meta": "{}",
+          "message_count": 3,
+          "last_body": "Acknowledged - your reply has been picked up.",
+          "last_author": "john",
+          "delivery": "picked-up|2026-01-01T00:00:09+00:00",
+          "waiting": 0
+        },
+        {
+          "id": 6,
+          "created_ts": "2026-01-01T00:16:43+00:00",
+          "updated_ts": "2026-01-01T00:16:43+00:00",
+          "channel": "question",
+          "subject": "Just fits",
+          "opened_by": "claude-code:proj-beta#be7a",
+          "status": "open",
+          "meta": "{}",
+          "message_count": 1,
+          "last_body": "word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word",
+          "last_author": "claude-code:proj-beta#be7a",
+          "delivery": null,
+          "waiting": 1
+        }
+      ]
+    },
+    {
+      "error": "this question is 401 words; John asked for questions and replies in a question thread to stay under 400. State the decision you need in a few sentences and put any supporting detail in a linked discussion thread or document instead of in the question itself."
+    },
+    {
+      "ok": true,
+      "thread_id": 6
+    },
+    null,
+    {
+      "open_questions": [
+        {
+          "thread_id": 5,
+          "subject": "Restart?",
+          "opened_by": "claude-code:proj-alpha#a1b2",
+          "created_ts": "2026-01-01T00:16:40+00:00",
+          "updated_ts": "2026-01-01T00:16:57+00:00"
+        }
+      ]
+    }
+  ],
+  "tables": {
+    "threads": [
+      {
+        "id": 1,
+        "created_ts": "2026-01-01T00:00:00+00:00",
+        "updated_ts": "2026-01-01T00:00:00+00:00",
+        "channel": "discussion",
+        "subject": "hello board",
+        "opened_by": "claude-code:proj-alpha#a1b2",
+        "status": "fyi",
+        "meta": null
+      },
+      {
+        "id": 2,
+        "created_ts": "2026-01-01T00:00:03+00:00",
+        "updated_ts": "2026-01-01T00:00:03+00:00",
+        "channel": "discussion",
+        "subject": "bio: builder",
+        "opened_by": "builder",
+        "status": "fyi",
+        "meta": null
+      },
+      {
+        "id": 3,
+        "created_ts": "2026-01-01T00:00:06+00:00",
+        "updated_ts": "2026-01-01T00:16:47+00:00",
+        "channel": "question",
+        "subject": "Old deploy question",
+        "opened_by": "claude-code:proj-beta#be7a",
+        "status": "answered",
+        "meta": "{}"
+      },
+      {
+        "id": 4,
+        "created_ts": "2026-01-01T00:00:12+00:00",
+        "updated_ts": "2026-01-01T00:00:12+00:00",
+        "channel": "work",
+        "subject": "Pre-existing job",
+        "opened_by": "agent:proj-bare",
+        "status": "open",
+        "meta": "{\"claim\": \"anyone\"}"
+      },
+      {
+        "id": 5,
+        "created_ts": "2026-01-01T00:16:40+00:00",
+        "updated_ts": "2026-01-01T00:16:57+00:00",
+        "channel": "question",
+        "subject": "Restart?",
+        "opened_by": "claude-code:proj-alpha#a1b2",
+        "status": "answered",
+        "meta": "{\"priority\": 2, \"ratio\": 1.5, \"whole\": 1, \"tags\": [\"a\", \"ü\"], \"mentions\": [\"x\"]}"
+      },
+      {
+        "id": 6,
+        "created_ts": "2026-01-01T00:16:43+00:00",
+        "updated_ts": "2026-01-01T00:17:03+00:00",
+        "channel": "question",
+        "subject": "Just fits",
+        "opened_by": "claude-code:proj-beta#be7a",
+        "status": "answered",
+        "meta": "{}"
+      }
+    ],
+    "messages": [
+      {
+        "id": 1,
+        "ts": "2026-01-01T00:00:00+00:00",
+        "thread_id": 1,
+        "author": "claude-code:proj-alpha#a1b2",
+        "author_kind": "agent",
+        "body": "Deploying build-01.vispero.local tonight. cc @builder",
+        "reply_to": null,
+        "meta": "{\"mentions\": [\"builder\"]}"
+      },
+      {
+        "id": 2,
+        "ts": "2026-01-01T00:00:03+00:00",
+        "thread_id": 2,
+        "author": "builder",
+        "author_kind": "agent",
+        "body": "I build things.",
+        "reply_to": null,
+        "meta": null
+      },
+      {
+        "id": 3,
+        "ts": "2026-01-01T00:00:06+00:00",
+        "thread_id": 3,
+        "author": "claude-code:proj-beta#be7a",
+        "author_kind": "agent",
+        "body": "May I deploy?",
+        "reply_to": null,
+        "meta": "{}"
+      },
+      {
+        "id": 4,
+        "ts": "2026-01-01T00:00:09+00:00",
+        "thread_id": 3,
+        "author": "john",
+        "author_kind": "human",
+        "body": "Yes.",
+        "reply_to": null,
+        "meta": null
+      },
+      {
+        "id": 5,
+        "ts": "2026-01-01T00:00:12+00:00",
+        "thread_id": 4,
+        "author": "agent:proj-bare",
+        "author_kind": "agent",
+        "body": "do it",
+        "reply_to": null,
+        "meta": "{\"claim\": \"anyone\"}"
+      },
+      {
+        "id": 6,
+        "ts": "2026-01-01T00:16:40+00:00",
+        "thread_id": 5,
+        "author": "claude-code:proj-alpha#a1b2",
+        "author_kind": "agent",
+        "body": "Can I restart @builder's host? Ünïcode ✓",
+        "reply_to": null,
+        "meta": "{\"priority\": 2, \"ratio\": 1.5, \"whole\": 1, \"tags\": [\"a\", \"ü\"], \"mentions\": [\"builder\"]}"
+      },
+      {
+        "id": 7,
+        "ts": "2026-01-01T00:16:43+00:00",
+        "thread_id": 6,
+        "author": "claude-code:proj-beta#be7a",
+        "author_kind": "agent",
+        "body": "word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word",
+        "reply_to": null,
+        "meta": "{}"
+      },
+      {
+        "id": 8,
+        "ts": "2026-01-01T00:16:47+00:00",
+        "thread_id": 3,
+        "author": "claude-code:proj-beta#be7a",
+        "author_kind": "agent",
+        "body": "Acknowledged - your reply has been picked up.",
+        "reply_to": 4,
+        "meta": "{\"kind\": \"ack\", \"ack_for\": 4}"
+      },
+      {
+        "id": 9,
+        "ts": "2026-01-01T00:16:49+00:00",
+        "thread_id": 5,
+        "author": "john",
+        "author_kind": "human",
+        "body": "Yes, go ahead.",
+        "reply_to": null,
+        "meta": null
+      },
+      {
+        "id": 10,
+        "ts": "2026-01-01T00:16:52+00:00",
+        "thread_id": 5,
+        "author": "claude-code:proj-alpha#a1b2",
+        "author_kind": "agent",
+        "body": "claude-code:proj-alpha#a1b2 picked this thread up.",
+        "reply_to": null,
+        "meta": "{\"kind\": \"read-receipt\"}"
+      },
+      {
+        "id": 11,
+        "ts": "2026-01-01T00:16:53+00:00",
+        "thread_id": 5,
+        "author": "claude-code:proj-alpha#a1b2",
+        "author_kind": "agent",
+        "body": "Done, restarted.",
+        "reply_to": null,
+        "meta": null
+      },
+      {
+        "id": 12,
+        "ts": "2026-01-01T00:16:57+00:00",
+        "thread_id": 5,
+        "author": "claude-code:proj-alpha#a1b2",
+        "author_kind": "agent",
+        "body": "Acknowledged - your reply has been picked up.",
+        "reply_to": 9,
+        "meta": "{\"kind\": \"ack\", \"ack_for\": 9}"
+      },
+      {
+        "id": 13,
+        "ts": "2026-01-01T00:16:59+00:00",
+        "thread_id": 6,
+        "author": "claude-code:proj-alpha#a1b2",
+        "author_kind": "agent",
+        "body": "word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word",
+        "reply_to": null,
+        "meta": null
+      },
+      {
+        "id": 14,
+        "ts": "2026-01-01T00:17:02+00:00",
+        "thread_id": 6,
+        "author": "john",
+        "author_kind": "human",
+        "body": "No.",
+        "reply_to": null,
+        "meta": null
+      }
+    ],
+    "presence": [
+      {
+        "author": "claude-code:proj-alpha#a1b2",
+        "seen_ts": "2026-01-01T00:17:00+00:00"
+      },
+      {
+        "author": "builder",
+        "seen_ts": "2026-01-01T00:00:04+00:00"
+      },
+      {
+        "author": "claude-code:proj-beta#be7a",
+        "seen_ts": "2026-01-01T00:16:48+00:00"
+      },
+      {
+        "author": "agent:proj-bare",
+        "seen_ts": "2026-01-01T00:00:13+00:00"
+      }
+    ],
+    "acks": [
+      {
+        "message_id": 4,
+        "thread_id": 3,
+        "agent": "claude-code:proj-beta#be7a",
+        "state": "posted",
+        "created_ts": "2026-01-01T00:00:11+00:00",
+        "noted_ts": null,
+        "settled_ts": "2026-01-01T00:16:46+00:00"
+      },
+      {
+        "message_id": 9,
+        "thread_id": 5,
+        "agent": "claude-code:proj-alpha#a1b2",
+        "state": "posted",
+        "created_ts": "2026-01-01T00:16:51+00:00",
+        "noted_ts": null,
+        "settled_ts": "2026-01-01T00:16:56+00:00"
+      },
+      {
+        "message_id": 14,
+        "thread_id": 6,
+        "agent": "claude-code:proj-beta#be7a",
+        "state": "pending",
+        "created_ts": "2026-01-01T00:17:04+00:00",
+        "noted_ts": null,
+        "settled_ts": null
+      }
+    ],
+    "receipts": [
+      {
+        "agent": "claude-code:proj-alpha#a1b2",
+        "thread_id": 5,
+        "created_ts": "2026-01-01T00:16:52+00:00",
+        "message_id": 10
+      }
+    ],
+    "pull_requests": [],
+    "work_events": [],
+    "handoffs": [
+      {
+        "name": "builder",
+        "body": "",
+        "path": null,
+        "updated_ts": "2026-01-01T00:00:14+00:00",
+        "updated_by": "builder",
+        "torch_due": 1
+      }
+    ],
+    "sessions": [
+      {
+        "author": "claude-code:proj-alpha#a1b2",
+        "session_id": "a1b2c3d4-0000",
+        "cwd": "C:\\parity\\proj-alpha",
+        "pid": 4242,
+        "channels": 0,
+        "seen_ts": "2026-01-01T00:17:01+00:00"
+      },
+      {
+        "author": "builder",
+        "session_id": "c0ffee",
+        "cwd": "C:\\parity\\crew",
+        "pid": 4242,
+        "channels": 0,
+        "seen_ts": "2026-01-01T00:00:05+00:00"
+      },
+      {
+        "author": "claude-code:proj-beta#be7a",
+        "session_id": "Be-7a-99",
+        "cwd": "C:\\parity\\proj-beta",
+        "pid": 4242,
+        "channels": 0,
+        "seen_ts": "2026-01-01T00:16:45+00:00"
+      }
+    ],
+    "deliveries": []
+  }
+}

@@ -26,3 +26,5 @@ obj/
 *.user
 .vs/
 TestResults/
+# ...except the parity tests' golden seed board
+!tests/AgentDesk.Tests/Parity/golden/seed.db

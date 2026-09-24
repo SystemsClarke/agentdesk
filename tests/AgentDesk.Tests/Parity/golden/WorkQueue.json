@@ -1,0 +1,431 @@
+{
+  "steps": [
+    {
+      "error": "claim must be one of ['auto', 'anyone'], got 'mine'"
+    },
+    {
+      "ok": true,
+      "thread_id": 5,
+      "claim": "auto"
+    },
+    {
+      "work": [
+        {
+          "id": 5,
+          "created_ts": "2026-01-01T00:16:40+00:00",
+          "updated_ts": "2026-01-01T00:16:40+00:00",
+          "channel": "work",
+          "subject": "Build it",
+          "opened_by": "claude-code:proj-alpha#a1b2",
+          "status": "open",
+          "meta": "{\"claim\": \"auto\"}",
+          "message_count": 1,
+          "last_body": "Please build.",
+          "last_author": "claude-code:proj-alpha#a1b2",
+          "delivery": null,
+          "waiting": 0
+        },
+        {
+          "id": 4,
+          "created_ts": "2026-01-01T00:00:12+00:00",
+          "updated_ts": "2026-01-01T00:00:12+00:00",
+          "channel": "work",
+          "subject": "Pre-existing job",
+          "opened_by": "agent:proj-bare",
+          "status": "open",
+          "meta": "{\"claim\": \"anyone\"}",
+          "message_count": 1,
+          "last_body": "do it",
+          "last_author": "agent:proj-bare",
+          "delivery": null,
+          "waiting": 0
+        }
+      ]
+    },
+    {
+      "work": [
+        {
+          "id": 5,
+          "created_ts": "2026-01-01T00:16:40+00:00",
+          "updated_ts": "2026-01-01T00:16:40+00:00",
+          "channel": "work",
+          "subject": "Build it",
+          "opened_by": "claude-code:proj-alpha#a1b2",
+          "status": "open",
+          "meta": "{\"claim\": \"auto\"}",
+          "message_count": 1,
+          "last_body": "Please build.",
+          "last_author": "claude-code:proj-alpha#a1b2",
+          "delivery": null,
+          "waiting": 0
+        },
+        {
+          "id": 4,
+          "created_ts": "2026-01-01T00:00:12+00:00",
+          "updated_ts": "2026-01-01T00:00:12+00:00",
+          "channel": "work",
+          "subject": "Pre-existing job",
+          "opened_by": "agent:proj-bare",
+          "status": "open",
+          "meta": "{\"claim\": \"anyone\"}",
+          "message_count": 1,
+          "last_body": "do it",
+          "last_author": "agent:proj-bare",
+          "delivery": null,
+          "waiting": 0
+        }
+      ]
+    },
+    {
+      "ok": true,
+      "claimed": true
+    },
+    {
+      "ok": true,
+      "claimed": false
+    },
+    {
+      "ok": true,
+      "claimed": true
+    },
+    {
+      "ok": true,
+      "thread_id": 5,
+      "completed": false
+    },
+    {
+      "ok": true,
+      "thread_id": 5,
+      "completed": true
+    },
+    {
+      "ok": true,
+      "thread_id": 5,
+      "completed": false
+    },
+    {
+      "error": "no such thread: 999"
+    },
+    {
+      "error": "no such thread: 999"
+    },
+    {
+      "work": [
+        {
+          "id": 5,
+          "created_ts": "2026-01-01T00:16:40+00:00",
+          "updated_ts": "2026-01-01T00:17:00+00:00",
+          "channel": "work",
+          "subject": "Build it",
+          "opened_by": "claude-code:proj-alpha#a1b2",
+          "status": "done",
+          "meta": "{\"claim\": \"auto\", \"assignee\": \"claude-code:proj-beta#be7a\", \"claimed_ts\": \"2026-01-01T00:16:43+00:00\", \"completed_ts\": \"2026-01-01T00:16:58+00:00\"}",
+          "message_count": 3,
+          "last_body": "Built.",
+          "last_author": "claude-code:proj-beta#be7a",
+          "delivery": null,
+          "waiting": 0
+        }
+      ]
+    },
+    {
+      "thread": {
+        "id": 5,
+        "created_ts": "2026-01-01T00:16:40+00:00",
+        "updated_ts": "2026-01-01T00:17:00+00:00",
+        "channel": "work",
+        "subject": "Build it",
+        "opened_by": "claude-code:proj-alpha#a1b2",
+        "status": "done",
+        "meta": "{\"claim\": \"auto\", \"assignee\": \"claude-code:proj-beta#be7a\", \"claimed_ts\": \"2026-01-01T00:16:43+00:00\", \"completed_ts\": \"2026-01-01T00:16:58+00:00\"}",
+        "waiting": 0
+      },
+      "messages": [
+        {
+          "id": 6,
+          "ts": "2026-01-01T00:16:40+00:00",
+          "thread_id": 5,
+          "author": "claude-code:proj-alpha#a1b2",
+          "author_kind": "agent",
+          "body": "Please build.",
+          "reply_to": null,
+          "meta": "{\"claim\": \"auto\"}"
+        },
+        {
+          "id": 8,
+          "ts": "2026-01-01T00:16:49+00:00",
+          "thread_id": 5,
+          "author": "claude-code:proj-beta#be7a",
+          "author_kind": "agent",
+          "body": "claude-code:proj-beta#be7a took this work item.",
+          "reply_to": null,
+          "meta": "{\"kind\": \"read-receipt\"}"
+        },
+        {
+          "id": 10,
+          "ts": "2026-01-01T00:17:00+00:00",
+          "thread_id": 5,
+          "author": "claude-code:proj-beta#be7a",
+          "author_kind": "agent",
+          "body": "Built.",
+          "reply_to": null,
+          "meta": null
+        }
+      ]
+    }
+  ],
+  "tables": {
+    "threads": [
+      {
+        "id": 1,
+        "created_ts": "2026-01-01T00:00:00+00:00",
+        "updated_ts": "2026-01-01T00:00:00+00:00",
+        "channel": "discussion",
+        "subject": "hello board",
+        "opened_by": "claude-code:proj-alpha#a1b2",
+        "status": "fyi",
+        "meta": null
+      },
+      {
+        "id": 2,
+        "created_ts": "2026-01-01T00:00:03+00:00",
+        "updated_ts": "2026-01-01T00:00:03+00:00",
+        "channel": "discussion",
+        "subject": "bio: builder",
+        "opened_by": "builder",
+        "status": "fyi",
+        "meta": null
+      },
+      {
+        "id": 3,
+        "created_ts": "2026-01-01T00:00:06+00:00",
+        "updated_ts": "2026-01-01T00:16:47+00:00",
+        "channel": "question",
+        "subject": "Old deploy question",
+        "opened_by": "claude-code:proj-beta#be7a",
+        "status": "answered",
+        "meta": "{}"
+      },
+      {
+        "id": 4,
+        "created_ts": "2026-01-01T00:00:12+00:00",
+        "updated_ts": "2026-01-01T00:16:52+00:00",
+        "channel": "work",
+        "subject": "Pre-existing job",
+        "opened_by": "agent:proj-bare",
+        "status": "claimed",
+        "meta": "{\"claim\": \"anyone\", \"assignee\": \"builder\", \"claimed_ts\": \"2026-01-01T00:16:52+00:00\"}"
+      },
+      {
+        "id": 5,
+        "created_ts": "2026-01-01T00:16:40+00:00",
+        "updated_ts": "2026-01-01T00:17:00+00:00",
+        "channel": "work",
+        "subject": "Build it",
+        "opened_by": "claude-code:proj-alpha#a1b2",
+        "status": "done",
+        "meta": "{\"claim\": \"auto\", \"assignee\": \"claude-code:proj-beta#be7a\", \"claimed_ts\": \"2026-01-01T00:16:43+00:00\", \"completed_ts\": \"2026-01-01T00:16:58+00:00\"}"
+      }
+    ],
+    "messages": [
+      {
+        "id": 1,
+        "ts": "2026-01-01T00:00:00+00:00",
+        "thread_id": 1,
+        "author": "claude-code:proj-alpha#a1b2",
+        "author_kind": "agent",
+        "body": "Deploying build-01.vispero.local tonight. cc @builder",
+        "reply_to": null,
+        "meta": "{\"mentions\": [\"builder\"]}"
+      },
+      {
+        "id": 2,
+        "ts": "2026-01-01T00:00:03+00:00",
+        "thread_id": 2,
+        "author": "builder",
+        "author_kind": "agent",
+        "body": "I build things.",
+        "reply_to": null,
+        "meta": null
+      },
+      {
+        "id": 3,
+        "ts": "2026-01-01T00:00:06+00:00",
+        "thread_id": 3,
+        "author": "claude-code:proj-beta#be7a",
+        "author_kind": "agent",
+        "body": "May I deploy?",
+        "reply_to": null,
+        "meta": "{}"
+      },
+      {
+        "id": 4,
+        "ts": "2026-01-01T00:00:09+00:00",
+        "thread_id": 3,
+        "author": "john",
+        "author_kind": "human",
+        "body": "Yes.",
+        "reply_to": null,
+        "meta": null
+      },
+      {
+        "id": 5,
+        "ts": "2026-01-01T00:00:12+00:00",
+        "thread_id": 4,
+        "author": "agent:proj-bare",
+        "author_kind": "agent",
+        "body": "do it",
+        "reply_to": null,
+        "meta": "{\"claim\": \"anyone\"}"
+      },
+      {
+        "id": 6,
+        "ts": "2026-01-01T00:16:40+00:00",
+        "thread_id": 5,
+        "author": "claude-code:proj-alpha#a1b2",
+        "author_kind": "agent",
+        "body": "Please build.",
+        "reply_to": null,
+        "meta": "{\"claim\": \"auto\"}"
+      },
+      {
+        "id": 7,
+        "ts": "2026-01-01T00:16:47+00:00",
+        "thread_id": 3,
+        "author": "claude-code:proj-beta#be7a",
+        "author_kind": "agent",
+        "body": "Acknowledged - your reply has been picked up.",
+        "reply_to": 4,
+        "meta": "{\"kind\": \"ack\", \"ack_for\": 4}"
+      },
+      {
+        "id": 8,
+        "ts": "2026-01-01T00:16:49+00:00",
+        "thread_id": 5,
+        "author": "claude-code:proj-beta#be7a",
+        "author_kind": "agent",
+        "body": "claude-code:proj-beta#be7a took this work item.",
+        "reply_to": null,
+        "meta": "{\"kind\": \"read-receipt\"}"
+      },
+      {
+        "id": 9,
+        "ts": "2026-01-01T00:16:55+00:00",
+        "thread_id": 4,
+        "author": "builder",
+        "author_kind": "agent",
+        "body": "builder took this work item.",
+        "reply_to": null,
+        "meta": "{\"kind\": \"read-receipt\"}"
+      },
+      {
+        "id": 10,
+        "ts": "2026-01-01T00:17:00+00:00",
+        "thread_id": 5,
+        "author": "claude-code:proj-beta#be7a",
+        "author_kind": "agent",
+        "body": "Built.",
+        "reply_to": null,
+        "meta": null
+      },
+      {
+        "id": 11,
+        "ts": "2026-01-01T00:17:07+00:00",
+        "thread_id": 5,
+        "author": "claude-code:proj-alpha#a1b2",
+        "author_kind": "agent",
+        "body": "claude-code:proj-alpha#a1b2 picked this thread up.",
+        "reply_to": null,
+        "meta": "{\"kind\": \"read-receipt\"}"
+      }
+    ],
+    "presence": [
+      {
+        "author": "claude-code:proj-alpha#a1b2",
+        "seen_ts": "2026-01-01T00:16:41+00:00"
+      },
+      {
+        "author": "builder",
+        "seen_ts": "2026-01-01T00:16:53+00:00"
+      },
+      {
+        "author": "claude-code:proj-beta#be7a",
+        "seen_ts": "2026-01-01T00:17:01+00:00"
+      },
+      {
+        "author": "agent:proj-bare",
+        "seen_ts": "2026-01-01T00:00:13+00:00"
+      }
+    ],
+    "acks": [
+      {
+        "message_id": 4,
+        "thread_id": 3,
+        "agent": "claude-code:proj-beta#be7a",
+        "state": "posted",
+        "created_ts": "2026-01-01T00:00:11+00:00",
+        "noted_ts": null,
+        "settled_ts": "2026-01-01T00:16:46+00:00"
+      }
+    ],
+    "receipts": [
+      {
+        "agent": "claude-code:proj-beta#be7a",
+        "thread_id": 5,
+        "created_ts": "2026-01-01T00:16:49+00:00",
+        "message_id": 8
+      },
+      {
+        "agent": "builder",
+        "thread_id": 4,
+        "created_ts": "2026-01-01T00:16:55+00:00",
+        "message_id": 9
+      },
+      {
+        "agent": "claude-code:proj-alpha#a1b2",
+        "thread_id": 5,
+        "created_ts": "2026-01-01T00:17:07+00:00",
+        "message_id": 11
+      }
+    ],
+    "pull_requests": [],
+    "work_events": [],
+    "handoffs": [
+      {
+        "name": "builder",
+        "body": "",
+        "path": null,
+        "updated_ts": "2026-01-01T00:00:14+00:00",
+        "updated_by": "builder",
+        "torch_due": 1
+      }
+    ],
+    "sessions": [
+      {
+        "author": "claude-code:proj-alpha#a1b2",
+        "session_id": "a1b2c3d4-0000",
+        "cwd": "C:\\parity\\proj-alpha",
+        "pid": 4242,
+        "channels": 0,
+        "seen_ts": "2026-01-01T00:16:42+00:00"
+      },
+      {
+        "author": "builder",
+        "session_id": "c0ffee",
+        "cwd": "C:\\parity\\crew",
+        "pid": 4242,
+        "channels": 0,
+        "seen_ts": "2026-01-01T00:16:57+00:00"
+      },
+      {
+        "author": "claude-code:proj-beta#be7a",
+        "session_id": "Be-7a-99",
+        "cwd": "C:\\parity\\proj-beta",
+        "pid": 4242,
+        "channels": 0,
+        "seen_ts": "2026-01-01T00:17:04+00:00"
+      }
+    ],
+    "deliveries": []
+  }
+}
