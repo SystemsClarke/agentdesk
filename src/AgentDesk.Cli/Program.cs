@@ -4,8 +4,14 @@
 //   agentdesk wait <thread-id>   block until John replies on the thread, then print his reply
 using System.Text.Json;
 using AgentDesk.Cli;
+using AgentDesk.Contracts;
 
-var core = await CoreClient.Connect();
+using var core = await CoreConnection.Connect(new Caller(
+    Environment.GetEnvironmentVariable("CLAUDE_CODE_SESSION_ID") ?? Environment.GetEnvironmentVariable("AGENTDESK_SESSION"),
+    Environment.GetEnvironmentVariable("AGENTDESK_AUTHOR"),
+    Environment.CurrentDirectory,
+    Environment.GetEnvironmentVariable("CLAUDECODE") is null ? null : "claude-code",
+    Environment.ProcessId));
 switch (args)
 {
     case ["hook", var hookEvent]:

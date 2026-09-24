@@ -117,6 +117,15 @@ public sealed partial class AgentBoard(BoardStore store, IPythonPlugins plugins,
         });
     }
 
+    // ---- AgentDesk's own window (docs/ui-api.md): John's actions, and a read that leaves no trace
+
+    public Task<string> PeekThread(int threadId) => Run(db => db.GetThread(threadId));
+
+    public Task<string> JohnReplies(int threadId, string body) =>
+        string.IsNullOrWhiteSpace(body) ? Error("body must not be blank") : Run(db => Ok(("message_id", db.JohnReplies(threadId, body))));
+
+    public Task<string> CloseQuestion(int threadId) => Run(db => Ok(("closed", db.CloseQuestion(threadId))));
+
     public Task<string> OpenQuestions(Caller caller, bool includeArchived, string? author) => Run(db =>
     {
         var result = new JsonObject { ["open_questions"] = BoardDb.Arr(db.OpenQuestions(includeArchived)) };

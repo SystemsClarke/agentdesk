@@ -19,11 +19,23 @@ var python = Environment.GetEnvironmentVariable("AGENTDESK_PYTHON")
 var store = new BoardStore(Path.Combine(data, "agentdesk.db"));
 var board = new AgentBoard(store, new PythonPlugins(python), $"\"{Path.Combine(AppContext.BaseDirectory, "agentdesk.exe")}\" wait {{0}}");
 var hooks = new Hooks(store);
+var watch = new BoardWatch(store);
 
 Log.Info($"core starting (pid {Environment.ProcessId})");
-await PipeServer.Run((req, ct) => req.Tool switch
+await PipeServer.Run((req, push, gone) => req.Tool switch
 {
     ['h', 'o', 'o', 'k', ':', .. var hookEvent] => hooks.Run(hookEvent, req.Args),
-    "wait" => hooks.Wait(req.Args.GetInt32(), ct),
+    "wait" => hooks.Wait(req.Args.GetInt32(), gone),
+    ['u', 'i', ':', .. var op] => Ui(op, new Args(req.Args), push, gone),
     _ => Tools.Dispatch(board, req.Caller, req.Tool, req.Args),
 }, CancellationToken.None);
+
+// AgentDesk's window (docs/ui-api.md).
+Task<string> Ui(string op, Args a, Func<string, Task> push, CancellationToken gone) => op switch
+{
+    "reply" => board.JohnReplies(a.Int("thread_id"), a.String("body")),
+    "thread" => board.PeekThread(a.Int("thread_id")),
+    "close" => board.CloseQuestion(a.Int("thread_id")),
+    "subscribe" => Task.FromResult(watch.Subscribe(push, gone)),
+    _ => Task.FromResult(Tools.Error($"unknown request: ui:{op}")),
+};

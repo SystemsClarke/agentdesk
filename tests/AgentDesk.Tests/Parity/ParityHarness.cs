@@ -101,18 +101,11 @@ static class Harness
         };
     }
 
-    /// <summary>What the window did when John answered (app.py post_reply, then the watcher queueing the ack), statement for statement.</summary>
+    /// <summary>John answering from the window (ui:reply): what app.py post_reply and the watcher's ack queueing did, statement for statement.</summary>
     static string JohnReplyCs(BoardStore store, JsonNode args)
     {
-        var (tid, body) = ((long)args["thread_id"]!, (string)args["body"]!);
         using var db = store.Open();
-        var t = db.Rows("SELECT channel, status FROM threads WHERE id=$tid", ("tid", tid))[0];
-        var mid = db.Reply(tid, "john", BoardDb.Human, body);
-        if ((string)t["channel"]! == "question" && (string)t["status"]! == "open")
-            db.Exec("UPDATE threads SET status='answered', updated_ts=$ts WHERE id=$tid", ("ts", db.NowIso()), ("tid", tid));
-        if ((string)t["channel"]! == "question" && db.Scalar("SELECT author_kind FROM messages WHERE thread_id=$tid ORDER BY id LIMIT 1", ("tid", tid)) as string == BoardDb.Agent)
-            db.Exec("INSERT OR IGNORE INTO acks (message_id, thread_id, agent, state, created_ts) SELECT $mid, id, opened_by, 'pending', $ts FROM threads WHERE id=$tid",
-                ("mid", mid), ("tid", tid), ("ts", db.NowIso()));
+        db.JohnReplies((long)args["thread_id"]!, (string)args["body"]!);
         return "";
     }
 

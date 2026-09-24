@@ -19,7 +19,7 @@ public sealed class BoardStore(string path, Func<DateTimeOffset>? clock = null)
 /// <summary>One connection, and the parts of agentdesk/db.py the MCP tools reach. SQL is kept textually identical to Python's.</summary>
 public sealed partial class BoardDb : IDisposable
 {
-    public const string Agent = "agent", Human = "human";
+    public const string Agent = "agent", Human = "human", John = "john";
     public static readonly string[] Channels = ["question", "discussion", "wiki", "work"];
     static readonly string[] ReceiptKinds = ["ack", "ack-note", "read-receipt"];
 
@@ -219,11 +219,10 @@ public sealed partial class BoardDb : IDisposable
 
     // ---- the work queue: claim and complete are each one conditional UPDATE, so racing agents resolve in SQLite
 
-    JsonObject ThreadMeta(long id)
-    {
-        var row = Rows("SELECT meta FROM threads WHERE id=$id", ("id", id)).FirstOrDefault() ?? throw new BoardError($"no such thread: {id}");
-        return ParseObject(Str(row["meta"])) ?? [];
-    }
+    JsonObject Thread(long id) =>
+        Rows("SELECT channel, status, meta FROM threads WHERE id=$id", ("id", id)).FirstOrDefault() ?? throw new BoardError($"no such thread: {id}");
+
+    JsonObject ThreadMeta(long id) => ParseObject(Str(Thread(id)["meta"])) ?? [];
 
     bool MoveWork(long id, string agent, string ts, JsonObject meta, string from, string to)
     {
@@ -270,6 +269,31 @@ public sealed partial class BoardDb : IDisposable
                 delivered.Add(mid);
         }
         return delivered;
+    }
+
+    // ---- John, from AgentDesk's window (app.py post_reply and close_question, plus the watcher queueing the ack)
+
+    /// <summary>John's reply: it stops an open question asking, and queues the asking agent's ack. Returns the message id.</summary>
+    public long JohnReplies(long threadId, string body)
+    {
+        var t = Thread(threadId);
+        var mid = Reply(threadId, John, Human, body);
+        if (Str(t["channel"]) != "question") return mid;
+        if (Str(t["status"]) == "open") Exec("UPDATE threads SET status='answered', updated_ts=$ts WHERE id=$tid", ("ts", NowIso()), ("tid", threadId));
+        if (Scalar("SELECT author_kind FROM messages WHERE thread_id=$tid ORDER BY id LIMIT 1", ("tid", threadId)) as string == Agent)
+            Exec("INSERT OR IGNORE INTO acks (message_id, thread_id, agent, state, created_ts) SELECT $mid, id, opened_by, 'pending', $ts FROM threads WHERE id=$tid",
+                ("mid", mid), ("ts", NowIso()), ("tid", threadId));
+        return mid;
+    }
+
+    /// <summary>John closes a question without answering; clearing archive_hold lets the sweep file it. False if not a live question.</summary>
+    public bool CloseQuestion(long threadId)
+    {
+        var t = Thread(threadId);
+        if (Str(t["channel"]) != "question" || Str(t["status"]) == "archived") return false;
+        var meta = ParseObject(Str(t["meta"])) ?? [];
+        meta.Remove("archive_hold");
+        return Exec("UPDATE threads SET status='closed', updated_ts=$ts, meta=$meta WHERE id=$tid", ("ts", NowIso()), ("meta", Py.Dumps(meta)), ("tid", threadId)) == 1;
     }
 
     // ---- read receipts: once per (agent, thread) by PRIMARY KEY; no presence, no updated_ts bump

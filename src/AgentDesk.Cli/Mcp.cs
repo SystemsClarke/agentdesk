@@ -8,7 +8,7 @@ namespace AgentDesk.Cli;
 /// <summary>The agentdesk MCP server: lists the board's tools and relays each call to the core.</summary>
 static class Mcp
 {
-    public static async Task Serve(CoreClient core)
+    public static async Task Serve(CoreConnection core)
     {
         var tools = Tools.All.Select(t => new Tool
         {
@@ -23,8 +23,7 @@ static class Mcp
                 ListToolsHandler = (_, _) => ValueTask.FromResult(new ListToolsResult { Tools = tools }),
                 CallToolHandler = async (ctx, ct) =>
                 {
-                    var args = ctx.Params?.Arguments is { } a
-                        ? JsonSerializer.SerializeToElement(a, CliJson.Default.IDictionaryStringJsonElement) : default;
+                    var args = ctx.Params?.Arguments is { } a ? JsonSerializer.SerializeToElement(a, CliJson.Default.IDictionaryStringJsonElement) : (JsonElement?)null;
                     var text = await core.Call(ctx.Params!.Name, args, ct);
                     return new CallToolResult { Content = [new TextContentBlock { Text = text }] };
                 },
