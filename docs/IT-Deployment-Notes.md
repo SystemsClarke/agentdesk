@@ -137,6 +137,7 @@ it is the account owner's own working notes.
 # 1. Compile (from the repo root, with its .venv active):
 python -m nuitka --standalone --follow-imports --enable-plugin=tk-inter ^
   --windows-console-mode=disable --assume-yes-for-downloads ^
+  --windows-icon-from-ico=agentdesk\assets\agentdesk.ico ^
   --output-dir=<a path OUTSIDE any OneDrive-synced folder> ^
   --output-filename=AgentDesk.exe agentdesk\cli.py
 

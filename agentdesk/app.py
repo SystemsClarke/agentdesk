@@ -32,12 +32,12 @@ from PIL import Image, ImageDraw
 # pythonw runs a file as a plain script, where there is no package context for
 # a relative import; fall back to putting the repo root on the path.
 try:
-    from agentdesk import (aumid, db, dictate, identity, mdview, notify,
-                          paths, pr_scan, prs, vault)
+    from agentdesk import (aumid, db, dictate, icon, identity, mdview, notify,
+                          paths, pr_scan, prs, settings, vault, winedit)
 except ImportError:  # pragma: no cover - depends on how the file was launched
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-    from agentdesk import (aumid, db, dictate, identity, mdview, notify,
-                          paths, pr_scan, prs, vault)
+    from agentdesk import (aumid, db, dictate, icon, identity, mdview, notify,
+                          paths, pr_scan, prs, settings, vault, winedit)
 
 
 def _self_argv(subcommand: str, extra: Optional[list[str]] = None) -> list[str]:
@@ -387,15 +387,8 @@ def fonts_for(root: tk.Misc) -> dict:
 
 
 def _tray_image() -> Image.Image:
-    # A drawn icon, so the package never needs an image file on disk.
-    img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
-    d = ImageDraw.Draw(img)
-    d.rounded_rectangle((4, 4, 60, 60), radius=12, fill=(40, 44, 52, 255))
-    d.rounded_rectangle((14, 15, 50, 39), radius=6, fill=(235, 238, 242, 255))
-    d.polygon([(20, 37), (30, 37), (17, 50)], fill=(235, 238, 242, 255))
-    d.rounded_rectangle((20, 22, 44, 25), radius=1, fill=(40, 44, 52, 255))
-    d.rounded_rectangle((20, 29, 38, 32), radius=1, fill=(40, 44, 52, 255))
-    return img
+    # Drawn from code (see icon.py), so the package never needs an image file on disk.
+    return icon.render(64)
 
 
 class Page(ttk.Frame):
@@ -1545,7 +1538,7 @@ class DictationController:
         if not isinstance(widget, (tk.Text, tk.Entry, ttk.Entry)):
             return None
         try:
-            if str(widget.cget("state")) == "disabled":
+            if str(widget.cget("state")) == "disabled" or getattr(widget, "_agentdesk_readonly", False):
                 return None
         except tk.TclError:
             pass
@@ -1658,8 +1651,10 @@ class DictationController:
 class App:
     POLL_MS = 3000
 
-    def __init__(self, db_path: Path) -> None:
+    def __init__(self, db_path: Path, ui: str = "classic") -> None:
         self.db_path = db_path
+        self.ui = ui
+        self.view = None
         self._worker_proc: Optional[subprocess.Popen] = None
         self.ui_queue: "queue.Queue[Callable[[], None]]" = queue.Queue()
         self.last_max_id = -1
@@ -1697,12 +1692,27 @@ class App:
         # Must match window_title(), which is what a second launch looks for
         # when it tries to raise this window.
         self.root.title(window_title(db_path))
-        self.root.geometry("1000x640")
+        self.root.geometry("1000x640" if ui == "classic" else "1120x760")
         self.root.minsize(720, 420)
         self.root.protocol("WM_DELETE_WINDOW", self._hide_to_tray)
+        winedit.install(self.root)
+        try:
+            self._icon_images = icon.photo_images(self.root)
+            self.root.iconphoto(True, *self._icon_images)
+        except Exception:
+            pass
 
         self.dictation = DictationController(self)
         self.dictation.attach(self.root)
+
+        if ui == "terminal":
+            from agentdesk import terminal
+            self.pages = {}
+            self.pr_page = None
+            self.view = terminal.TerminalView(self, self.root)
+            self._finish_startup()
+            self.root.after(250, self.view.connected)
+            return
 
         # The dispatcher control sits OUTSIDE the notebook, above it, because it
         # is not a property of any one channel: turning it on starts agents on
@@ -1747,7 +1757,9 @@ class App:
         self.pr_labels = {"prs": "Pull Requests"}
         self.pr_page = PrPage(nb, self)
         nb.add(self.pr_page, text=self.pr_labels["prs"])
+        self._finish_startup()
 
+    def _finish_startup(self) -> None:
         # Claim the app's identity with the shell, once, where the app is
         # actually being run. It belongs here rather than in notify.py because
         # notify is linked into the MCP server and the hourly backup as well,
@@ -1794,6 +1806,8 @@ class App:
                       f"[{state.get('agent')}/{state.get('mode')}]")
 
     def _refresh_worker(self) -> None:
+        if self.view is not None:
+            return  # the terminal view reads worker status on its own tick
         running, text = self._worker_status()
         # The dot carries the state. "Worker: running, item #2" and "Worker:
         # not running" are the same shape of sentence in the same grey, and
@@ -1990,6 +2004,9 @@ class App:
         menu = pystray.Menu(
             pystray.MenuItem("Open AgentDesk", self._on_tray_open, default=True),
             pystray.MenuItem("Reload code", self._on_tray_reload),
+            pystray.MenuItem(
+                "Switch to classic view" if self.ui == "terminal" else "Switch to terminal view",
+                lambda icon, item: self.ui_queue.put(self._switch_view)),
             pystray.MenuItem("Quit", self._on_tray_quit),
         )
         self.icon: Optional[pystray.Icon] = pystray.Icon(
@@ -2003,6 +2020,12 @@ class App:
             # No tray available on this session: keep the window usable and
             # let closing it really close it, since there is no way back in.
             self.icon = None
+
+    def _switch_view(self) -> None:
+        prefs = settings.load()
+        prefs["ui"] = "classic" if self.ui == "terminal" else "terminal"
+        settings.save(prefs)
+        self._reload_code()
 
     def _on_tray_open(self, icon: object, item: object) -> None:
         self.ui_queue.put(self._show_window)
@@ -2076,7 +2099,7 @@ class App:
         tab nobody is looking at is refreshed when it is opened.
         """
         for page in list(self.pages.values()) + [self.pr_page]:
-            if getattr(page, "detail_stale", False):
+            if page is not None and getattr(page, "detail_stale", False):
                 return True
         return False
 
@@ -2172,6 +2195,8 @@ class App:
             work_page = self.pages.get("work")
             if work_page is not None:
                 work_page.refresh_activity(conn)
+            if self.view is not None:
+                self.view.tick(conn)
             self.last_max_id = max_id
             self.last_open_count = len(open_qs)
             self.last_prs_sig = prs_sig
@@ -2226,6 +2251,9 @@ class App:
             notify.toast(f"New question from {identity.label(q['opened_by'])}",
                          q["subject"], icon=self.icon)
         self.root.title(window_title(self.db_path, len(open_qs)))
+        if self.view is not None:
+            self.view.refresh(conn, open_qs)
+            return
         for page in self.pages.values():
             page.refresh_list(conn)
             page.refresh_detail(conn)
@@ -2595,6 +2623,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         help="database file to use (lets a second instance point at a copy "
              "for testing)",
     )
+    view = parser.add_mutually_exclusive_group()
+    view.add_argument("--classic", dest="ui", action="store_const", const="classic",
+                      help="open the classic tabbed window")
+    view.add_argument("--terminal", dest="ui", action="store_const", const="terminal",
+                      help="open the terminal-style window (the default)")
     args = parser.parse_args(argv)
     paths.ensure_dirs()
 
@@ -2610,7 +2643,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         # working, and a shortcut or launcher should not report a failure.
         return 0
 
-    app = App(args.db)
+    ui = args.ui or settings.load().get("ui", "terminal")
+    app = App(args.db, ui="terminal" if ui == "terminal" else "classic")
     # Attached so _reload_code can release it before spawning a replacement
     # process -- see SingleInstance.release(). A plain attribute, not a
     # constructor argument: App is also built directly by the check scripts,
