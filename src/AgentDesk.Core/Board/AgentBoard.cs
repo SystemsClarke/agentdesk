@@ -144,10 +144,18 @@ public sealed partial class AgentBoard(BoardStore store, IPythonPlugins plugins,
             "SELECT * FROM (SELECT ts, kind, body, id FROM work_events WHERE work_id=$w ORDER BY id DESC LIMIT 80) ORDER BY id", ("w", item)));
         return new JsonObject { ["slack"] = Load(Path.Combine(data, "slack_bridge.state")), ["worker"] = worker,
             ["usage"] = Usage.Report(Path.Combine(data, "claude_usage.json"), DateTimeOffset.UtcNow),
-            ["prs"] = BoardDb.Arr(db.Rows("SELECT * FROM pull_requests ORDER BY id DESC LIMIT 200")) };
+            ["prs"] = BoardDb.Arr(db.Rows("SELECT * FROM pull_requests ORDER BY id DESC LIMIT 200")), ["crew"] = Crew.Status(data, db) };
     });
 
-    static bool Alive(int pid)
+    /// <summary>John queues a fresh start for a crew role (db.set_torch_due): its next item begins a new session from its handoff note.</summary>
+    public Task<string> FreshStart(string name) => Run(db =>
+    {
+        db.Exec("INSERT INTO handoffs (name, body, path, updated_ts, updated_by, torch_due) VALUES ($n, '', NULL, $ts, $n, 1)"
+            + " ON CONFLICT(name) DO UPDATE SET torch_due=excluded.torch_due", ("n", name), ("ts", db.NowIso()));
+        return Ok();
+    });
+
+    internal static bool Alive(int pid)
     {
         try { using var p = System.Diagnostics.Process.GetProcessById(pid); return !p.HasExited; }
         catch (Exception) { return false; }

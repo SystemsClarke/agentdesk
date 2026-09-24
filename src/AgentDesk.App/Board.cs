@@ -27,7 +27,8 @@ public sealed record BoardStatus(
     IReadOnlyList<PrRow> Prs, IReadOnlyList<Post> Recent, IReadOnlyList<Post> Callers, IReadOnlyDictionary<string, int> Bios,
     Post? JohnLast, int SincePosts, ThreadRow? LastFiled, bool WorkerRunning, int? HeldId, IReadOnlyList<WorkEvent> HeldEvents,
     DateTimeOffset? SlackTs, int SlackPollS, Post? SlackRelay, IReadOnlyList<string> DisabledSinks,
-    IReadOnlyList<string> UsageLines, string UsageSummary, IReadOnlyList<CrewRole> Crew, string BackendNote);
+    IReadOnlyList<string> UsageLines, string UsageSummary, IReadOnlyList<CrewRole> Crew, string BackendNote, int LiveSessions = 0,
+    IReadOnlyList<string>? Backends = null);
 
 /// <summary>What the window needs from the board. CoreBoard will map these onto list_threads, ui:thread, open_questions,
 /// ui:reply, ui:close and raise Changed on each board.changed pushed over ui:subscribe.</summary>
@@ -162,7 +163,7 @@ public sealed class SampleBoard : IBoard
             ["time left: 2h 14m in your 5-hour window, 38% used", "time left: 1d 6h on the week, 82% used, getting close"],
             "5h 38%, resets in 2h 14m · week 82%, resets in 1d 6h · reported 1m ago",
             [new("builder"), new("app-dev", now.AddMinutes(-150), Resumed: true, SessionId: "7f3a91c2e4", Items: 4), new("verifier", FreshDue: true)],
-            "the claude CLI on this PC, your subscription"));
+            "the claude CLI on this PC, your subscription", 1, ["claude"]));
     }
 
     public Task<string?> ActAsync(string request, object? args = null) => Task.FromResult<string?>(null);

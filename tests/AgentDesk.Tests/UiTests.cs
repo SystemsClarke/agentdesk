@@ -143,6 +143,33 @@ public sealed class UiTests : IDisposable
     }
 
     [Fact]
+    public async Task Status_carries_the_crew_and_fresh_queues_a_fresh_start()
+    {
+        var data = Directory.CreateDirectory(path + ".crew").FullName;
+        Directory.CreateDirectory(Path.Combine(data, "live-sessions"));
+        Directory.CreateDirectory(Path.Combine(data, "sessions"));
+        var me = Environment.ProcessId;
+        File.WriteAllText(Path.Combine(data, "live-sessions", $"{me}.json"),
+            $$"""{"ts": 5, "answered": "local", "live": {"builder": {"pid": {{me}}, "started": 1790000000, "provider": "claude", "resume": true}, "gone": {"pid": 0} } }""");
+        File.WriteAllText(Path.Combine(data, "live-sessions", "0.json"), "{}");
+        File.WriteAllText(Path.Combine(data, "sessions", "builder.json"), """{"id": "7f3a91c2e4", "items": 4}""");
+        Environment.SetEnvironmentVariable("CLAUDE_PROVIDERS_FILE", Path.Combine(data, "providers.json"));
+        File.WriteAllText(Path.Combine(data, "providers.json"), """{"order": ["claude", "local"], "profiles": {"claude": {"model": "claude-sonnet-5"}, "local": {"base_url": "http://localhost:11434", "model": "qwen"}}}""");
+        Assert.Contains("\"ok\": true", await board.FreshStart("verifier"));
+        var crew = JsonDocument.Parse(await board.Heartbeats(data)).RootElement.GetProperty("crew");
+        Assert.Equal(1, crew.GetProperty("live").GetInt32());
+        Assert.Equal("Claude subscription, model=claude-sonnet-5 (all ANTHROPIC_* overrides removed)  ·  last run fell back to local", crew.GetProperty("note").GetString());
+        Assert.Equal("claude,local", string.Join(",", crew.GetProperty("backends").EnumerateArray().Select(b => b.GetString())));
+        var (builder, verifier) = (crew.GetProperty("roles")[0], crew.GetProperty("roles")[1]);
+        Assert.Equal("builder|claude|True|7f3a91c2e4|4|False|2026-09-21T14:13:20.0000000+00:00", string.Join("|", builder.GetProperty("name"), builder.GetProperty("provider"),
+            builder.GetProperty("resumed"), builder.GetProperty("session_id"), builder.GetProperty("items"), builder.GetProperty("fresh_due"), builder.GetProperty("running_since")));
+        Assert.True(verifier.GetProperty("fresh_due").GetBoolean());
+        Assert.False(File.Exists(Path.Combine(data, "live-sessions", "0.json"))); // a dead process's file is swept
+        Environment.SetEnvironmentVariable("CLAUDE_PROVIDERS_FILE", null);
+        Directory.Delete(data, true);
+    }
+
+    [Fact]
     public async Task A_subscriber_is_pushed_a_write_made_elsewhere()
     {
         Log.Path = path + ".log";

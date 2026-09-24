@@ -101,12 +101,16 @@ public sealed class CoreBoard : IBoard, IDisposable
         var prs = beat.GetProperty("prs").EnumerateArray().Select(p => new PrRow(Str(p, "repo") ?? "", Int(p, "number"), Str(p, "title") ?? "",
             Str(p, "url") ?? "", Str(p, "state") ?? "open", Str(p, "requested_by") ?? "", Str(p, "checked_ts") is null ? null : Ts(p, "checked_ts"),
             Str(p, "last_error"), Str(p, "triage"), Int(p, "thread_id") is var t and > 0 ? t : null, Str(p, "source") == "github-scan"));
+        var crew = beat.GetProperty("crew");
+        var roles = crew.GetProperty("roles").EnumerateArray().Select(r => new CrewRole(Str(r, "name") ?? "", Str(r, "running_since") is null ? null : Ts(r, "running_since"),
+            Str(r, "provider") ?? "claude", r.GetProperty("resumed").GetBoolean(), Str(r, "session_id"), Int(r, "items"), r.GetProperty("fresh_due").GetBoolean()));
         return new([.. prs], [.. recent.Take(5)], [.. recent.Where(p => p.Author != "john" && p.Ts > DateTimeOffset.Now.AddDays(-1)).DistinctBy(p => p.Author)],
             bios, john, recent.TakeWhile(p => p.Author != "john").Count(p => p.Kind != "read-receipt"), filed,
             worker.GetProperty("running").GetBoolean(), Int(worker, "held") is var held and > 0 ? held : null,
             [.. worker.GetProperty("events").EnumerateArray().Select(e => new WorkEvent(Ts(e, "ts"), Str(e, "kind") ?? "", Str(e, "body") ?? ""))],
             slack.ValueKind == JsonValueKind.Object ? Ts(slack, "ts") : null, slack.ValueKind == JsonValueKind.Object && Int(slack, "poll_s") is var poll and > 0 ? poll : 15,
-            relay, [], [.. usage.GetProperty("lines").EnumerateArray().Select(l => l.GetString()!)], Str(usage, "summary") ?? "", [], "");
+            relay, [], [.. usage.GetProperty("lines").EnumerateArray().Select(l => l.GetString()!)], Str(usage, "summary") ?? "", [.. roles],
+            Str(crew, "note") ?? "", Int(crew, "live"), [.. crew.GetProperty("backends").EnumerateArray().Select(b => b.GetString()!)]);
     }
 
     public async Task<string?> ActAsync(string request, object? args = null) => Str(await Call(request, args), "said");

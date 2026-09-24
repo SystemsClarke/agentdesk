@@ -505,7 +505,7 @@ public partial class MainWindow
         var provider = Pref("provider", "claude");
         return
         [
-            ("Sessions at once", $"{Pref("max_sessions", 3)}   (←/→)  ·  {crew.Count(c => c.RunningSince != null)} running now", "max_sessions"),
+            ("Sessions at once", $"{Pref("max_sessions", 3)}   (←/→)  ·  {st?.LiveSessions ?? 0} running now", "max_sessions"),
             ("Backend", $"{provider}   (←/→, from providers.json)  ·  {st?.BackendNote}", "provider"),
             ("Crew", (st?.WorkerRunning == true ? "ON" : "off") + "   ↵ toggles (same as Ctrl+W)", "crew"),
             .. crew.Select(c => ($"  {c.Name}",
@@ -628,7 +628,11 @@ public partial class MainWindow
                 Flash($"Up to {N(n, "agent session")} at once. Takes effect on the next start.", "ye");
                 break;
             case "provider":
-                Flash($"Agent sessions now start on {Pref("provider", "claude")} (the only profile in providers.json).", "ye");
+                var names = st?.Backends ?? ["claude"];
+                var at = Math.Max(0, names.ToList().IndexOf(Pref(key, "claude")));
+                SetPref(key, names[((at + step) % names.Count + names.Count) % names.Count]);
+                Flash($"Agent sessions now start on {Pref(key, "claude")}{(names.Count > 1 ? "" : " (the only profile in providers.json)")}.", "ye");
+                _ = RefreshAsync(); // the backend note is the core's
                 break;
             case "crew":
                 ToggleWorker();
@@ -652,6 +656,7 @@ public partial class MainWindow
                     : "Pre-roll off: the mic only opens when you press Ctrl+D.", "ye");
                 break;
             default:
+                _ = board.ActAsync("ui:fresh", new { name = key[6..] });
                 Flash($"{key[6..]} starts a fresh session on its next item, seeded from its handoff note.", "ye");
                 break;
         }
