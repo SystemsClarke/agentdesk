@@ -125,6 +125,46 @@ def _post(q: dict, prev: dict | None) -> str:
     return thread_ts
 
 
+DELIVERY_NOTES = {
+    "picked-up": "✓ The agent picked up your reply.",
+    "woke": "✓ Your reply woke the agent; it's working on it.",
+    "resumed": "✓ Woke the agent: resumed its session with your reply.",
+    "late": "⚠ The agent hasn't picked up your reply after 15 min. Reply *wake* here to resume its session.",
+}
+
+
+def _tell_deliveries(state: dict) -> None:
+    """In each question's Slack thread, say once whether John's latest reply reached the agent."""
+    told = state.setdefault("told", {})
+    conn = db.connect()
+    try:
+        for tid, info in list(state["posted"].items()):
+            h = conn.execute("SELECT id, ts FROM messages WHERE thread_id=? AND author_kind=? ORDER BY id DESC LIMIT 1",
+                             (int(tid), paths.HUMAN_KIND)).fetchone()
+            if not h or (time.time() - _epoch(h["ts"])) > 86400:
+                continue
+            status = db.delivery_status(conn, h["id"])
+            if status == "pending" and time.time() - _epoch(h["ts"]) > 15 * 60:
+                status = "late"
+            key = f"{h['id']}:{status}"
+            if status not in DELIVERY_NOTES or told.get(tid) == key:
+                continue
+            app.client.chat_postMessage(channel=JOHN_DM_CHANNEL, thread_ts=info["ts"], text=DELIVERY_NOTES[status])
+            with _state_lock:
+                told[tid] = key
+                save_state(state)
+    finally:
+        conn.close()
+
+
+def _epoch(iso: str) -> float:
+    from datetime import datetime
+    try:
+        return datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return 0.0
+
+
 def poll_loop() -> None:
     while True:
         beat()
@@ -146,6 +186,7 @@ def poll_loop() -> None:
                     state["posted"][tid] = {"ts": ts, "updated_ts": q["updated_ts"]}
                     save_state(state)
                 _last_relay.update({"ts": db.now_iso(), "thread_id": q["thread_id"]})
+            _tell_deliveries(state)
         except Exception as exc:  # a bad pass must not kill future polling
             print(f"[slack_bridge] poll error: {exc}", file=sys.stderr)
         time.sleep(POLL_SECONDS)
@@ -198,6 +239,15 @@ def handle_reply(event: dict, say) -> None:
             "(already answered, or from before this bridge started).")
         return
 
+    if (event.get("text") or "").strip().lower().rstrip("!.") in ("wake", "wake it", "wake up"):
+        from agentdesk import wake
+        conn = db.connect()
+        try:
+            said = wake.wake(conn, tid)
+        finally:
+            conn.close()
+        say(said[0].upper() + said[1:] + ".", thread_ts=thread_ts)
+        return
     body = slackfmt.slack_to_md(event.get("text", ""))
     photos = save_photos(event.get("files") or [], thread_ts)
     if photos:

@@ -182,6 +182,30 @@ def state_code(channel: str, row) -> tuple:
     }.get(word, (fit(word, 4), ("mu",)))
 
 
+DELIVERY_LATE_S = 15 * 60
+
+
+def delivery_mark(row) -> str:
+    """'you' plus how your latest reply reached the agent: √ it acted · ↑ woke it · … on its way · ! not picked up.
+
+    Only glyphs the terminal font has: a fallback-font lookup (✓, ⚡) cost ~100 ms on first paint."""
+    try:
+        state, _, ts = (row["delivery"] or "").partition("|")
+    except (IndexError, KeyError, TypeError):
+        return "you"
+    if state == "picked-up":
+        return "you √"
+    if state in ("woke", "resumed"):
+        return "you ↑ woke"
+    if state in ("pending", "stuck", "failed"):
+        try:
+            age = (datetime.now(timezone.utc) - datetime.fromisoformat(ts)).total_seconds()
+        except ValueError:
+            age = 0
+        return f"you ! {ago(ts)}" if state != "pending" or age > DELIVERY_LATE_S else "you …"
+    return "you"
+
+
 def waiting(channel: str, row) -> bool:
     """Does this question still owe John an answer? (db computes `waiting` from its messages.)"""
     try:
@@ -400,6 +424,7 @@ class TerminalView:
         self.reply.bind("<Alt-c>", lambda e: (self.reader_close(), "break")[1])
         self.reply.bind("<Alt-u>", lambda e: (self.reader_unarchive(), "break")[1])
         self.reply.bind("<Control-w>", lambda e: (self.toggle_worker(), "break")[1])
+        self.reply.bind("<Control-r>", lambda e: (self.wake_selected(), "break")[1])
         self.subject_ent.bind("<Control-Return>", self._send)
         self.subject_ent.bind("<Escape>", lambda e: (self.go_back(), "break")[1])
         self.subject_ent.bind("<Return>", lambda e: (self.reply.focus_set(), "break")[1])
@@ -774,7 +799,7 @@ class TerminalView:
         if s == "list":
             h = k("↑↓", "move") + k("↵", "read") + k("N", "new post")
             if self.channel == "question":
-                h += k("H", "archived" if not self.show_archived else "active")
+                h += k("H", "archived" if not self.show_archived else "active") + k("Ctrl+R", "wake agent")
             return h + k("Esc", "main menu")
         if s == "read":
             h = k("type", "to reply") + k("Ctrl+↵", "send") + k("Ctrl+D", "dictate") \
@@ -969,7 +994,7 @@ class TerminalView:
             last = ""
             if q:
                 la = r["last_author"] if "last_author" in r.keys() else None
-                last = fit("you" if la == paths.HUMAN else ("↩ " + identity.label(la) if la else "—"), 12)
+                last = fit(delivery_mark(r) if la == paths.HUMAN else ("↩ " + identity.label(la) if la else "—"), 12)
             if ch == "work":
                 who = holder(r)
                 by = identity.label(who) if who else "—"
@@ -982,7 +1007,7 @@ class TerminalView:
             else:
                 L.append([S(f"  {r['id']:>3}  ", "ye"), S(code, *ctags), S("  "),
                           S(fit(r["subject"], subj_w), *subj_tags), S(" "), S(fit(by, 16), author_hue(r["opened_by"])),
-                          S(last, "gr" if last.startswith("you") else "cy"),
+                          S(last, "pk" if " ! " in last else ("gr" if last.startswith("you") else "cy")),
                           S(fit(when(r["updated_ts"]), 11), "fa"), S(f" {r['message_count']:>3}", "mu")])
             self._click_map[first_row_line + i - top + offset] = i
         L.append([S("─" * W, "rule")])
@@ -1443,6 +1468,23 @@ class TerminalView:
         self.flash("Stop requested. It finishes the item it holds first." if running
                    else "Starting the worker...", "ye")
 
+    def wake_selected(self) -> None:
+        """Ctrl+R: resume the asking agent's session with your reply (a human decides each wake)."""
+        tid = self.read_tid if self.screen == "read" else None
+        if tid is None and self.screen == "list" and self.channel == "question" and self.rows["question"]:
+            tid = self.rows["question"][min(self.sel["question"], len(self.rows["question"]) - 1)]["id"]
+        if tid is None:
+            self.flash("Ctrl+R wakes the agent on a question: pick one first.", "ye")
+            return
+        from agentdesk import wake
+        conn = db.connect(self.app.db_path)
+        try:
+            said = wake.wake(conn, tid)
+        finally:
+            conn.close()
+        log.info("wake #%s: %s", tid, said)
+        self.flash(said, "gr" if said.startswith("woke") else "ye")
+
     def reader_step(self, delta: int) -> None:
         rows = self.rows.get(self.channel, [])
         idx = next((i for i, r in enumerate(rows) if r["id"] == self.read_tid), None)
@@ -1537,6 +1579,8 @@ class TerminalView:
                 self.zoom(-1)
             elif k == "w":
                 self.toggle_worker()
+            elif k == "r":
+                self.wake_selected()
             elif k in ("c", "a", "insert"):
                 return None
             return "break"

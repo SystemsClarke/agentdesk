@@ -200,6 +200,30 @@ CREATE TABLE IF NOT EXISTS handoffs (
     updated_by  TEXT NOT NULL,
     torch_due   INTEGER NOT NULL DEFAULT 0
 );
+
+-- Which Claude Code session an author name last wrote from, so a reply from
+-- John can be carried back into THAT session: pushed live over a channel, or,
+-- once it has ended, resumed with his reply as its next prompt. pid is the MCP
+-- server's own process, which lives exactly as long as the session does.
+CREATE TABLE IF NOT EXISTS sessions (
+    author     TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    cwd        TEXT,
+    pid        INTEGER,
+    channels   INTEGER NOT NULL DEFAULT 0,
+    seen_ts    TEXT NOT NULL
+);
+
+-- How each of John's replies (an acks row) was carried to its agent.
+-- state: pushed (channel) | woke (wait watcher) | resumed | stuck | failed.
+-- 'picked up' is not stored here: it is acks.state='posted', the agent's own act.
+CREATE TABLE IF NOT EXISTS deliveries (
+    message_id INTEGER PRIMARY KEY,
+    method     TEXT NOT NULL,
+    state      TEXT NOT NULL,
+    detail     TEXT,
+    ts         TEXT NOT NULL
+);
 """
 
 # The work_events kinds, as a shared vocabulary rather than loose strings: the
@@ -1386,6 +1410,13 @@ def list_threads(conn, channel=None, status=None, limit=100, since=None,
         "       (SELECT author FROM messages WHERE thread_id=t.id AND COALESCE(CASE WHEN json_valid(meta)"
         "        THEN json_extract(meta,'$.kind') END,'') NOT IN ('ack','ack-note','read-receipt')"
         "        ORDER BY id DESC LIMIT 1) AS last_author,",
+        # How John's latest reply on the thread was carried: 'state|ts' (see delivery_status).
+        "       (SELECT COALESCE(CASE WHEN a.state='posted' THEN 'picked-up' END, d.state,"
+        "        CASE WHEN a.message_id IS NOT NULL THEN 'pending' END, '') || '|' || h.ts"
+        "        FROM messages h LEFT JOIN acks a ON a.message_id=h.id"
+        "        LEFT JOIN deliveries d ON d.message_id=h.id"
+        f"        WHERE h.thread_id=t.id AND h.author_kind='{paths.HUMAN_KIND}'"
+        "        ORDER BY h.id DESC LIMIT 1) AS delivery,",
         # The window asks this per row for the red flag and the tab count, and
         # it is the same predicate as the view's -- one WRITING of it, three
         # readers. WAITING_SQL is false for every non-question channel, so a
@@ -1551,3 +1582,70 @@ def unread_summary(conn) -> dict:
 
 def stats(conn) -> dict:
     return unread_summary(conn)
+
+
+# --- delivering John's replies back to the agent's session ------------------
+
+def record_session(conn, author, session_id, cwd, pid, channels) -> None:
+    if not author or not session_id:
+        return
+    conn.execute(
+        "INSERT INTO sessions(author, session_id, cwd, pid, channels, seen_ts) VALUES(?,?,?,?,?,?)"
+        " ON CONFLICT(author) DO UPDATE SET session_id=excluded.session_id, cwd=excluded.cwd,"
+        " pid=excluded.pid, channels=excluded.channels, seen_ts=excluded.seen_ts",
+        (author, session_id, cwd, pid, int(bool(channels)), now_iso()))
+    conn.commit()
+
+
+def session_for(conn, author):
+    row = conn.execute("SELECT * FROM sessions WHERE author=?", (author,)).fetchone()
+    return dict(row) if row else None
+
+
+def set_delivery(conn, message_id, method, state, detail=None, only_new=False) -> bool:
+    """Record how a reply was carried. only_new=True claims it (True if THIS call did)."""
+    verb = "INSERT OR IGNORE" if only_new else "INSERT OR REPLACE"
+    cur = conn.execute(f"{verb} INTO deliveries(message_id, method, state, detail, ts) VALUES(?,?,?,?,?)",
+                       (message_id, method, state, detail, now_iso()))
+    conn.commit()
+    return cur.rowcount == 1
+
+
+def undelivered_for_session(conn, session_id) -> list:
+    """John's replies owed to any author this session writes as, not yet carried."""
+    return [dict(r) for r in conn.execute(
+        "SELECT a.message_id, a.thread_id, a.agent, m.body, t.subject FROM acks a"
+        " JOIN sessions s ON s.author=a.agent JOIN messages m ON m.id=a.message_id"
+        " JOIN threads t ON t.id=a.thread_id LEFT JOIN deliveries d ON d.message_id=a.message_id"
+        " WHERE s.session_id=? AND a.state='pending' AND d.message_id IS NULL"
+        " ORDER BY a.message_id", (session_id,))]
+
+
+def replies_to_dispatch(conn, min_age_s=120, max_age_h=24) -> list:
+    """Pending replies nothing has carried yet (or that were stuck), within the window."""
+    now = datetime.now(timezone.utc)
+    lo = (now - timedelta(hours=max_age_h)).isoformat(timespec="seconds")
+    hi = (now - timedelta(seconds=min_age_s)).isoformat(timespec="seconds")
+    return [dict(r) for r in conn.execute(
+        "SELECT a.message_id, a.thread_id, a.agent, m.body, t.subject, d.state AS dstate FROM acks a"
+        " JOIN messages m ON m.id=a.message_id JOIN threads t ON t.id=a.thread_id"
+        " LEFT JOIN deliveries d ON d.message_id=a.message_id"
+        " WHERE a.state='pending' AND a.created_ts BETWEEN ? AND ?"
+        " AND (d.message_id IS NULL OR d.state IN ('stuck'))"
+        " ORDER BY a.message_id", (lo, hi))]
+
+
+def delivery_status(conn, message_id) -> str:
+    """picked-up | pushed | woke | resumed | stuck | failed | pending | '' (nothing owed)."""
+    a = conn.execute("SELECT state FROM acks WHERE message_id=?", (message_id,)).fetchone()
+    d = conn.execute("SELECT state FROM deliveries WHERE message_id=?", (message_id,)).fetchone()
+    if a and a["state"] == "posted":
+        return "picked-up"
+    return d["state"] if d else ("pending" if a else "")
+
+
+def relay_prompt(thread_id, subject, body) -> str:
+    """John's reply, framed so the receiving session treats it as him speaking."""
+    return (f"John replied on AgentDesk thread #{thread_id} (\"{subject}\"):\n\n{body}\n\n"
+            "(This is John's own reply, relayed from the board. Treat it as him talking to you: "
+            "act on it, and answer on that thread.)")

@@ -880,14 +880,15 @@ class App:
 
     # --- poll ----------------------------------------------------------------
 
-    USAGE_REFRESH_S = 300
+    USAGE_REFRESH_S = 0  # main() sets 300: real launches only, like dictation's warm-up
     _usage_at = 0.0
     _usage_busy = False
 
     def _maybe_refresh_usage(self) -> None:
         """Every 5 minutes, re-read plan usage from the claude CLI on a worker thread (it takes ~10 s)."""
         import time
-        if self._usage_busy or time.monotonic() - self._usage_at < self.USAGE_REFRESH_S:
+        if (not self.USAGE_REFRESH_S or self._usage_busy
+                or (self._usage_at and time.monotonic() - self._usage_at < self.USAGE_REFRESH_S)):
             return
         self._usage_busy, self._usage_at = True, time.monotonic()
 
@@ -1370,8 +1371,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 0
 
     app = App(args.db)
-    # Real launches only; check scripts build App directly and skip both.
+    # Real launches only; check scripts build App directly and skip these.
     dictate.warm()
+    App.USAGE_REFRESH_S = 300
     app.dictation.enable_preroll(bool(settings.load().get("preroll", True)))
     # Attached so _reload_code can release it before spawning a replacement
     # process -- see SingleInstance.release(). A plain attribute, not a

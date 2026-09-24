@@ -127,7 +127,8 @@ def main() -> int:
     check("starts on the main menu", v.screen == "main")
     main_text = v.body.get("1.0", "end")
     check("main menu shows the CONNECT line", "CONNECT" in main_text)
-    check("main menu shows the time-left line", "time left" in main_text, main_text.splitlines()[-2:])
+    check("main menu shows the usage line", "time left" in main_text or "monthly spend" in main_text,
+          main_text.splitlines()[-2:])
     shot("01-main")
 
     rec("open Questions", press(app, "q", "q"))

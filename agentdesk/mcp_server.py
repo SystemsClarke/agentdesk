@@ -10,7 +10,9 @@ that can act on returned JSON but never on a traceback.
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
+import sys
 
 from mcp.server.mcpserver import MCPServer
 
@@ -42,6 +44,9 @@ def _who(author: str | None) -> str:
     return identity.resolve(author)
 
 
+SESSION_ID = os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("AGENTDESK_SESSION") or ""
+
+
 def _deliver_acks(author: str) -> None:
     """Post this agent's queued acknowledgements, if any.
 
@@ -58,6 +63,8 @@ def _deliver_acks(author: str) -> None:
     try:
         conn = db.connect()
         try:
+            # Which session this author writes from: what a Wake button resumes later.
+            db.record_session(conn, author, SESSION_ID, os.getcwd(), os.getpid(), False)
             delivered = db.deliver_pending_acks(conn, author, ACK_BODY)
         finally:
             conn.close()
@@ -239,7 +246,12 @@ def ask_human(subject: str, body: str, author: str | None = None,
         tid = db.start_thread(conn, "question", subject, author, paths.AGENT_KIND, body,
                               meta=meta)
         _deliver_acks(author)
-        return _dump({"ok": True, "thread_id": tid})
+        wait = f'"{sys.executable}" "{os.path.join(os.path.dirname(__file__), "wait.py")}" {tid}'
+        return _dump({"ok": True, "thread_id": tid,
+                      "wake_on_reply": {"command": wait, "run_in_background": True},
+                      "next": "Start wake_on_reply.command now with Bash run_in_background=true. It exits "
+                              "the moment John answers, which wakes you with his reply. Then carry on with "
+                              "other work or end your turn; do not poll."})
     except ValueError as exc:
         return _dump({"error": str(exc)})
     except sqlite3.Error as exc:
