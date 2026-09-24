@@ -95,6 +95,25 @@ reported rather than taking the board down with it). If a module ever needs a
 second one, follow that shape: declare, validate before start, disable rather
 than crash, and make the disabled state visible instead of only logged.
 
+## Install and update
+
+`./build.ps1 -Package` builds a signed `releases\AgentDeskApp-win-Setup.exe`
+(Velopack). Running it needs no admin: it installs per-user to
+`%LOCALAPPDATA%\AgentDeskApp`, adds an **AgentDesk** Start menu shortcut, starts
+the core at login (HKCU `Run`), and points Claude Code's `agentdesk` MCP server
+and its three `agentdesk.exe hook` commands at the installed exe. Uninstall from
+Settings > Apps removes all of that; the board in `%LOCALAPPDATA%\AgentDesk` stays.
+The package id is not `AgentDesk` because uninstall deletes the install folder.
+
+The core checks GitHub Releases of `SystemsClarke/agentdesk` at start and every
+four hours, downloads silently, and applies the update at its next start. For a
+private repo, set `AGENTDESK_GITHUB_TOKEN` (user env var, read-only contents
+scope). To publish a release after packaging:
+
+```
+dotnet vpk upload github --repoUrl https://github.com/SystemsClarke/agentdesk --outputDir releases --publish --token <token>
+```
+
 ## Running it
 
 The window:

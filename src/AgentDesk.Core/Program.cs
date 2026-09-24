@@ -7,8 +7,10 @@ using AgentDesk.Core.Board;
 using AgentDesk.Core.Host;
 using AgentDesk.Core.Plugins;
 
+Setup.Run(); // Velopack: install/uninstall hooks exit here; a downloaded update is applied here
 using var single = new Mutex(true, $@"Local\{PipeNames.Board}", out var first); // one core per pipe
 if (!first) return; // already running
+_ = Setup.KeepUpdated();
 
 var data = Environment.GetEnvironmentVariable("AGENTDESK_DATA")
            ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "AgentDesk");

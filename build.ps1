@@ -1,12 +1,12 @@
 <#
 .SYNOPSIS
-  Build, test and install AgentDesk.
+  Build, test and package AgentDesk.
 .EXAMPLE
   ./build.ps1            # build (Debug)
   ./build.ps1 -Test      # build and run the tests
-  ./build.ps1 -Install   # publish Native AOT, sign with the local dev cert, install to %LOCALAPPDATA%\AgentDesk\bin
+  ./build.ps1 -Package   # publish Native AOT, pack a signed Setup.exe and update feed into releases\
 #>
-param([switch]$Test, [switch]$Install)
+param([switch]$Test, [switch]$Package)
 $ErrorActionPreference = 'Stop'
 Set-Location $PSScriptRoot
 
@@ -18,25 +18,23 @@ dotnet build -v q --nologo
 if ($LASTEXITCODE) { exit $LASTEXITCODE }
 if ($Test) { dotnet test --no-build -v q --nologo; if ($LASTEXITCODE) { exit $LASTEXITCODE } }
 
-if ($Install) {
-    $stage = Join-Path $PSScriptRoot 'obj\install'
+if ($Package) {
+    $stage = Join-Path $PSScriptRoot 'obj\package'
+    Remove-Item $stage -Recurse -ErrorAction Ignore
     foreach ($p in 'AgentDesk.Core', 'AgentDesk.Cli') {
         dotnet publish "src/$p" -c Release -r win-x64 -o $stage -v q --nologo
         if ($LASTEXITCODE) { exit $LASTEXITCODE }
     }
 
-    # Sign with the local development cert (build/agentdesk-cert-thumbprint.txt), timestamped.
+    # The package id is not "AgentDesk": Velopack installs to, and uninstall deletes, %LOCALAPPDATA%\<id>,
+    # and %LOCALAPPDATA%\AgentDesk holds the board. Every commit is a new version, so updates always move forward.
+    # vpk signs every exe with the local development cert (build/agentdesk-cert-thumbprint.txt), timestamped.
     $thumb = (Get-Content build\agentdesk-cert-thumbprint.txt -Raw).Trim()
-    $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" | Sort-Object FullName | Select-Object -Last 1
-    & $signtool sign /sha1 $thumb /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 /q (Get-ChildItem $stage -Filter *.exe).FullName
+    dotnet tool restore | Out-Null
+    dotnet vpk pack --packId AgentDeskApp --packTitle AgentDesk --packAuthors 'John Palenchar' `
+        --packVersion "0.1.$(git rev-list --count HEAD)" --packDir $stage --mainExe AgentDesk.Core.exe `
+        --runtime win-x64 --shortcuts StartMenuRoot --outputDir releases `
+        --signParams "/sha1 $thumb /fd SHA256 /tr http://timestamp.digicert.com /td SHA256"
     if ($LASTEXITCODE) { exit $LASTEXITCODE }
-
-    # The core is running whenever any agent session is; stop it just before the copy. The next hook restarts it.
-    $bin = Join-Path $env:LOCALAPPDATA 'AgentDesk\bin'
-    New-Item -ItemType Directory $bin -Force | Out-Null
-    Get-Process AgentDesk.Core -ErrorAction SilentlyContinue | Where-Object Path -like "$bin\*" | Stop-Process -Force
-    Copy-Item "$stage\*" $bin -Force
-    Get-ChildItem $bin -Filter *.exe | ForEach-Object {
-        '{0,-24} {1,6:N1} MB  {2}' -f $_.Name, ($_.Length / 1MB), (Get-AuthenticodeSignature $_.FullName).SignerCertificate.Subject
-    }
+    Get-AuthenticodeSignature releases\*Setup.exe | Format-Table Status, @{ n = 'Signer'; e = { $_.SignerCertificate.Subject } }, Path -AutoSize
 }

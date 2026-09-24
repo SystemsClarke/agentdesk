@@ -28,3 +28,6 @@ obj/
 TestResults/
 # ...except the parity tests' golden seed board
 !tests/AgentDesk.Tests/Parity/golden/seed.db
+
+# Velopack output of ./build.ps1 -Package: Setup.exe and the update feed.
+releases/
