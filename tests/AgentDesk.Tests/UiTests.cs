@@ -100,6 +100,25 @@ public sealed class UiTests : IDisposable
     }
 
     [Fact]
+    public async Task Status_carries_the_usage_meter()
+    {
+        var data = Directory.CreateDirectory(path + ".usage").FullName;
+        var feed = Path.Combine(data, "claude_usage.json");
+        var now = DateTimeOffset.Parse("2026-09-24T17:00:00+00:00");
+        Assert.Equal("no feed yet (add scripts/claude_usage_feed.py to your status line)", Usage.Report(feed, now)["summary"]!.GetValue<string>());
+        File.WriteAllText(feed, """{"extra": {"spent": 1099.99, "limit": 1100, "captured_ts": "2026-09-24T14:50:00+00:00"}}""");
+        Assert.True(Usage.Apply(feed, "Current session: 72% used · resets Sep 25, 11:30pm (America/New_York)\nCurrent week (all models): 80% used", now));
+        var left = Usage.Span((new DateTimeOffset(new DateTime(2026, 9, 25, 23, 30, 0, DateTimeKind.Local)) - now.AddMinutes(1)).TotalSeconds);
+        var r = Usage.Report(feed, now.AddMinutes(1));
+        Assert.Equal([$"time left: {left} in your 5-hour window, 72% used", "time left: unknown on the week, 80% used, getting close",
+            "monthly spend: $1,099.99 of $1,100 (100%) · nearly capped, as of 2h 11m ago"], r["lines"]!.AsArray().Select(l => l!.GetValue<string>()));
+        Assert.Equal($"5h 72%, resets in {left} · week 80% · spend $1,099.99 of $1,100 (100%) · nearly capped, as of 2h 11m ago · reported 1m ago",
+            r["summary"]!.GetValue<string>());
+        Assert.StartsWith("5h 72%", JsonDocument.Parse(await board.Heartbeats(data)).RootElement.GetProperty("usage").GetProperty("summary").GetString());
+        Directory.Delete(data, true);
+    }
+
+    [Fact]
     public async Task A_subscriber_is_pushed_a_write_made_elsewhere()
     {
         Log.Path = path + ".log";

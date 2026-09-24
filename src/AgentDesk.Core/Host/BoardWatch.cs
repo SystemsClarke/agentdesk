@@ -26,6 +26,16 @@ public sealed class BoardWatch(BoardStore store)
         return new JsonObject { ["ok"] = true }.ToJsonString(Wire.Indented);
     }
 
+    public bool Watched { get { lock (gate) return subscribers.Count > 0; } }
+
+    /// <summary>Something outside the database changed what the window shows (the usage meter): the same event, the same re-read.</summary>
+    public Task Notify()
+    {
+        Func<string, Task>[] now;
+        lock (gate) now = [.. subscribers];
+        return Task.WhenAll(now.Select(Push));
+    }
+
     async Task Watch()
     {
         try

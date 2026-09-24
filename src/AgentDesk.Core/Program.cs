@@ -24,6 +24,7 @@ var board = new AgentBoard(store, new PythonPlugins(python), $"\"{Path.Combine(A
 var hooks = new Hooks(store);
 var watch = new BoardWatch(store);
 Tray.Start(store);
+_ = Usage.KeepFresh(Path.Combine(data, "claude_usage.json"), watch);
 
 Log.Info($"core starting (pid {Environment.ProcessId})");
 await PipeServer.Run((req, push, gone) => req.Tool switch

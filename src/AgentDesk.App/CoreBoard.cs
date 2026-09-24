@@ -95,14 +95,15 @@ public sealed class CoreBoard : IBoard, IDisposable
         var beat = await Call("ui:status");
         var worker = beat.GetProperty("worker");
         var slack = beat.GetProperty("slack") is { ValueKind: JsonValueKind.Object } s ? s : default;
-        var relay = slack.ValueKind == JsonValueKind.Object && slack.TryGetProperty("last_relay", out var r) && r.ValueKind == JsonValueKind.Object
+        var usage = beat.GetProperty("usage");
+        var relay =slack.ValueKind == JsonValueKind.Object && slack.TryGetProperty("last_relay", out var r) && r.ValueKind == JsonValueKind.Object
             ? new Post("john", Ts(r, "ts"), Int(r, "thread_id"), "", "question") : null;
         return new([], [.. recent.Take(5)], [.. recent.Where(p => p.Author != "john" && p.Ts > DateTimeOffset.Now.AddDays(-1)).DistinctBy(p => p.Author)],
             bios, john, recent.TakeWhile(p => p.Author != "john").Count(p => p.Kind != "read-receipt"), filed,
             worker.GetProperty("running").GetBoolean(), Int(worker, "held") is var held and > 0 ? held : null,
             [.. worker.GetProperty("events").EnumerateArray().Select(e => new WorkEvent(Ts(e, "ts"), Str(e, "kind") ?? "", Str(e, "body") ?? ""))],
             slack.ValueKind == JsonValueKind.Object ? Ts(slack, "ts") : null, slack.ValueKind == JsonValueKind.Object && Int(slack, "poll_s") is var poll and > 0 ? poll : 15,
-            relay, [], [], "no feed yet (add scripts/claude_usage_feed.py to your status line)", [], "");
+            relay, [], [.. usage.GetProperty("lines").EnumerateArray().Select(l => l.GetString()!)], Str(usage, "summary") ?? "", [], "");
     }
 
     public void Dispose() => core.Dispose();
