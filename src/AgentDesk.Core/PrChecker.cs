@@ -67,7 +67,7 @@ public sealed class PrChecker(BoardStore store, Func<string, JsonObject>? gh = n
             try
             {
                 db.Reply((long)thread, "agentdesk", BoardDb.Agent, settled == "merged"
-                    ? $"Merged: {title}\n\n{where}\n\n{who}: your pull request is merged, and off John's merge list."
+                    ? $"Merged: {title}\n\n{where}\n\n{who}: your pull request is merged, and off John's merge list. "
                         + "Pull the base branch before building on it, and post on this thread if there is follow-up."
                     : $"Closed without merging: {title}\n\n{where}\n\n{who}: your pull request was closed rather than merged, so it is off "
                         + "John's merge list. Don't reopen it on your own; ask him on this thread if the change is still wanted.",
