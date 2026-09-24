@@ -698,12 +698,39 @@ public partial class MainWindow
         }
     }
 
-    void ToggleWorker() => Flash(st?.WorkerRunning == true ? "Stop requested. It finishes the item it holds first." : "Starting the worker...", "ye");
+    async void ToggleWorker()
+    {
+        Flash(st?.WorkerRunning == true ? "Stop requested. It finishes the item it holds first." : "Starting the worker...", "ye");
+        try
+        {
+            await board.ActAsync("ui:worker");
+            await Task.Delay(400); // re-read rather than assume: the start may fail
+            await RefreshAsync();
+        }
+        catch (Exception e) when (e is InvalidOperationException or IOException)
+        {
+            Flash(e.Message, "pk b");
+        }
+    }
 
-    void Wake()
+    /// <summary>Ctrl+R: resume the asking agent's session with John's reply. Only ever on this keypress: a human decides each wake.</summary>
+    async void Wake()
     {
         var tid = screen == "read" ? readTid : screen == "list" && channel == "question" && rows["question"].Count > 0 ? rows["question"][Sel].Id : null;
-        Flash(tid is null ? "Ctrl+R wakes the agent on a question: pick one first." : $"Waking #{tid} needs the core; it lands with CoreBoard.", "ye");
+        if (tid is null)
+        {
+            Flash("Ctrl+R wakes the agent on a question: pick one first.", "ye");
+            return;
+        }
+        try
+        {
+            var said = await board.ActAsync("ui:wake", new { thread_id = tid }) ?? "";
+            Flash(said, said.StartsWith("woke") ? "gr" : "ye");
+        }
+        catch (Exception e) when (e is InvalidOperationException or IOException)
+        {
+            Flash("Not woken: " + e.Message, "pk b");
+        }
     }
 
     void ReaderStep(int delta)

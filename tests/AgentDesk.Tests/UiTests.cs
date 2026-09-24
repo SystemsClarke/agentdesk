@@ -170,6 +170,35 @@ public sealed class UiTests : IDisposable
     }
 
     [Fact]
+    public async Task Worker_asks_a_running_crew_to_stop()
+    {
+        var data = Directory.CreateDirectory(path + ".worker").FullName;
+        File.WriteAllText(Path.Combine(data, "worker.state"), $$"""{"pid": {{Environment.ProcessId}}, "item": null}""");
+        Assert.Contains("\"stop_requested\": true", await board.ToggleWorker(data, "no-python-here")); // never starts one while it runs
+        Assert.True(File.Exists(Path.Combine(data, "worker.stop")));
+        Directory.Delete(data, true);
+    }
+
+    [Fact]
+    public async Task Wake_says_why_it_cannot_and_posts_nothing()
+    {
+        var data = Directory.CreateDirectory(path + ".wake").FullName;
+        async Task<string?> Said(int tid) => JsonDocument.Parse(await board.Wake(tid, data, "no-python-here")).RootElement.GetProperty("said").GetString();
+        Assert.Equal("#999 not found", await Said(999));
+        Assert.Equal($"you haven't replied on #{thread} yet", await Said((int)thread));
+        await board.JohnReplies((int)thread, "dev");
+        Assert.Equal("no session on record for builder: it asked before sessions were tracked", await Said((int)thread));
+        using (var db = store.Open()) db.RecordSession("builder", "sess-1", data, Environment.ProcessId);
+        Assert.Equal("builder's session is still open; it sees your reply on its next board write", await Said((int)thread));
+        using (var db = store.Open())
+        {
+            Assert.Equal("wake|stuck", db.Scalar("SELECT method || '|' || state FROM deliveries"));
+            Assert.Equal(2L, db.Scalar("SELECT COUNT(*) FROM messages")); // the question and John's reply: a wake posts nothing
+        }
+        Directory.Delete(data, true);
+    }
+
+    [Fact]
     public async Task A_subscriber_is_pushed_a_write_made_elsewhere()
     {
         Log.Path = path + ".log";

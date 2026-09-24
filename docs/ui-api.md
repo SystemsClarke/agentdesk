@@ -25,6 +25,8 @@ Every reply is a JSON document. A failure is `{"error": "..."}` (bad or missing 
 | `ui:status` | none | The heartbeat files in the data folder, read as the Tk window read them. `slack` is `slack_bridge.state` as written (`ts`, `poll_s`, `last_relay`), or `null`; up means `ts` is under 90 s old. `worker` is `worker.state` plus `running` (its pid is alive), `held` (its `item`, else the newest claimed work item) and `events` (that item's newest 80 `work_events`, oldest first). `usage` is the Claude plan meter from `claude_usage.json` (usage.py): `lines` rotate on the main menu prompt, `summary` is SysOp's Claude plan row. `prs` is the merge list, `pull_requests` rows newest first (200 at most, settled ones included; the window filters). `crew` is Options' Agent sessions section (sessions.py, crew.py, providers.py): `live` counts the agent sessions running in any process (`live-sessions/*.json`, dead ones swept), `note` describes the backend in `settings.json`'s `provider` (plus `last run fell back to X`), `backends` is the providers.json chain ←/→ cycles through, and `roles` has one row per crew role (`running_since`, `provider`, `resumed`, `session_id`, `items`, `fresh_due`). | `{"slack": {...}\|null, "worker": {...}, "usage": {"lines": [...], "summary": "..."}, "prs": [...], "crew": {...}}` |
 | `ui:fresh` | `name` | Queues a fresh start for that crew role (`handoffs.torch_due`): its next item begins a new session from its handoff note. | `{"ok": true}` |
 | `ui:check_prs` | none | Runs a merge-list check now instead of at the next minute (prs.py). The core checks every open PR through `gh pr view` 5 s after it starts and every minute after; only GitHub saying merged or closed takes a row off, and posts the notice on its thread as `agentdesk`. A failed check leaves the row open with `last_error`. | `{"ok": true}` |
+| `ui:worker` | none | Ctrl+W. A running crew (`worker.state`'s pid alive) is asked to stop: `worker.stop` is written, and the crew reads it between items, so the item it holds finishes. A stopped one is started as `python -m agentdesk.crew` from the Python repo, any leftover stop flag cleared first. A failure is an error naming it. | `{"ok": true, "stop_requested": true}` or `{"ok": true, "started": true\|false}` |
+| `ui:wake` | `thread_id` | Ctrl+R (wake.py): resumes the asking agent's Claude Code session with John's latest reply, through `sessions.run` (the one engine: a session slot and the chosen backend). Only ever sent on John's keypress, never on a timer, and it posts nothing to the board: it records the carry in `deliveries` (`wake`: `resumed`, `stuck` while the session is still open, `failed` with no claude CLI). | `{"ok": true, "said": "woke builder: ..."}`, the line the window flashes |
 
 The agents' tools (`list_threads`, `open_questions`, `recent_messages`, `search_messages`, ...) are
 callable too, with the same names and arguments as the MCP server; the list reads are side-effect free.
@@ -37,8 +39,8 @@ read receipt) and `delivery`, `<state>|<ts>` for John's newest message on the th
 While a window is subscribed, the core refreshes the usage meter every 5 minutes (`claude -p /usage`, no model call)
 and pushes `board.changed` when it lands, as the Tk app did while it was open.
 
-Not in the core yet, so the window still shows placeholders for them: disabled notifier sinks, the worker start/stop and Wake actions, and pr_scan.py (finding unregistered PRs on GitHub
-and their ladder triage line).
+Not in the core yet: disabled notifier sinks (SysOp shows "all delivering"), and pr_scan.py (finding unregistered
+PRs on GitHub and their ladder triage line).
 
 ## Push events
 

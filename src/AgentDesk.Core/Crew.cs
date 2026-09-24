@@ -9,8 +9,6 @@ public static class Crew
 {
     static readonly string[] Roles = ["builder", "verifier", "researcher"];
 
-    static JsonObject? Load(string file) { try { return JsonNode.Parse(File.ReadAllText(file)) as JsonObject; } catch (Exception) { return null; } }
-
     static bool Pid(JsonNode? n) => n is JsonValue v && v.TryGetValue(out double pid) && AgentBoard.Alive((int)pid);
 
     public static JsonObject Status(string data, BoardDb db)
@@ -20,15 +18,17 @@ public static class Crew
         foreach (var f in Directory.Exists(Path.Combine(data, "live-sessions")) ? Directory.GetFiles(Path.Combine(data, "live-sessions"), "*.json") : [])
         {
             if (!int.TryParse(Path.GetFileNameWithoutExtension(f), out var pid) || !AgentBoard.Alive(pid)) { try { File.Delete(f); } catch (IOException) { } continue; }
-            if (Load(f) is not { } s) continue;
+            if (AgentBoard.Load(f) is not { } s) continue;
             foreach (var (who, run) in (s["live"] as JsonObject ?? []).Where(r => Pid(r.Value?["pid"])).ToList())
                 live[who] = run!.DeepClone();
             if (s["answered"]?.ToString() is { Length: > 0 } a && s["ts"] is JsonValue t && t.TryGetValue(out double ts) && ts > newest) (answered, newest) = (a, ts);
         }
-        var provider = Load(Path.Combine(data, "settings.json"))?["provider"]?.ToString() ?? "claude";
+        var settings = AgentBoard.Load(Path.Combine(data, "settings.json"));
+        var provider = settings?["provider"]?.ToString() ?? "claude";
+        var max = int.TryParse(Environment.GetEnvironmentVariable("AGENTDESK_MAX_SESSIONS") ?? settings?["max_sessions"]?.ToString() ?? "3", out var m) ? Math.Max(1, m) : 3;
         var file = Environment.GetEnvironmentVariable("CLAUDE_PROVIDERS_FILE")
             ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude", "providers.json");
-        var cfg = Load(file);
+        var cfg = AgentBoard.Load(file);
         var profiles = cfg?["profiles"] as JsonObject ?? [];
         var name = profiles.ContainsKey(provider) ? provider : "claude";
         var note = profiles[name] is not JsonObject spec ? $"{name} (no {Path.GetFileName(file)} entry for it -- running on the Claude subscription)"
@@ -38,12 +38,13 @@ public static class Crew
         return new()
         {
             ["live"] = live.Count,
+            ["max"] = max,
             ["note"] = note + (answered.Length > 0 && answered != provider ? $"  ·  last run fell back to {answered}" : ""),
             ["backends"] = new JsonArray([.. (chain.Count > 0 ? chain : ["claude"]).Select(n => (JsonNode?)n)]),
             ["roles"] = new JsonArray([.. Roles.Select(r =>
             {
                 var run = live[r];
-                var session = Load(Path.Combine(data, "sessions", $"{r}.json"));
+                var session = AgentBoard.Load(Path.Combine(data, "sessions", $"{r}.json"));
                 return (JsonNode)new JsonObject
                 {
                     ["name"] = r,

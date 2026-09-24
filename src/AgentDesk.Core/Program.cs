@@ -48,6 +48,8 @@ Task<string> Ui(string op, Args a, Func<string, Task> push, CancellationToken go
     "status" => board.Heartbeats(data),
     "check_prs" => Task.FromResult(prs.Poke()),
     "fresh" => board.FreshStart(a.String("name")),
+    "worker" => board.ToggleWorker(data, python),
+    "wake" => board.Wake(a.Int("thread_id"), data, python),
     "subscribe" => Task.FromResult(watch.Subscribe(push, gone)),
     _ => Task.FromResult(Tools.Error($"unknown request: ui:{op}")),
 };

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -134,9 +135,8 @@ public sealed partial class AgentBoard(BoardStore store, IPythonPlugins plugins,
     /// <summary>The heartbeats the Slack bridge and the crew worker write into the data folder, read as the Tk window read them.</summary>
     public Task<string> Heartbeats(string data) => Run(db =>
     {
-        static JsonObject? Load(string file) { try { return JsonNode.Parse(File.ReadAllText(file)) as JsonObject; } catch (Exception) { return null; } }
         var worker = Load(Path.Combine(data, "worker.state")) ?? [];
-        worker["running"] = worker["pid"] is JsonValue p && p.TryGetValue(out int pid) && Alive(pid);
+        worker["running"] = WorkerRunning(worker);
         var item = worker["item"] is JsonValue i && i.TryGetValue(out int id) ? id
             : db.Scalar("SELECT id FROM threads WHERE channel='work' AND status='claimed' ORDER BY updated_ts DESC LIMIT 1") as long?;
         worker["held"] = item;
@@ -155,9 +155,75 @@ public sealed partial class AgentBoard(BoardStore store, IPythonPlugins plugins,
         return Ok();
     });
 
+    internal static JsonObject? Load(string file) { try { return JsonNode.Parse(File.ReadAllText(file)) as JsonObject; } catch (Exception) { return null; } }
+
+    static bool WorkerRunning(JsonObject? state) => state?["pid"] is JsonValue p && p.TryGetValue(out int pid) && Alive(pid);
+
+    static Process? crew;
+
+    /// <summary>Ctrl+W: a running crew is asked to stop (worker.stop, read between items, so the item it holds finishes);
+    /// a stopped one is started (`python -m agentdesk.crew`), with any leftover stop flag cleared first.</summary>
+    public Task<string> ToggleWorker(string data, string python) => Run(db =>
+    {
+        var stop = Path.Combine(data, "worker.stop");
+        if (WorkerRunning(Load(Path.Combine(data, "worker.state"))))
+        {
+            try { File.WriteAllText(stop, db.NowIso()); }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException) { throw new BoardError($"Could not write the stop flag: {e.Message}"); }
+            return Ok(("stop_requested", true));
+        }
+        if (crew is { HasExited: false }) return Ok(("started", false)); // this core started it; the heartbeat is on its way
+        try
+        {
+            File.Delete(stop);
+            crew = Process.Start(new ProcessStartInfo(Path.Combine(python, ".venv", "Scripts", "python.exe"), "-m agentdesk.crew")
+                { WorkingDirectory = python, UseShellExecute = false, CreateNoWindow = true });
+        }
+        catch (Exception e) when (e is IOException or System.ComponentModel.Win32Exception) { throw new BoardError($"Could not start the worker: {e.Message}"); }
+        return Ok(("started", true));
+    });
+
+    /// <summary>Ctrl+R (wake.py): resume the asking agent's Claude Code session with John's latest reply. Only ever run because John
+    /// pressed it in the window, never on a timer, and it posts nothing: it relays his own reply and records the delivery.</summary>
+    public Task<string> Wake(int threadId, string data, string python) => Run(db =>
+    {
+        JsonObject Said(string said) { Log.Info($"wake #{threadId}: {said}"); return Ok(("said", said)); }
+        void Delivery(long mid, string state, string detail) => db.Exec("INSERT OR REPLACE INTO deliveries(message_id, method, state, detail, ts) VALUES($m, 'wake', $s, $d, $ts)",
+            ("m", mid), ("s", state), ("d", detail), ("ts", db.NowIso()));
+        if (db.Rows("SELECT * FROM threads WHERE id=$id", ("id", threadId)).FirstOrDefault() is not { } t) return Said($"#{threadId} not found");
+        if (db.Rows("SELECT id, body FROM messages WHERE thread_id=$t AND author_kind='human' ORDER BY id DESC LIMIT 1", ("t", threadId)).FirstOrDefault() is not { } msg)
+            return Said($"you haven't replied on #{threadId} yet");
+        var (agent, mid) = (t["opened_by"]!.ToString(), (long)msg["id"]!);
+        if (db.Rows("SELECT * FROM sessions WHERE author=$a", ("a", agent)).FirstOrDefault() is not { } s)
+            return Said($"no session on record for {agent}: it asked before sessions were tracked");
+        if (s["pid"] is JsonValue pid && Alive((int)pid.GetValue<long>()))
+        {
+            Delivery(mid, "stuck", "session still open");
+            return Said($"{agent}'s session is still open; it sees your reply on its next board write");
+        }
+        if (Usage.ClaudeExe() is null)
+        {
+            Delivery(mid, "failed", "claude CLI not found");
+            return Said("couldn't find the claude CLI");
+        }
+        var cwd = s["cwd"]?.ToString() is { } dir && Directory.Exists(dir) ? dir : "";
+        var sid = s["session_id"]!.ToString();
+        var crewNow = Crew.Status(data, db);
+        // Through sessions.run, the one engine: it takes a slot (the Options cap) and the chosen backend.
+        var psi = new ProcessStartInfo(Path.Combine(python, ".venv", "Scripts", "python.exe")) { WorkingDirectory = python, UseShellExecute = false, CreateNoWindow = true };
+        foreach (var arg in new[] { "-c", "import sys; from agentdesk import sessions; sessions.run(sys.argv[1], sys.argv[2], resume=sys.argv[3], cwd=sys.argv[4] or None)",
+                     agent, $"John replied on AgentDesk thread #{threadId} (\"{t["subject"]}\"):\n\n{msg["body"]}\n\n(This is John's own reply, relayed from the board. "
+                     + "Treat it as him talking to you: act on it, and answer on that thread.)", sid, cwd })
+            psi.ArgumentList.Add(arg);
+        Process.Start(psi)?.Dispose();
+        Delivery(mid, "resumed", sid);
+        return Said($"woke {agent}: resuming its session with your reply"
+            + ((int)crewNow["live"]! >= (int)crewNow["max"]! ? " (queued: every session slot is busy)" : ""));
+    });
+
     internal static bool Alive(int pid)
     {
-        try { using var p = System.Diagnostics.Process.GetProcessById(pid); return !p.HasExited; }
+        try { using var p = Process.GetProcessById(pid); return !p.HasExited; }
         catch (Exception) { return false; }
     }
 

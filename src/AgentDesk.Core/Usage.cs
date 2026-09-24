@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using AgentDesk.Contracts;
+using AgentDesk.Core.Board;
 using AgentDesk.Core.Host;
 
 namespace AgentDesk.Core;
@@ -29,12 +30,10 @@ public static partial class Usage
 
     static bool Num(JsonNode? n, out double v) { v = 0; return n is JsonValue j && double.TryParse(j.ToString(), NumberStyles.Float, Inv, out v); }
 
-    static JsonObject? Load(string file) { try { return JsonNode.Parse(File.ReadAllText(file)) as JsonObject; } catch (Exception) { return null; } }
-
     /// <summary>What the window shows: "lines" rotate on the main menu prompt, "summary" is SysOp's Claude plan row.</summary>
     public static JsonObject Report(string file, DateTimeOffset now)
     {
-        if (Load(file) is not { Count: > 0 } d)
+        if (AgentBoard.Load(file) is not { Count: > 0 } d)
             return new() { ["lines"] = new JsonArray(), ["summary"] = "no feed yet (add scripts/claude_usage_feed.py to your status line)" };
         string In(DateTimeOffset r) => Span((r - now).TotalSeconds);
         var (five, week) = (d["five_hour"] as JsonObject, d["seven_day"] as JsonObject);
@@ -99,7 +98,7 @@ public static partial class Usage
     /// <summary>Fold `/usage` output into the feed, keeping what else it holds (the spend). False if it named no window.</summary>
     public static bool Apply(string file, string output, DateTimeOffset now)
     {
-        var d = Load(file) ?? [];
+        var d = AgentBoard.Load(file) ?? [];
         var found = false;
         foreach (var (key, label) in new[] { ("five_hour", "Current session"), ("seven_day", "Current week (all models)") })
             if (Regex.Match(output, Regex.Escape(label) + @": (\d+)% used(?: · resets (.+))?") is { Success: true } m && (found = true))
