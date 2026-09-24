@@ -1,7 +1,8 @@
 """The terminal view's richer Markdown: Mermaid drawn as box-drawing art, and code highlighting.
 
-Pure functions returning lines of (text, colour) segments, so mdview can insert them with
-whatever tags it likes and the layout can be tested without a window. Colours are the
+Pure functions returning lines of (text, colour) segments, so a caller can render them
+however it likes and the layout can be tested without a window. Also the line-structure
+regexes and table parsing slackfmt uses to turn a board message into Slack blocks. Colours are the
 terminal palette's names: fg mu fa rule pk or ye gr cy pu.
 """
 
@@ -534,3 +535,146 @@ def highlight(line: str, lang: str) -> list:
     if pos < len(line):
         segs.append((line[pos:], None))
     return segs
+
+
+# --- Markdown line structure (read by slackfmt) ----------------------------------
+
+# Inline spans. Code first so a backtick span is never further marked up, bold before
+# italic so **x** is never two *x*, images before links, explicit links before bare URLs.
+_INLINE = re.compile(
+    r"`(?P<code>[^`\n]+)`"
+    r"|\*\*(?P<bold>[^*\n]+?)\*\*"
+    r"|__(?P<bold2>[^_\n]+?)__"
+    r"|~~(?P<strike>[^~\n]+?)~~"
+    r"|\*(?P<ital>[^*\n]+)\*"
+    r"|!\[(?P<ialt>[^\]\n]*)\]\((?P<iurl>[^)\s]+)\)"
+    r"|\[(?P<ltxt>[^\]\n]+)\]\((?P<lurl>[^)\s]+)\)"
+    r"|<(?P<aurl>https?://[^>\s]+)>"
+    r"|(?P<burl>https?://[^\s)>\]]+)"
+)
+_TASK = re.compile(r"^\[( |x|X)\]\s+(.*)$")
+_ADMONITION = re.compile(r"^\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]\s*(.*)$", re.I)
+_ADM_LOOK = {"NOTE": ("cy", "ⓘ NOTE"), "TIP": ("gr", "✓ TIP"), "IMPORTANT": ("pu", "★ IMPORTANT"),
+             "WARNING": ("ye", "⚠ WARNING"), "CAUTION": ("pk", "✖ CAUTION")}
+_HEADING = re.compile(r"^(#{1,6})\s+(.+?)\s*#*\s*$")
+_BULLET = re.compile(r"^(\s*)[-*+]\s+(.*)$")
+_NUMBERED = re.compile(r"^(\s*)(\d+)[.)]\s+(.*)$")
+_RULE = re.compile(r"^\s*(?:-{3,}|\*{3,}|_{3,})\s*$")
+_QUOTE = re.compile(r"^\s*>\s?(.*)$")
+
+# A line that could be a table's delimiter row: only pipes, hyphens, colons and
+# spaces. Written this loosely and then checked cell by cell, rather than as one
+# clever pattern, because the alternation of `\s*` inside a repeated group is a
+# backtracking trap on a long line of spaces and the payoff would be cosmetic.
+_TABLE_CHARS = re.compile(r"^[|\-:\s]+$")
+_DELIM_CELL = re.compile(r"^\s*(:?)-+(:?)\s*$")
+# The character an escaped pipe is hidden behind while a row is split, so that
+# `a \| b` is one cell rather than two. NUL cannot occur in a message body.
+_ESCAPED_PIPE = "\x00"
+
+
+def _split_row(line: str) -> list[str]:
+    """One table row's cells, with one optional leading and trailing pipe gone.
+
+    `\\|` is an escaped pipe and belongs to the cell it is written in, so it is
+    hidden behind a NUL before the split and restored after -- otherwise a cell
+    containing a pipe would be silently cut into two cells, which shows up as a
+    column of garbage rather than as an error anybody can see.
+    """
+    s = line.strip().replace("\\|", _ESCAPED_PIPE)
+    if s.startswith("|"):
+        s = s[1:]
+    if s.endswith("|"):
+        s = s[:-1]
+    return [c.strip().replace(_ESCAPED_PIPE, "|") for c in s.split("|")]
+
+
+def _is_delim(line: str) -> bool:
+    """Is this line a table's delimiter row (`|---|---|`, `:--: | ---`)?
+
+    Every cell must be at least one hyphen, optionally colon-wrapped. A line of
+    hyphens and spaces that is not made of such cells -- a bullet, say -- is not
+    a delimiter however much of the alphabet it shares.
+    """
+    if not _TABLE_CHARS.match(line) or "-" not in line:
+        return False
+    return all(_DELIM_CELL.match(c.strip()) for c in _split_row(line))
+
+
+def _table_at(lines: list[str], i: int):
+    """(header, delimiter, rows, index_after) if a table starts at lines[i].
+
+    The pipe in the header line is the first of two conditions and both are
+    needed: a delimiter row with nothing over it is just a line of hyphens.
+
+    The second condition is the leniency the module docstring explains. A
+    delimiter row written WITHOUT pipes (`---` under `| Name |`) is only a
+    delimiter when its cell count matches the header's, as GFM says -- otherwise
+    it is a horizontal rule under a line that happened to contain a pipe, which
+    is what it looks like, and treating it as a table would eat the rule and
+    invent a one-column table nobody wrote. A delimiter row written WITH pipes
+    is taken as deliberate: its width is trusted and a header that disagrees is
+    rendered anyway rather than dropped.
+    """
+    if i + 1 >= len(lines) or "|" not in lines[i]:
+        return None
+    delim_line = lines[i + 1]
+    if not _is_delim(delim_line):
+        return None
+    header, delim = _split_row(lines[i]), _split_row(delim_line)
+    if "|" not in delim_line and len(delim) != len(header):
+        return None
+    rows: list[list[str]] = []
+    j = i + 2
+    while j < len(lines):
+        line = lines[j]
+        stripped = line.strip()
+        # The block ends at a blank line, at a line with no pipe in it, and at
+        # anything that is plainly another construct -- a fence, a heading, a
+        # rule, a second delimiter. Without the last of those, a heading that
+        # happens to contain a pipe becomes a row of a table it does not belong
+        # to, which is worse than ending the table a row early.
+        if (not stripped or "|" not in line or stripped.startswith("```")
+                or _is_delim(line) or _HEADING.match(line) or _RULE.match(line)):
+            break
+        rows.append(_split_row(line))
+        j += 1
+    return header, delim, rows, j
+
+
+def _plain(text: str) -> str:
+    """A cell's text as it will APPEAR -- markup markers and urls removed.
+
+    Column widths are computed from this and not from the source, because the
+    source is longer than the screen by however many `**` and backticks it
+    carries: sizing on the raw cell would leave every bolded column two
+    characters wider than its contents and the grid would be visibly loose.
+    """
+    out: list[str] = []
+    pos = 0
+    for m in _INLINE.finditer(text):
+        out.append(text[pos:m.start()])
+        if m.group("ialt") is not None:
+            out.append("▣ " + (m.group("ialt") or "image"))
+        else:
+            for group in ("code", "bold", "bold2", "strike", "ital", "ltxt", "aurl", "burl"):
+                if m.group(group) is not None:
+                    out.append(m.group(group))
+                    break
+        pos = m.end()
+    out.append(text[pos:])
+    return "".join(out)
+
+
+def _aligns(delim: list[str], ncols: int) -> list[str]:
+    """Per-column alignment from the delimiter row's colons; left by default."""
+    out = []
+    for j in range(ncols):
+        m = _DELIM_CELL.match(delim[j]) if j < len(delim) else None
+        if m and m.group(1) == ":" and m.group(2) == ":":
+            out.append("c")
+        elif m and m.group(2) == ":":
+            out.append("r")
+        else:
+            out.append("l")
+    return out

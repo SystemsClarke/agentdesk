@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import re
 
-from agentdesk import mdrich, mdview
+from agentdesk import mdrich
 
 SECTION_MAX = 2900   # Slack's hard limit is 3000 characters per section
 HEADER_MAX = 150
@@ -30,7 +30,7 @@ def _esc(s: str) -> str:
 
 def _inline(text: str) -> str:
     out, pos = [], 0
-    for m in mdview._INLINE.finditer(text):
+    for m in mdrich._INLINE.finditer(text):
         out.append(_esc(text[pos:m.start()]))
         g = m.groupdict()
         if g["code"] is not None:
@@ -54,10 +54,10 @@ def _inline(text: str) -> str:
 
 def _grid(header: list, delim: list, rows: list) -> str:
     ncols = max([len(header), len(delim)] + [len(r) for r in rows])
-    cells = lambda r: [mdview._plain(r[j]) if j < len(r) else "" for j in range(ncols)]
+    cells = lambda r: [mdrich._plain(r[j]) if j < len(r) else "" for j in range(ncols)]
     head, body = cells(header), [cells(r) for r in rows]
     widths = [max(1, max(len(c[j]) for c in [head] + body)) for j in range(ncols)]
-    aligns = mdview._aligns(delim, ncols)
+    aligns = mdrich._aligns(delim, ncols)
 
     def row(cs):
         parts = []
@@ -126,40 +126,40 @@ def _pieces(md: str, images: list) -> list:
                     text(f"_chart could not be drawn: {_esc(str(exc))}_")
             text(_fence(lang, block))
             continue
-        table = mdview._table_at(lines, i)
+        table = mdrich._table_at(lines, i)
         if table is not None:
             header, delim, rows, i = table
             text(_grid(header, delim, rows))
             continue
-        if mdview._RULE.match(line):
+        if mdrich._RULE.match(line):
             out.append(("divider", ""))
             i += 1
             continue
-        m = mdview._HEADING.match(line)
+        m = mdrich._HEADING.match(line)
         if m:
             if len(m.group(1)) == 1:
-                out.append(("header", mdview._plain(m.group(2))[:HEADER_MAX]))
+                out.append(("header", mdrich._plain(m.group(2))[:HEADER_MAX]))
             else:
                 text(f"*{_inline(m.group(2))}*")
             i += 1
             continue
-        if mdview._QUOTE.match(line):
+        if mdrich._QUOTE.match(line):
             quote = []
-            while i < len(lines) and mdview._QUOTE.match(lines[i]):
-                quote.append(mdview._QUOTE.match(lines[i]).group(1))
+            while i < len(lines) and mdrich._QUOTE.match(lines[i]):
+                quote.append(mdrich._QUOTE.match(lines[i]).group(1))
                 i += 1
-            adm = mdview._ADMONITION.match(quote[0].strip()) if quote else None
+            adm = mdrich._ADMONITION.match(quote[0].strip()) if quote else None
             if adm:
-                title = mdview._ADM_LOOK[adm.group(1).upper()][1]
+                title = mdrich._ADM_LOOK[adm.group(1).upper()][1]
                 quote = [f"*{title}*"] + ([adm.group(2)] if adm.group(2) else []) + quote[1:]
                 text("\n".join("> " + (q if q.startswith("*") and q.endswith("*") else _inline(q)) for q in quote))
             else:
                 text("\n".join("> " + _inline(q) for q in quote))
             continue
-        m = mdview._BULLET.match(line)
+        m = mdrich._BULLET.match(line)
         if m:
             level = min(3, len(m.group(1).expandtabs(4)) // 2)
-            task = mdview._TASK.match(m.group(2))
+            task = mdrich._TASK.match(m.group(2))
             if task:
                 mark = "☑" if task.group(1).lower() == "x" else "☐"
                 text("    " * level + f"{mark} {_inline(task.group(2))}")
@@ -167,7 +167,7 @@ def _pieces(md: str, images: list) -> list:
                 text("    " * level + "•◦▪·"[level] + " " + _inline(m.group(2)))
             i += 1
             continue
-        m = mdview._NUMBERED.match(line)
+        m = mdrich._NUMBERED.match(line)
         if m:
             level = min(3, len(m.group(1).expandtabs(4)) // 2)
             text("    " * level + f"{m.group(2)}. {_inline(m.group(3))}")
@@ -232,9 +232,9 @@ def fallback_text(md: str, limit: int = 300) -> str:
         if l.strip().startswith("```"):
             fenced = not fenced
             continue
-        if l.strip() and not fenced and not mdview._is_delim(l):
+        if l.strip() and not fenced and not mdrich._is_delim(l):
             keep.append(l)
-    plain = " ".join(re.sub(r"\[!\w+\]\s*", "", mdview._plain(l.strip().lstrip("#>-*+ ").replace("|", " ")))
+    plain = " ".join(re.sub(r"\[!\w+\]\s*", "", mdrich._plain(l.strip().lstrip("#>-*+ ").replace("|", " ")))
                      for l in keep)
     plain = re.sub(r"\s{2,}", " ", plain).strip()
     return plain[:limit] + ("…" if len(plain) > limit else "")

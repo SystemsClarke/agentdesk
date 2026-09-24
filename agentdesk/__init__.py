@@ -1,13 +1,11 @@
-﻿"""AgentDesk -- a message board between the human and the agents.
+"""AgentDesk's Python half -- what the C# core and the crew still run through.
 
-Four entry points, all against the one SQLite file in paths.DB_PATH:
-
-    agentdesk.app          the window, run with pythonw.exe
-    agentdesk.notify       Windows toasts
+    agentdesk.plugin       JSON-RPC over stdio for the core: vault mirror and vault search
+    agentdesk.crew         the coordinator and role dispatcher (sessions, roles, providers)
     agentdesk.backup       the hourly snapshot and vault transcript
 
-paths.py and db.py are the contract the other four are written against. Read
-them first; do not put storage logic anywhere else.
+paths.py and db.py are the contract the rest are written against. Read them
+first; do not put storage logic anywhere else.
 """
 
 __all__ = ["paths", "db"]

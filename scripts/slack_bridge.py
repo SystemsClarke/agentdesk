@@ -18,7 +18,7 @@ second ask silently.
 Inbound: Socket Mode listens for message.im events. A reply posted *inside*
 one of those Slack threads resolves back to the AgentDesk thread_id and
 answers it exactly the way the desktop app does when John answers from the
-window (see App.post_reply in agentdesk/app.py): db.reply(...HUMAN,
+window (ui:reply, BoardStore.cs in the C# core): db.reply(...HUMAN,
 HUMAN_KIND...) followed by db.set_thread_status(..., STATUS_ANSWERED) if the
 thread was still open. Nothing here writes a status directly or takes a
 shortcut around that path.

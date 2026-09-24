@@ -39,8 +39,9 @@ read receipt) and `delivery`, `<state>|<ts>` for John's newest message on the th
 While a window is subscribed, the core refreshes the usage meter every 5 minutes (`claude -p /usage`, no model call)
 and pushes `board.changed` when it lands, as the Tk app did while it was open.
 
-Not in the core yet: disabled notifier sinks (SysOp shows "all delivering"), and pr_scan.py (finding unregistered
-PRs on GitHub and their ladder triage line).
+Not in the core: notifier sinks (the Teams sink; SysOp shows "all delivering"), and the scan for unregistered PRs on
+GitHub with their ladder triage line. Both were Python (notify.py/teams_sink.py, pr_scan.py) and were deleted with the
+Tk app without a port; git history has them.
 
 ## Push events
 
