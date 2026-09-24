@@ -312,10 +312,10 @@ class TerminalView:
                 self._data_version = self._watch_conn.execute("PRAGMA data_version").fetchone()[0]
                 log.debug("board changed (data_version %s): refreshed in %.1fms", v,
                           (time.perf_counter() - t0) * 1000)
-        except sqlite3.Error as exc:
-            log.warning("data_version read failed: %r", exc)
         except tk.TclError:
             return
+        except Exception as exc:
+            log.warning("board watch failed: %r", exc)
         self.root.after(WATCH_MS, self._watch)
 
     # --- widgets -------------------------------------------------------------
@@ -434,7 +434,7 @@ class TerminalView:
             t.tag_configure("bar", background=p["ye"], foreground=p["on_bar"])
             t.tag_configure("barcy", background=p["cy"], foreground=p["on_bar"])
             t.tag_configure("inv", background=p["line"])
-            t.tag_configure("sel", background=p["ye"], foreground=p["on_bar"], font=self.bold)
+            t.tag_configure("cur", background=p["ye"], foreground=p["on_bar"], font=self.bold)
             t.tag_configure("rcpt", foreground=p["fa"])
         mono = self.font.actual("family")
         size = self.font.actual("size")
@@ -459,7 +459,7 @@ class TerminalView:
         from agentdesk import charts
         b._md_chart_theme = charts.theme_from_palette(p)
         b.tag_raise("rcpt")
-        self.lines_view.tag_raise("sel")
+        self.lines_view.tag_raise("cur")
         _titlebar(self.root, p)
         self._clear_screens()
 
@@ -582,8 +582,8 @@ class TerminalView:
         self.john_last = dict(me) if me else None
         since = self.john_last["id"] if self.john_last else 0
         n = conn.execute(
-            "SELECT COUNT(*) FROM messages WHERE id > ? AND author != ? AND NOT ("
-            " json_valid(meta) AND json_extract(meta, '$.kind') IN ('ack','ack-note','read-receipt'))",
+            "SELECT COUNT(*) FROM messages WHERE id > ? AND author != ? AND COALESCE("
+            "CASE WHEN json_valid(meta) THEN json_extract(meta, '$.kind') END, '') NOT IN ('ack','ack-note','read-receipt')",
             (since, paths.HUMAN)).fetchone()
         self.since_posts = int(n[0]) if n else 0
 
@@ -925,7 +925,7 @@ class TerminalView:
         else:
             L.append([S(" (time left: unlimited, you're the SysOp)", "fa")])
         L.append([S(" Main menu ", "fg"), S("[", "mu"), S("Q,D,W,J,P,S,B,O,G", "ye"), S("]", "mu"),
-                  S(": "), S(" ", "sel")])
+                  S(": "), S(" ", "cur")])
         self._see_line = None
         return L
 
@@ -965,7 +965,7 @@ class TerminalView:
             subj_tags = ("fg", "b") if code == "WAIT" else (("fg",) if code in ("OPEN", "HELD", "live") else ("mu",))
             if i == sel:
                 text = f" ▶{r['id']:>3}  {code}  {fit(r['subject'], subj_w)} {fit(by, 16)}{fit(when(r['updated_ts']), 11)} {r['message_count']:>3}"
-                L.append(pad([S(text, "sel")], W, "sel"))
+                L.append(pad([S(text, "cur")], W, "cur"))
             else:
                 L.append([S(f"  {r['id']:>3}  ", "ye"), S(code, *ctags), S("  "),
                           S(fit(r["subject"], subj_w), *subj_tags), S(" "), S(fit(by, 16), author_hue(r["opened_by"])),
@@ -1092,7 +1092,7 @@ class TerminalView:
             by = identity.label(r["requested_by"]) + (" (scan)" if r.get("source") == paths.PR_SOURCE_SCAN else "")
             ref = f"{r['repo']}#{r['number']}"
             if i == sel:
-                L.append(pad([S(f" ▶{st[0]}   {fit(ref, 22)}{fit(r['title'], title_w)} {fit(by, 14)}{fit(checked, 11)}", "sel")], W, "sel"))
+                L.append(pad([S(f" ▶{st[0]}   {fit(ref, 22)}{fit(r['title'], title_w)} {fit(by, 14)}{fit(checked, 11)}", "cur")], W, "cur"))
             else:
                 L.append([S(f"  {st[0]}   ", st[1]), S(fit(ref, 22), "cy"), S(fit(r["title"], title_w)), S(" "),
                           S(fit(by, 14), "mu"), S(fit(checked, 11), "pk" if r["last_error"] else "fa")])
@@ -1218,7 +1218,7 @@ class TerminalView:
                 doing = f"posted to #{c['thread_id']} {c['subject']}"
             seen = ago(c["ts"])
             if i == sel:
-                L.append(pad([S(f" ▶{i + 2:>3}  {fit(identity.label(name), 22)}{fit(doing, doing_w)} {seen:>7}", "sel")], W, "sel"))
+                L.append(pad([S(f" ▶{i + 2:>3}  {fit(identity.label(name), 22)}{fit(doing, doing_w)} {seen:>7}", "cur")], W, "cur"))
             else:
                 L.append([S(f"  {i + 2:>3}  ", "ye"), S(fit(identity.label(name), 22), author_hue(name), "b"),
                           S(fit(doing, doing_w), "fg" if idle_s <= 15 * 60 else "mu"), S(f" {seen:>7}", "fa")])
@@ -1261,7 +1261,7 @@ class TerminalView:
         start = len(L) + 1
         for i, (label, value, _key) in enumerate(items):
             if i == self.sel_opt:
-                L.append(pad([S(f" ▶ {fit(label, 28)} {value}", "sel")], W, "sel"))
+                L.append(pad([S(f" ▶ {fit(label, 28)} {value}", "cur")], W, "cur"))
             else:
                 L.append([S("   " + fit(label, 28), "fg"), S(" " + value, "ye" if value in ("ON",) else "mu")])
             self._click_map[start + i] = i

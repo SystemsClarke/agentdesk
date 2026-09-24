@@ -32,7 +32,6 @@ from agentdesk import db, paths  # noqa: E402
 
 FRAME_MS = 16.7
 failures: list = []
-PHOTO = SCRATCH / "photo.png"
 
 
 def check(name, ok, detail=""):
@@ -87,7 +86,8 @@ def main() -> int:
             shutil.copy(REAL_DATA / name, paths.DATA_DIR / name)
     (paths.DATA_DIR / "settings.json").write_text(json.dumps({"screech": False}), encoding="utf-8")
     from PIL import Image
-    Image.new("RGB", (300, 200), "#78dce8").save(PHOTO)
+    (paths.DATA_DIR / "attachments").mkdir(exist_ok=True)
+    Image.new("RGB", (300, 200), "#78dce8").save(paths.DATA_DIR / "attachments" / "photo.png")
     conn = db.connect(paths.DB_PATH)
     try:
         for subj in ("Stagger the JAWS MAIN nightly timers, or add SYMTOOLS agents?",
@@ -238,7 +238,7 @@ def main() -> int:
         '"series":{"JAWS":[41,38,33,29]},"goal":25}',
         "```",
         "",
-        f"![photo]({PHOTO.as_uri()})",
+        f"![photo]({(paths.DATA_DIR / "attachments" / "photo.png").as_uri()})",
         "",
         "- [x] stagger the nightly timers",
         "- [ ] add SYMTOOLS to more agents",

@@ -12,6 +12,7 @@ import argparse
 import ctypes
 import hashlib
 import json
+import logging
 import os
 import queue
 import sqlite3
@@ -37,6 +38,7 @@ except ImportError:  # pragma: no cover - depends on how the file was launched
     from agentdesk import (aumid, db, dictate, icon, identity, notify,
                           paths, pr_scan, prs, settings, vault, winedit)
 
+log = logging.getLogger("agentdesk.app")
 
 def _self_argv(subcommand: str, extra: Optional[list[str]] = None) -> list[str]:
     """The argv to re-invoke this program as `subcommand`, from source or exe.
@@ -372,6 +374,8 @@ class DictationController:
         for cls in ("Text", "Entry", "TEntry"):
             root.bind_class(cls, "<FocusIn>", self._on_focus_in, add="+")
             root.bind_class(cls, "<FocusOut>", self._on_focus_out, add="+")
+            # Replaces the class default (delete next char), which runs before bind_all.
+            root.bind_class(cls, "<Control-d>", self._on_key)
 
     def enable_preroll(self, on: bool) -> None:
         """Keep the last ~2 s of mic audio in RAM while a text box has focus (real launches only)."""
@@ -524,10 +528,16 @@ class DictationController:
         pct_lbl = ttk.Label(win, text="0%")
         pct_lbl.pack(pady=(0, 12))
 
+        last = [-1]
+
         def _progress(done: int, total: int) -> None:
+            pct = 100 * done // total
+            if pct == last[0]:
+                return  # one update per percent, not one per 8 KB block
+            last[0] = pct
             self.app.ui_queue.put(
-                lambda: (bar.configure(value=int(1000 * done / total)),
-                         pct_lbl.configure(text=f"{100 * done // total}%")))
+                lambda: win.winfo_exists() and (bar.configure(value=int(1000 * done / total)),
+                                                pct_lbl.configure(text=f"{pct}%")))
 
         def _worker() -> None:
             try:
@@ -836,8 +846,8 @@ class App:
                 break
             try:
                 fn()
-            except tk.TclError:
-                break  # the window is gone; there is nothing left to update
+            except Exception:
+                log.exception("ui callback failed")  # one bad callback must not stop the tray
         self.root.after(200, self._drain)
 
     def _show_window(self) -> None:
@@ -958,11 +968,13 @@ class App:
             # a transient failure waits for the next tick rather than bringing
             # the window down.
             notify.log_line(f"poll failed: {exc!r}")
+        except Exception:
+            log.exception("poll failed")
         finally:
             if conn is not None:
                 conn.close()
-        if reschedule:
-            self.root.after(self.POLL_MS, self._poll)
+            if reschedule:
+                self.root.after(self.POLL_MS, self._poll)
 
     def _apply_changes(self, conn: sqlite3.Connection,
                        open_qs: list[dict]) -> None:

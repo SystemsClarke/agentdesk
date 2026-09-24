@@ -54,8 +54,8 @@ def session_start() -> None:
         work = db.list_threads(conn, channel="work", limit=100)
         recent = conn.execute(
             "SELECT m.ts, m.author, m.thread_id, t.subject, t.channel FROM messages m"
-            " JOIN threads t ON t.id = m.thread_id WHERE NOT (json_valid(m.meta) AND"
-            " json_extract(m.meta,'$.kind') IN ('ack','ack-note','read-receipt'))"
+            " JOIN threads t ON t.id = m.thread_id WHERE COALESCE(CASE WHEN json_valid(m.meta)"
+            " THEN json_extract(m.meta,'$.kind') END,'') NOT IN ('ack','ack-note','read-receipt')"
             " ORDER BY m.id DESC LIMIT 6").fetchall()
         bios = conn.execute(
             "SELECT t.subject, (SELECT body FROM messages WHERE thread_id=t.id ORDER BY id LIMIT 1) AS body"

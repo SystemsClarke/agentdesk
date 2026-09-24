@@ -13,12 +13,14 @@ from __future__ import annotations
 import io
 import json
 import math
+import threading
 from pathlib import Path
 from typing import Optional
 
 from PIL import Image, ImageDraw, ImageFont
 
 FONTS = Path(r"C:\Windows\Fonts")
+_LOCK = threading.Lock()
 SS = 2  # drawn at 2x and downsampled, so lines and text are smooth
 
 THEMES = {
@@ -450,12 +452,21 @@ def theme_from_palette(pal: dict) -> dict:
 def render(spec: dict, theme="dark", scale: float = 1.0) -> Image.Image:
     """`theme` is "dark", "light" or a colour dict; `scale` is the display's DPI scale (1.5 at 150%)."""
     global SS
-    SS = max(2, round(2 * scale))
     t = theme if isinstance(theme, dict) else THEMES.get(theme, THEMES["dark"])
-    try:
-        return _TYPES[spec["type"]](spec, t)
-    finally:
-        SS = 2
+    if not isinstance(spec, dict) or spec.get("type") not in _TYPES:
+        raise ChartError(f"type must be one of {sorted(_TYPES)}")
+    spec = {**spec, **{k: max(50, min(2000, int(spec[k]))) for k in ("width", "height")
+                       if isinstance(spec.get(k), (int, float))}}
+    with _LOCK:  # SS is module state; the UI and the Slack bridge can render at once
+        SS = max(2, min(6, round(2 * scale)))
+        try:
+            return _TYPES[spec["type"]](spec, t)
+        except ChartError:
+            raise
+        except (ValueError, TypeError, KeyError, IndexError, AttributeError, OverflowError) as exc:
+            raise ChartError(f"bad chart spec: {exc}") from exc
+        finally:
+            SS = 2
 
 
 def table(columns: list, rows: list, theme="dark", aligns=None, max_width: int = 900,

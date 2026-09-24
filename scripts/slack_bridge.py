@@ -51,6 +51,7 @@ CREDS_DIR = Path(r"C:\Users\palencharj\.claude\slack-notify")
 BOT_TOKEN = (CREDS_DIR / "bot-token.txt").read_text().strip()
 APP_TOKEN = (CREDS_DIR / "app-token.txt").read_text().strip()
 JOHN_DM_CHANNEL = "D0C3KDM3DNX"
+JOHN_USER = "U0C4L06N4KA"  # only his messages in his DM are answers
 STATE_FILE = CREDS_DIR / "bridge_state.json"
 POLL_SECONDS = 15
 
@@ -67,7 +68,10 @@ def load_state() -> dict:
 
 
 def save_state(state: dict) -> None:
-    STATE_FILE.write_text(json.dumps(state, indent=2))
+    import os
+    tmp = STATE_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(state, indent=2))
+    os.replace(tmp, STATE_FILE)  # a crash mid-write must not lose every mapping
 
 
 def latest_body(thread_id: int) -> str:
@@ -95,45 +99,53 @@ def beat() -> None:
         pass
 
 
+def _post(q: dict, prev: dict | None) -> str:
+    """Post a question; a follow-up on one already in Slack goes into John's existing thread."""
+    body = latest_body(q["thread_id"])
+    asker = identity.label(q.get("opened_by") or "an agent")
+    body_blocks, images = slackfmt.md_to_slack(body)
+    head = (f"*☎ Question #{q['thread_id']}* from *{slackfmt._esc(asker)}*\n*{slackfmt._inline(q['subject'])}*"
+            if not prev else f"*↩ Follow-up on #{q['thread_id']}* from *{slackfmt._esc(asker)}*")
+    blocks = ([{"type": "section", "text": {"type": "mrkdwn", "text": head}}, {"type": "divider"}]
+              + body_blocks
+              + [{"type": "context", "elements": [{"type": "mrkdwn", "text":
+                  "Reply *in this thread* to answer. Photos work too."}]}])
+    extra = {"thread_ts": prev["ts"], "reply_broadcast": True} if prev else {}
+    resp = app.client.chat_postMessage(
+        channel=JOHN_DM_CHANNEL, blocks=blocks[:50], unfurl_links=False, unfurl_media=False,
+        text=f"Question #{q['thread_id']} from {asker}: {q['subject']} · " + slackfmt.fallback_text(body, 200),
+        **extra)
+    thread_ts = prev["ts"] if prev else resp["ts"]
+    for png, filename, title in images:
+        try:
+            app.client.files_upload_v2(channel=JOHN_DM_CHANNEL, thread_ts=thread_ts,
+                                       content=png, filename=filename, title=title)
+        except Exception as exc:  # the question is already in Slack; a lost chart must not re-post it
+            print(f"[slack_bridge] chart upload failed: {exc}", file=sys.stderr)
+    return thread_ts
+
+
 def poll_loop() -> None:
     while True:
         beat()
         try:
             with _state_lock:
                 state = load_state()
-                conn = db.connect()
-                try:
-                    waiting = db.open_questions(conn, include_archived=False)
-                finally:
-                    conn.close()
-
-                for q in waiting:
-                    tid = str(q["thread_id"])
-                    prev = state["posted"].get(tid)
-                    if prev and prev.get("updated_ts") == q["updated_ts"]:
-                        continue
-                    body = latest_body(q["thread_id"])
-                    asker = identity.label(q.get("opened_by") or "an agent")
-                    body_blocks, images = slackfmt.md_to_slack(body)
-                    blocks = ([{"type": "section", "text": {"type": "mrkdwn", "text":
-                                f"*☎ Question #{q['thread_id']}* from *{slackfmt._esc(asker)}*\n"
-                                f"*{slackfmt._inline(q['subject'])}*"}},
-                               {"type": "divider"}]
-                              + body_blocks
-                              + [{"type": "context", "elements": [{"type": "mrkdwn", "text":
-                                  "Reply *in this thread* to answer. Photos work too."}]}])
-                    resp = app.client.chat_postMessage(
-                        channel=JOHN_DM_CHANNEL, blocks=blocks[:50],
-                        unfurl_links=False, unfurl_media=False,
-                        text=f"Question #{q['thread_id']} from {asker}: {q['subject']} · "
-                             + slackfmt.fallback_text(body, 200))
-                    for png, filename, title in images:
-                        app.client.files_upload_v2(channel=JOHN_DM_CHANNEL, thread_ts=resp["ts"],
-                                                   content=png, filename=filename, title=title)
-                    state["posted"][tid] = {
-                        "ts": resp["ts"], "updated_ts": q["updated_ts"]}
+            conn = db.connect()
+            try:
+                waiting = db.open_questions(conn, include_archived=False)
+            finally:
+                conn.close()
+            for q in waiting:
+                tid = str(q["thread_id"])
+                prev = state["posted"].get(tid)
+                if prev and prev.get("updated_ts") == q["updated_ts"]:
+                    continue
+                ts = _post(q, prev)
+                with _state_lock:  # saved before anything else can fail, so a pass never re-posts
+                    state["posted"][tid] = {"ts": ts, "updated_ts": q["updated_ts"]}
                     save_state(state)
-                    _last_relay.update({"ts": db.now_iso(), "thread_id": q["thread_id"]})
+                _last_relay.update({"ts": db.now_iso(), "thread_id": q["thread_id"]})
         except Exception as exc:  # a bad pass must not kill future polling
             print(f"[slack_bridge] poll error: {exc}", file=sys.stderr)
         time.sleep(POLL_SECONDS)
@@ -168,8 +180,9 @@ def save_photos(files: list, thread_ts: str) -> list:
 
 @app.event("message")
 def handle_reply(event: dict, say) -> None:
-    if event.get("channel_type") != "im" or event.get("bot_id"):
-        return
+    if (event.get("channel") != JOHN_DM_CHANNEL or event.get("user") != JOHN_USER or event.get("bot_id")
+            or event.get("subtype") not in (None, "file_share")):
+        return  # edits, deletes and anyone else's messages are not answers
     thread_ts = event.get("thread_ts")
     if not thread_ts:
         say("Reply *inside the thread* of the question you're answering "

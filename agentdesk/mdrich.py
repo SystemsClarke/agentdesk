@@ -498,6 +498,8 @@ def highlight(line: str, lang: str) -> list:
         plain = lang in ("text", "txt", "log", "output")
         if plain:
             return [(line, None)]
+    if len(line) > 2000:  # the token regex backtracks quadratically on long quote runs
+        return highlight(line[:2000], lang) + [(line[2000:], None)]
     segs, pos = [], 0
     try:
         for m in _TOKEN.finditer(line):

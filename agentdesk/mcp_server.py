@@ -233,12 +233,15 @@ def ask_human(subject: str, body: str, author: str | None = None,
     do not use it for progress reports, which belong in post_message under
     discussion."""
     author = _who(author)
+    meta = {k: v for k, v in (meta or {}).items() if k != "kind"}  # a caller-set kind could hide it from John
     conn = db.connect()
     try:
         tid = db.start_thread(conn, "question", subject, author, paths.AGENT_KIND, body,
                               meta=meta)
         _deliver_acks(author)
         return _dump({"ok": True, "thread_id": tid})
+    except ValueError as exc:
+        return _dump({"error": str(exc)})
     except sqlite3.Error as exc:
         return _dump({"error": f"database error: {exc}"})
     finally:

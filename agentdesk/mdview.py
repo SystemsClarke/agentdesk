@@ -214,18 +214,30 @@ def render(widget: tk.Text, text: str) -> None:
         i += 1
 
 
+_IMAGES: dict = {}
+
+
 def _local_image(widget: tk.Text, url: str) -> bool:
     """Show a local image (a Slack photo saved by the bridge) inline, fitted to the pane."""
     from urllib.parse import unquote, urlparse
     from urllib.request import url2pathname
     from pathlib import Path
+    from agentdesk import paths
+    from PIL import Image
     try:
         path = Path(url2pathname(unquote(urlparse(url).path))) if url.startswith("file:") else Path(url)
-        if not path.is_file():
+        # Only the bridge's own photo folder: a message must not make the UI open a UNC share
+        # (a stall, and an NTLM handshake to whoever wrote it) or any other file on disk.
+        root = (paths.DATA_DIR / "attachments").resolve()
+        if str(path).startswith(("\\\\", "//")) or root not in path.resolve().parents:
             return False
-        from PIL import Image
-        img = Image.open(path)
-        img.load()
+        img = _IMAGES.get(path)
+        if img is None:
+            img = Image.open(path)
+            if img.width * img.height > 40_000_000:
+                return False
+            img.load()
+            _IMAGES[path] = img
     except Exception:
         return False
     k = _scale(widget)
