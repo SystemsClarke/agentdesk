@@ -1,10 +1,10 @@
-﻿<#
+<#
 .SYNOPSIS
   Build, test and install AgentDesk.
 .EXAMPLE
   ./build.ps1            # build (Debug)
   ./build.ps1 -Test      # build and run the tests
-  ./build.ps1 -Install   # publish Native AOT exes to %LOCALAPPDATA%\AgentDesk\bin and report their size
+  ./build.ps1 -Install   # publish Native AOT, sign with the local dev cert, install to %LOCALAPPDATA%\AgentDesk\bin
 #>
 param([switch]$Test, [switch]$Install)
 $ErrorActionPreference = 'Stop'
@@ -19,11 +19,24 @@ if ($LASTEXITCODE) { exit $LASTEXITCODE }
 if ($Test) { dotnet test --no-build -v q --nologo; if ($LASTEXITCODE) { exit $LASTEXITCODE } }
 
 if ($Install) {
-    $bin = Join-Path $env:LOCALAPPDATA 'AgentDesk\bin'
+    $stage = Join-Path $PSScriptRoot 'obj\install'
     foreach ($p in 'AgentDesk.Core', 'AgentDesk.Cli') {
-        dotnet publish "src/$p" -c Release -r win-x64 -o $bin -v q --nologo
+        dotnet publish "src/$p" -c Release -r win-x64 -o $stage -v q --nologo
         if ($LASTEXITCODE) { exit $LASTEXITCODE }
     }
-    Get-ChildItem $bin -Filter *.exe | ForEach-Object { '{0,-24} {1,6:N1} MB' -f $_.Name, ($_.Length / 1MB) }
-}
 
+    # Sign with the local development cert (build/agentdesk-cert-thumbprint.txt), timestamped.
+    $thumb = (Get-Content build\agentdesk-cert-thumbprint.txt -Raw).Trim()
+    $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" | Sort-Object FullName | Select-Object -Last 1
+    & $signtool sign /sha1 $thumb /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 /q (Get-ChildItem $stage -Filter *.exe).FullName
+    if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
+    # The core is running whenever any agent session is; stop it just before the copy. The next hook restarts it.
+    $bin = Join-Path $env:LOCALAPPDATA 'AgentDesk\bin'
+    New-Item -ItemType Directory $bin -Force | Out-Null
+    Get-Process AgentDesk.Core -ErrorAction SilentlyContinue | Where-Object Path -like "$bin\*" | Stop-Process -Force
+    Copy-Item "$stage\*" $bin -Force
+    Get-ChildItem $bin -Filter *.exe | ForEach-Object {
+        '{0,-24} {1,6:N1} MB  {2}' -f $_.Name, ($_.Length / 1MB), (Get-AuthenticodeSignature $_.FullName).SignerCertificate.Subject
+    }
+}
