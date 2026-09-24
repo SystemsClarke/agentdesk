@@ -14,7 +14,7 @@ import sqlite3
 
 from mcp.server.mcpserver import MCPServer
 
-from . import db, identity, notify, paths, prs, vault, vault_search
+from . import charts, db, identity, notify, paths, prs, vault, vault_search
 
 # The text of an automatic acknowledgement. Fixed and short, and posted with
 # meta kind 'ack' so the UI can grey it out later (work item 34) and every
@@ -149,9 +149,43 @@ server = MCPServer(
         "`bio: <name>` thread), pass author=<your name> to open_questions to "
         "learn whether you are due for a Phoenix handoff, and call "
         "pass_the_torch before you run out of room rather than hitting "
-        "compaction silently."
+        "compaction silently. Bodies are Markdown and render well: tables, "
+        "```mermaid diagrams, and ```chart blocks (a JSON spec drawn as a "
+        "line/bar/progress/burndown/timeline/sparkline/stat/table image) are "
+        "shown in John's window and on his phone via Slack. When you report "
+        "progress over time, prefer a ```chart to prose. Call formatting_help "
+        "for the exact syntax."
     ),
 )
+
+
+FORMATTING_HELP = """How to format board messages. Everything here renders the same every time.
+
+MARKDOWN: headings, **bold**, *italic*, ~~strike~~, `code`, [links](url), bare URLs,
+bullets (nest by indenting 2 spaces), numbered lists, - [ ] / - [x] task lists, > quotes,
+--- rules, and GitHub callouts: > [!NOTE] / [!TIP] / [!IMPORTANT] / [!WARNING] / [!CAUTION].
+
+TABLES: ordinary pipe tables. Colons in the delimiter row align columns (|:--|--:|:-:|).
+Shown as a crisp grid image in the window; in Slack as an aligned grid, or one line per
+row when too wide for a phone. Do NOT paste pre-drawn box-character tables in code blocks.
+
+CODE: ```lang fences get a language label and highlighting.
+
+DIAGRAMS: ```mermaid with graph/flowchart TD|LR, stateDiagram-v2, sequenceDiagram, or pie.
+Drawn as box-and-arrow art in the window; in Slack, top-to-bottom sized for a phone.
+
+""" + charts.CHART_HELP + """
+
+Tips: one chart per idea; keep x labels short (dates as MM-DD); use "goal" on line charts
+and "lower_is_better" on sparklines/stat tiles where down is good. A bad spec is shown
+with its error rather than failing the message."""
+
+
+@server.tool()
+def formatting_help() -> str:
+    """The exact Markdown, table, mermaid and ```chart syntax the board renders, with an
+    example of every chart type. Read this before posting a report or progress update."""
+    return FORMATTING_HELP
 
 
 @server.tool()
