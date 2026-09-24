@@ -50,7 +50,7 @@
                  AutomationProperties.HelpText="Ctrl+Enter sends. Escape goes back. Page Up and Page Down scroll the message." />
       </DockPanel>
     </StackPanel>
-    <RichTextBox x:Name="Body" IsReadOnly="True" IsReadOnlyCaretVisible="False" BorderThickness="0" Padding="0"
+    <RichTextBox x:Name="Body" IsReadOnly="True" IsDocumentEnabled="True" IsReadOnlyCaretVisible="False" BorderThickness="0" Padding="0"
                  Background="{DynamicResource bg}" Foreground="{DynamicResource fg}" SelectionBrush="{DynamicResource textsel}"
                  CaretBrush="Transparent" FocusVisualStyle="{x:Null}" VerticalScrollBarVisibility="Hidden"
                  HorizontalScrollBarVisibility="Hidden" AutomationProperties.Name="AgentDesk screen">

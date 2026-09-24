@@ -377,7 +377,7 @@ public partial class MainWindow
             var text = $" ─── {Label(m.Author)} {verb} {When(m.Ts)}{via} ";
             L.Add([S(" ───", receipt ? "rule rcpt" : "rule"), S(" " + Label(m.Author), Hue(m.Author) + " b" + (receipt ? " rcpt" : "")),
                 S($" {verb} {When(m.Ts)}", receipt ? "rcpt" : "mu"), S(via, "pu"), S(" " + Rep('─', W - text.Length - 1), "rule")]);
-            L.AddRange(m.Body.Split('\n').Select(Line (l) => [S(l, receipt ? "rcpt" : "")]));
+            L.AddRange(Markdown(m.Body, W - 2).Select(Line (l) => [S(" "), .. receipt ? l.Select(s => s with { Tags = (s.Tags + " rcpt").Trim() }) : l]));
             L.Add([]);
         }
         return L;

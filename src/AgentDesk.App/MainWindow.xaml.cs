@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Runtime.InteropServices;
@@ -30,7 +31,7 @@ public partial class MainWindow : Window
     readonly IBoard board;
     readonly JsonObject prefs = LoadPrefs();
     readonly List<Paragraph> paras = [];
-    readonly Dictionary<string, (Brush? Fg, Brush? Bg, bool Bold)> looks = [];
+    readonly Dictionary<string, (Brush? Fg, Brush? Bg, bool Bold, string[] T)> looks = [];
     readonly DispatcherTimer flashTimer = new() { Interval = TimeSpan.FromMilliseconds(3200) };
     readonly DispatcherTimer clock = new() { Interval = TimeSpan.FromSeconds(6) };
     List<Line> painted = [];
@@ -119,15 +120,15 @@ public partial class MainWindow : Window
     }
 
     /// <summary>Tag priority follows the Tk app's tag order: rcpt over cur over inv over the bars over a plain colour.</summary>
-    Run ToRun(Seg s)
+    Inline ToRun(Seg s)
     {
         if (!looks.TryGetValue(s.Tags, out var look))
         {
             var t = s.Tags.Split(' ');
             var fg = t.Contains("rcpt") ? "fa" : t.Contains("cur") || t.Contains("bar") || t.Contains("barcy") ? "on_bar"
                 : t.FirstOrDefault(x => x.Length == 2 || x is "rule");
-            var bg = t.Contains("cur") ? "ye" : t.Contains("inv") ? "line" : t.Contains("barcy") ? "cy" : t.Contains("bar") ? "ye" : null;
-            looks[s.Tags] = look = (fg is null ? null : (Brush)Resources[fg], bg is null ? null : (Brush)Resources[bg], t.Contains("b") || t.Contains("cur"));
+            var bg = t.Contains("cur") ? "ye" : t.Contains("inv") ? "line" : t.Contains("barcy") ? "cy" : t.Contains("bar") ? "ye" : t.Contains("pnl") ? "panel" : null;
+            looks[s.Tags] = look = (fg is null ? null : (Brush)Resources[fg], bg is null ? null : (Brush)Resources[bg], t.Contains("b") || t.Contains("cur"), t);
         }
         var run = new Run(s.Text);
         if (look.Fg != null)
@@ -136,7 +137,17 @@ public partial class MainWindow : Window
             run.Background = look.Bg;
         if (look.Bold)
             run.FontWeight = FontWeights.Bold;
-        return run;
+        if (look.T.Contains("i"))
+            run.FontStyle = FontStyles.Italic;
+        if (look.T.Contains("s"))
+            run.TextDecorations = TextDecorations.Strikethrough;
+        if (look.T.FirstOrDefault(x => x is "hd1" or "hd2" or "hd3") is { } hd) // the Tk app's heading sizes: +3, +2, +1 pt
+            run.FontSize = FontSize * (Pref("font_size", 11) + '4' - hd[2]) / Pref("font_size", 11);
+        if (look.T.FirstOrDefault(x => x.StartsWith("href:")) is not { } href || !Uri.TryCreate(href[5..], UriKind.Absolute, out var uri) || uri.Scheme is not ("http" or "https"))
+            return run;
+        var link = new Hyperlink(run) { NavigateUri = uri, Foreground = run.Foreground, ToolTip = uri.ToString() };
+        link.RequestNavigate += (_, e) => Process.Start(new ProcessStartInfo(e.Uri.ToString()) { UseShellExecute = true });
+        return link;
     }
 
     internal void Flash(string text, string tags = "fg")

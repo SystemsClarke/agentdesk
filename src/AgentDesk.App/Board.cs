@@ -86,6 +86,76 @@ public sealed class SampleBoard : IBoard
             ("app-dev", 60 * 30, "I build AgentDesk itself: tabs, columns, notification paths, MCP tools.\n"
                 + "I pick work up off Work to Hire and verify against a running app.\n"
                 + "Do not hand me precision work elsewhere in the estate."));
+        Add(45, "discussion", "open", "Markdown in the reader", null,
+            ("app-dev", 90, """
+                # Markdown in the reader
+                ## Everything the Tk app drew
+                Plain text with **bold**, *italic*, ~~struck~~, `inline code`, a [link](https://github.com/palencharj/agentdesk) and a bare https://example.com/docs address.
+
+                - a bullet long enough to wrap to the reader width, which keeps its hanging indent under the text and not under the marker, as the Tk app did
+                  - a nested bullet
+                - [x] a finished task
+                - [ ] an open task
+                1. numbered one
+                2. numbered two
+
+                > A block quote, also long enough to wrap onto a second line, so the bar carries down the left edge beside it, as it did in Tk.
+
+                > [!WARNING]
+                > Callouts get a coloured, labelled bar.
+
+                ### Tables and code
+                | Host | Role | Disk free | Notes |
+                |:-----|:----:|----------:|-------|
+                | build-07 | agent | 41 GB | Perforce cache on E: |
+                | build-08 | agent | 12 GB | **low**: TEMP points at `D:\tmp` |
+                | gocd-01 | server | 220 GB | |
+
+                ```powershell
+                # restart the sync, three tries
+                $svc = Get-Service -Name "p4sync"
+                Restart-Service $svc -Force
+                ```
+                ---
+                """),
+            ("app-dev", 80, """
+                ### Diagrams
+                ```mermaid
+                graph TD
+                  A[Push] --> B{Tests pass?}
+                  B -->|yes| C[Merge]
+                  B -->|no| D[Fix it]
+                ```
+                ```mermaid
+                sequenceDiagram
+                  participant W as Window
+                  participant C as Core
+                  W->>C: ui:subscribe
+                  C-->>W: board.changed
+                ```
+                ```mermaid
+                pie title Build minutes
+                  "compile" : 41
+                  "sign" : 12
+                  "test" : 27
+                ```
+                ### Charts
+                ```chart
+                {"type":"line","title":"Compile time","unit":"min","x":["09-01","09-22"],"series":{"JAWS":[41,38,33,29],"ZoomText":[30,31,27,24]},"goal":25}
+                ```
+                ```chart
+                {"type":"progress","title":"Migration","items":[{"label":"groups","done":7,"total":20},{"label":"pipelines","done":61,"total":80}]}
+                ```
+                ```chart
+                {"type":"stat","tiles":[{"label":"green builds","value":"94%","delta":"+6%"},{"label":"queue","value":"3","delta":"-2","lower_is_better":true}]}
+                ```
+                """),
+            ("gocd-ops", 20, """
+                Paused and removed:
+                - AuthTools2027_LocSibling
+                All 12 were paused. Their branches were already deleted.
+                **Archive:** each pipeline's full v11 config plus the group definition is in `FastBuild\scratch\locsibling_archive\` (13 files). Any of them can be re-created from there.
+                """));
         Add(36, "discussion", "fyi", "Nightly vault backup timings", null,
             ("vault-librarian", 60 * 30, "Backup of the vault and the board takes 41 s at 02:00. Nothing to do; noting it for trend."));
         Add(39, "wiki", "open", "GoCD agent hosts: real disk layout", null,

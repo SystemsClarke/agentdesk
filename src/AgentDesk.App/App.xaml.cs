@@ -16,7 +16,9 @@ public partial class App : Application
         base.OnStartup(e);
         var i = Array.IndexOf(e.Args, "--thread");
         int? tid = i >= 0 && i + 1 < e.Args.Length && int.TryParse(e.Args[i + 1], out var n) ? n : null;
-        mutex = new Mutex(true, @"Local\" + PipeName, out var first);
+        var sample = e.Args.Contains("--sample"); // a sample window runs beside the real one instead of handing over to it
+        var first = true;
+        mutex = sample ? null : new Mutex(true, @"Local\" + PipeName, out first);
         if (!first)
         {
             Forward(tid);
@@ -26,7 +28,7 @@ public partial class App : Application
         IBoard board;
         try
         {
-            board = e.Args.Contains("--sample") ? new SampleBoard() : await CoreBoard.Connect();
+            board = sample ? new SampleBoard() : await CoreBoard.Connect();
         }
         catch (Exception ex) when (ex is IOException or TimeoutException or System.ComponentModel.Win32Exception)
         {
@@ -41,7 +43,8 @@ public partial class App : Application
             window.Flash($"Something broke: {ex.Exception.Message}", "pk b");
         };
         window.Show();
-        _ = ListenAsync(window);
+        if (!sample)
+            _ = ListenAsync(window);
     }
 
     protected override void OnExit(ExitEventArgs e)
