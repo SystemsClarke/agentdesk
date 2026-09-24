@@ -10,9 +10,8 @@ rather than asserting one:
      that can only ever print zero proves nothing.
   3. A receipt that cannot feed itself: no ping-pong, no receipting your own
      thread, no receipt earned by another receipt.
-  4. A real window with a receipt and a real reply side by side, reporting the
-     tags and the foreground the pane actually resolved for each -- so the
-     distinction is measured, not asserted -- plus a PNG to look at.
+  4. The terminal reader with receipts and a real reply side by side: only the
+     receipts carry the "rcpt" tag, and adjacent receipts form one range.
 
 WHY THIS DRIVES THE REAL TOOLS. `LOCALAPPDATA` is redirected to a scratch
 directory before anything imports `agentdesk.paths`, and paths reads it once at
@@ -22,7 +21,6 @@ scratch board -- the real code path, not a rehearsal of it. The live board
 cannot be reached from this script by accident, which is the point.
 
     .venv\\Scripts\\python.exe scripts\\check_receipts.py
-    .venv\\Scripts\\python.exe scripts\\check_receipts.py --shot .\\receipts
 """
 
 from __future__ import annotations
@@ -343,98 +341,37 @@ def _tag_report(widget, offset: int) -> None:
     print(f"        tags: {', '.join(parts) if parts else '(none)'}")
 
 
-def check_side_by_side(ids: dict, appmod, shot: Path | None) -> None:
-    hr("5. a receipt and a real reply, side by side, in the real window")
+def check_side_by_side(ids: dict, appmod) -> None:
+    hr("5. a receipt and a real reply, side by side, in the terminal reader")
     app = appmod.App(paths.DB_PATH)
     app.root.withdraw()
     app.root.update()
-    time.sleep(0.3)
-    app.root.deiconify()
-    app.root.update()
     try:
-        for _ in range(4):
+        for _ in range(3):
             app.refresh_now()
             app.root.update()
-            time.sleep(0.05)
-
-        page = app.pages["discussion"]
-        app.nb.select(page)
+        app.view.open_thread(ids["side"])
         app.root.update_idletasks()
         app.root.update()
-
-        page.tree.selection_set(str(ids["side"]))
-        page._on_select()
-        app.root.update_idletasks()
-        app.root.update()
-
-        txt = page.msgs_txt
-        whole = txt.get("1.0", "end-1c")
-        print("  what the pane holds, in order:")
-        for line in whole.splitlines():
-            if line.strip():
-                print(f"      | {line[:66]}")
-
-        print()
-        print("  message by message: is it greyed, and by which tag?")
-        print("  ('receipt' is the only tag on this widget that sets a")
-        print("   foreground for a whole message, so the tag list IS the colour.)")
-        probes = (
+        txt = app.view.read_view
+        for label, needle, expect in (
             ("opener's real message", OPEN_MARK, False),
             ("the real reply", REPLY_MARK, False),
             ("builder's receipt", "builder picked this thread up", True),
             ("verifier's receipt", "verifier picked this thread up", True),
             ("newcomer's receipt", "newcomer was here", True),
             ("late-reader's receipt", "late-reader read this", True),
-        )
-        for label, needle, expect_greyed in probes:
-            found = txt.search(needle, "1.0", "end")
-            if not found:
-                FAILURES.append(f"{label}: not found in the pane")
+        ):
+            at = txt.search(needle, "1.0", "end")
+            if not at:
+                FAILURES.append(f"{label}: not found in the reader")
                 print(f"    {label:<24} NOT FOUND")
                 continue
-            # line.col -> a character offset, because tag_names() takes an
-            # index expression and "1.0 + N chars" is the only form that
-            # survives a needle spanning a line break.
-            names = txt.tag_names(f"1.0 + {whole.find(needle)} chars")
-            greyed = "receipt" in names
-            if greyed != expect_greyed:
-                FAILURES.append(
-                    f"{label}: greyed={greyed}, wanted {expect_greyed}")
-            print(f"    [{'ok' if greyed == expect_greyed else 'FAIL'}] "
-                  f"{label:<24} greyed={str(greyed):<5} at {found}")
-            print(f"          tags: "
-                  f"{', '.join(n + ('=' + txt.tag_cget(n, 'foreground') if txt.tag_cget(n, 'foreground') else '') for n in names) or '(none)'}")
-
-        print()
-        show("foreground configured for 'receipt'",
-             repr(txt.tag_cget("receipt", "foreground")))
-        check("that foreground is grey, not the body colour",
-              txt.tag_cget("receipt", "foreground") != txt.tag_cget("md", "foreground"),
-              True)
-
-        # The honest measurement of "which tag wins": Tk resolves overlapping
-        # tags by priority, and tag_names() with no argument returns every tag
-        # on the widget in that order. Print it, so the reader can see
-        # "receipt" sitting above mdview's tags rather than take it on trust.
-        show("tag priority, low to high", repr(txt.tag_names()))
-        show("'receipt' is last (highest)", str(txt.tag_names()[-1] == "receipt"))
-
-        # The spans themselves. Adjacent receipts merge into one span, which
-        # is why the count is lower than the number of greyed messages: four
-        # receipts in a row are one range, and that is not a bug.
-        ranges = txt.tag_ranges("receipt")
-        pairs = list(zip(ranges[0::2], ranges[1::2]))
-        show("spans carrying 'receipt'", f"{len(pairs)}")
-        for a, b in pairs:
-            lines = f"{a}..{b}"
-            first = txt.get(a, f"{a} lineend")
-            print(f"      {lines}  | {first[:52]}")
-
-        if shot:
-            shot.mkdir(parents=True, exist_ok=True)
-            out = (shot / "receipt-vs-reply.png").resolve()
-            from check_look import screenshot  # the ctypes capture, not a copy
-            show("screenshot", screenshot(app.root, out))
+            check(f"{label} greyed", "rcpt" in txt.tag_names(at), expect)
+        ranges = txt.tag_ranges("rcpt")
+        check("adjacent receipts greyed as one range", len(ranges) // 2, 1)
+        check("'rcpt' foreground differs from the body",
+              txt.tag_cget("rcpt", "foreground") != txt.cget("foreground"), True)
     finally:
         if app.icon is not None:
             try:
@@ -446,8 +383,6 @@ def check_side_by_side(ids: dict, appmod, shot: Path | None) -> None:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--shot", type=Path, default=None,
-                    help="write a PNG of the side-by-side pane here")
     ap.add_argument("--keep", action="store_true",
                     help="leave the scratch board behind")
     args = ap.parse_args()
@@ -467,7 +402,7 @@ def main() -> int:
     check_no_pingpong(ids)
     check_nothing_else_moves(ids)
     check_no_toast(ids, appmod)
-    check_side_by_side(ids, appmod, args.shot)
+    check_side_by_side(ids, appmod)
 
     hr()
     if FAILURES:
@@ -476,8 +411,6 @@ def main() -> int:
             print(f"  - {f}")
     else:
         print("every printed property held.")
-    print("\nNOT asserted anywhere above: that this looks good. That is what the")
-    print("PNG is for.")
     if not args.keep:
         print(f"(scratch board left at {_SCRATCH}; remove it when done.)")
     return 1 if FAILURES else 0

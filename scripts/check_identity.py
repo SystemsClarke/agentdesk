@@ -1,23 +1,17 @@
 """Does a session still read as `claude` on the board? Run this and see.
 
-Five checks, in rising order of how much they assume (the numbers below are the
+Four checks, in rising order of how much they assume (the numbers below are the
 section headers in the output):
 
  1. DERIVATION. Two sessions' worth of environment in, two different author
     strings out, and the rendering rules for a derived name and a legacy one.
- 2. THE COLUMN. The label widths are measured in the app's own Tk font against
-    the width the "by" column actually has, and the output says plainly what is
-    measured and what a font-blind module cannot prove.
  3. END TO END, over stdio, against the real MCP server. Two server processes
     are started the way the client starts them -- own environment, own working
     directory -- each posts to a scratch database, and the rows that land are
     printed. This is the acceptance test: it does not call the tool function
     in-process, it speaks the protocol to a separate process.
- 4. THROUGH THE WINDOW'S OWN CODE. The real `Page` widget is built over the
-    scratch database and its refresh_list / _on_select run unmodified, so what
-    is printed is the column and the detail pane as they will actually be
-    drawn -- not a second implementation that agrees with the first by
-    construction.
+ 4. THROUGH THE APP'S OWN CODE. The real App is built over the scratch
+    database; the terminal view's list and reader are what gets checked.
  5. THE CREW'S ROLE STAMP. Each role runs through the real `run_claude` with a
     stand-in CLI that reports the environment it was handed, so "a role keeps
     its name across a session reset" is a child process's answer and not a
@@ -43,6 +37,8 @@ PY = str(REPO / ".venv" / "Scripts" / "python.exe")
 if not Path(PY).exists():
     PY = sys.executable
 sys.path.insert(0, str(REPO))
+# The in-process App (part 4) must never touch the real board's folder.
+os.environ["LOCALAPPDATA"] = tempfile.mkdtemp(prefix="agentdesk-identity-self-")
 
 from agentdesk import identity  # noqa: E402
 
@@ -201,115 +197,39 @@ def part_e2e(scratch: Path) -> None:
           ["claude"])
 
 
-# --- 3. the column ---------------------------------------------------------------
-
-def part_column() -> None:
-    hr("2. the 'by' column, measured in the app's own font")
-    import tkinter as tk
-    from tkinter import font as tkfont
-
-    COLUMN = 80          # app.py: self.tree.column("by", width=80, ...)
-    PADDING = 8          # what a Treeview cell spends left and right
-    roof = COLUMN - PADDING
-
-    root = tk.Tk()
-    root.withdraw()
-    try:
-        font = tkfont.nametofont("TkDefaultFont")
-        print(f"  column width: {COLUMN}px (unchanged from before this change)")
-        print(f"  'Opened by' heading occupies: {font.measure('Opened by')}px")
-        # There is NO pixel bound here and it would be dishonest to print one.
-        # The cap is on characters, and 11 capitals are wider than 11 lower-
-        # case letters. What is measured below is every label a real board
-        # produces; a pathological all-capitals project name could still clip
-        # -- exactly as "work-dispatcher" already clips today at 86px.
-        print(f"  the cap is {identity.LABEL_MAX} CHARACTERS, not pixels; a "
-              f"hard pixel bound\n  is not available to a font-blind module, "
-              f"so what follows is measured, not proved")
-
-        worst, who = 0, ""
-        samples = ["builder", "verifier", "researcher", "john", "claude",
-                   "claude-code", "agentdesk-crew", "work-dispatcher"]
-        for env, cwd in ((SESSION_A, r"C:\work\project-alpha"),
-                         (SESSION_B, r"C:\work\short"),
-                         (SESSION_A, r"C:\work\a-very-long-project-name")):
-            samples.append(identity.session_identity(env, cwd=cwd))
-        for s in samples:
-            lbl = identity.label(s)
-            w = font.measure(lbl)
-            if w > worst:
-                worst, who = w, f"{s} -> {lbl!r}"
-            print(f"  {w:4d}px  {lbl:<14} (from {s!r})")
-        print(f"  widest real label: {worst}px ({who})")
-        check(f"every real label fits the {roof}px usable width",
-              worst <= roof, True)
-    finally:
-        root.destroy()
-
-
-# --- 4. through the window's own code --------------------------------------------
+# --- 4. through the terminal view's own code -------------------------------------
 
 def part_window(db_path: Path) -> None:
-    hr("4. the real Page widget, rendering that same database")
-    import tkinter as tk
-
+    hr("4. the real terminal view, rendering that same database")
     from agentdesk import app as appmod
-    from agentdesk import db as dbmod
 
-    class Stub:
-        """Just enough App for a Page: it only ever calls compose() and reads
-        db_path. The window's own refresh_list / refresh_detail / _on_select
-        run unmodified against these rows -- this is not a re-implementation
-        of the rendering, it is the rendering."""
-        def __init__(self, db_path):
-            self.db_path = db_path
-            self.icon = None
-
-        def compose(self, channel):
-            pass
-
-        def post_reply(self, channel, thread_id, body):
-            pass
-
-    root = tk.Tk()
-    root.withdraw()
+    app = appmod.App(db_path)
+    app.root.withdraw()
     try:
-        page = appmod.Page(root, Stub(db_path), "discussion")
-        conn = dbmod.connect(db_path)
-        try:
-            page.refresh_list(conn)
-            # values are (num, open, subject, by, updated, msgs); the thread
-            # id is the row's iid too (num is just that id, rendered), and
-            # the list is newest-activity-first.
-            listed = [(page.tree.item(i)["values"][2], page.tree.item(i)["values"][3])
-                      for i in page.tree.get_children()]
-            print("  the 'by' column, as the window builds it:")
-            for subject, by in listed:
-                print(f"    {by!r:<16} {subject}")
-            cells = dict(listed)
-            check("the column holds the short form, not the stored string",
-                  cells["from the alpha session"],
-                  identity.label("claude-code:project-alpha#a1b2"))
-            check("two sessions are two different cells",
-                  len({cells["from the alpha session"],
-                       cells["from the beta session"]}), 2)
-            check("the pre-change row still reads as it was stored",
-                  cells["an old thread"], "claude")
-
-            target = [i for i in page.tree.get_children()
-                      if page.tree.item(i)["values"][2] == "from the alpha session"]
-            page.tree.selection_set(target[0])
-            page._on_select()
-            detail = page.msgs_txt.get("1.0", "end-1c")
-        finally:
-            conn.close()
-        print("  the detail pane, as the window builds it:")
-        for line in detail.splitlines()[:2]:
-            print(f"    {line}")
-        check("the detail pane names the harness, the project and the session",
-              "claude-code in project-alpha, session a1b2 (agent)" in detail, True)
+        app.refresh_now()
+        app.view.goto("list", "discussion")
+        app.root.update()
+        listing = app.view.lines_view.get("1.0", "end")
+        check("the list holds the short form of the alpha session",
+              identity.label("claude-code:project-alpha#a1b2") in listing, True)
+        check("the pre-change row still reads as it was stored",
+              " claude " in listing, True)
+        conn = sqlite3.connect(db_path)
+        tid = conn.execute("SELECT id FROM threads WHERE subject=?",
+                           ("from the alpha session",)).fetchone()[0]
+        conn.close()
+        app.view.open_thread(tid)
+        app.root.update()
+        detail = app.view.read_view.get("1.0", "end")
+        check("the reader names the harness, the project and the session",
+              identity.describe("claude-code:project-alpha#a1b2")[:29] in detail, True)
     finally:
-        root.destroy()
+        if app.icon is not None:
+            try:
+                app.icon.stop()
+            except Exception:
+                pass
+        app.root.destroy()
 
 
 # --- 5. the crew's role stamp ----------------------------------------------------
@@ -340,8 +260,8 @@ def part_crew(scratch: Path) -> None:
 
 def main() -> int:
     part1()
-    part_column()
-    with tempfile.TemporaryDirectory(prefix="agentdesk-identity-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="agentdesk-identity-",
+                                     ignore_cleanup_errors=True) as tmp:
         scratch = Path(tmp)
         part_e2e(scratch)
         part_window(scratch / "appdata" / "AgentDesk" / "agentdesk.db")

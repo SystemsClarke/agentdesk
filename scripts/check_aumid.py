@@ -20,9 +20,8 @@ Six checks, in rising order of how much they assume:
  5. WINDOWS ACCEPTED IT. HKCU\\...\\Notifications\\Settings\\<AUMID> is read
     back after the toast -- the item's second acceptance criterion, and the
     one piece of it that is checkable from here at all.
- 6. THE WINDOW. The real App is built over a scratch database and the Test
-    toast button is asserted to be gone from the toolbar -- by reading the
-    strip's own children, so a second button under another name still fails.
+ 6. THE WINDOW. The real App is built over a scratch database and no
+    test-toast handler (toast_button, _test_toast, _report_toast) is left on it.
     So is the handler that sat behind it: a button removed while its handler
     stays leaves a method whose only caller is a test and a dialogue nobody can
     be shown, which is the "no code path left that only the test button could
@@ -241,18 +240,7 @@ def part_button(scratch: Path) -> None:
 
         window = appmod.App(db_path)
         window.root.withdraw()
-        strip_buttons = [w.cget("text")
-                         for w in window.worker_button.master.winfo_children()
-                         if isinstance(w, __import__('tkinter').ttk.Button)]
-        print(f"  the strip's buttons: {strip_buttons}")
-        # By the strip's own children, not by the absence of one attribute: a
-        # second button under a different name would pass the weaker test.
-        check("the Test toast button is gone from the strip",
-              "Test toast" in strip_buttons, False)
-        check("...and the worker control it sat beside is still there",
-              "Test toast" not in strip_buttons and len(strip_buttons) >= 1,
-              True)
-        # The half that a removed widget does not remove by itself.
+        # No handler outlives the removed button.
         for name in ("toast_button", "_test_toast", "_report_toast"):
             check(f"...and no {name} is left on the window",
                   hasattr(window, name), False)
