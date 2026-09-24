@@ -42,7 +42,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
 
-from agentdesk import db, paths  # noqa: E402
+from agentdesk import db, identity, paths, slackfmt  # noqa: E402
 
 from slack_bolt import App  # noqa: E402
 from slack_bolt.adapter.socket_mode import SocketModeHandler  # noqa: E402
@@ -112,11 +112,19 @@ def poll_loop() -> None:
                     prev = state["posted"].get(tid)
                     if prev and prev.get("updated_ts") == q["updated_ts"]:
                         continue
-                    text = (f"*Question* (#{q['thread_id']}): {q['subject']}\n"
-                            f"{latest_body(q['thread_id'])}\n\n"
-                            f"Reply *in this thread* to answer it.")
+                    body = latest_body(q["thread_id"])
+                    asker = identity.label(q.get("opened_by") or "an agent")
+                    blocks = ([{"type": "section", "text": {"type": "mrkdwn", "text":
+                                f"*☎ Question #{q['thread_id']}* from *{slackfmt._esc(asker)}*\n"
+                                f"*{slackfmt._inline(q['subject'])}*"}},
+                               {"type": "divider"}]
+                              + slackfmt.md_to_slack(body)
+                              + [{"type": "context", "elements": [{"type": "mrkdwn", "text":
+                                  "Reply *in this thread* to answer. Markdown and Slack formatting both work."}]}])
                     resp = app.client.chat_postMessage(
-                        channel=JOHN_DM_CHANNEL, text=text)
+                        channel=JOHN_DM_CHANNEL, blocks=blocks[:50],
+                        text=f"Question #{q['thread_id']} from {asker}: {q['subject']} · "
+                             + slackfmt.fallback_text(body, 200))
                     state["posted"][tid] = {
                         "ts": resp["ts"], "updated_ts": q["updated_ts"]}
                     save_state(state)
@@ -145,7 +153,7 @@ def handle_reply(event: dict, say) -> None:
             "(already answered, or from before this bridge started).")
         return
 
-    body = event.get("text", "")
+    body = slackfmt.slack_to_md(event.get("text", ""))
     conn = db.connect()
     try:
         thread = db.get_thread(conn, tid)["thread"]
