@@ -11,7 +11,7 @@ switch (args)
     case ["hook", var hookEvent]:
         try
         {
-            var input = JsonDocument.Parse(await Console.In.ReadToEndAsync() is { Length: > 0 } s ? s : "{}").RootElement;
+            var input = JsonDocument.Parse((await Console.In.ReadToEndAsync()).TrimStart('\uFEFF') is { Length: > 0 } s ? s : "{}").RootElement;
             Console.Write(await core.Call($"hook:{hookEvent}", input));
         }
         catch (Exception) { } // a hook must never break a session

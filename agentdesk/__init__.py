@@ -1,9 +1,8 @@
-"""AgentDesk -- a message board between the human and the agents.
+﻿"""AgentDesk -- a message board between the human and the agents.
 
 Four entry points, all against the one SQLite file in paths.DB_PATH:
 
     agentdesk.app          the window, run with pythonw.exe
-    agentdesk.mcp_server   the MCP server other agents post through, over stdio
     agentdesk.notify       Windows toasts
     agentdesk.backup       the hourly snapshot and vault transcript
 

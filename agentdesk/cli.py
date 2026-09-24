@@ -5,7 +5,6 @@ subcommand here instead, so the packaged build has exactly one exe to sign,
 allow-list, and register in Scheduled Tasks:
 
     AgentDesk.exe                 launch the GUI (equivalent to old `agentdesk.app`)
-    AgentDesk.exe mcp-server       stdio MCP server (equivalent to `agentdesk.mcp_server`)
     AgentDesk.exe crew             coordinator + role dispatcher (`agentdesk.crew`)
     AgentDesk.exe backup           one-shot snapshot/vault mirror (`agentdesk.backup`)
     AgentDesk.exe notify TITLE BODY   Windows toast, diagnostic CLI
@@ -44,12 +43,6 @@ def main(argv: list[str] | None = None) -> int:
         return app.main([])
 
     cmd, rest = argv[0], argv[1:]
-
-    if cmd == "mcp-server":
-        from agentdesk import mcp_server
-        # mcp_server.main() takes no args -- it only ever speaks stdio.
-        mcp_server.main()
-        return 0
 
     if cmd == "crew":
         from agentdesk import crew

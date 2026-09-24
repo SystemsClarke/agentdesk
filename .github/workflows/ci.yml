@@ -11,13 +11,6 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 10.0.x
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.14"
-      - name: Python deps (the parity tests run the Python board)
-        run: python -m venv .venv && .venv\Scripts\pip install -q -r requirements.txt
-      - name: Tool table is in sync with mcp_server.py
-        run: .venv\Scripts\python tools/gen_tools.py && git diff --exit-code src/AgentDesk.Contracts/Tools.g.cs
       - name: Build and test
         run: ./build.ps1 -Test
         shell: pwsh
