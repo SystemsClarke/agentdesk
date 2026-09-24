@@ -817,12 +817,39 @@ class App:
             title="AgentDesk - closing the window only hides it; Quit is here",
             menu=menu,
         )
+        self._hook_toast_click(self.icon)
         try:
             self.icon.run_detached()
         except Exception:
             # No tray available on this session: keep the window usable and
             # let closing it really close it, since there is no way back in.
             self.icon = None
+
+    _toast_tid: Optional[int] = None  # the question the latest toast was about
+
+    def _hook_toast_click(self, icon) -> None:
+        """Clicking a toast opens the question it announced.
+
+        The toast is the tray icon's balloon; Windows reports a click on it to the icon as
+        NIN_BALLOONUSERCLICK, which pystray ignores, so it is caught here on the way in."""
+        try:
+            from pystray._util import win32 as pw
+            handlers = icon._message_handlers
+            original = handlers[pw.WM_NOTIFY]
+        except (ImportError, AttributeError, KeyError):
+            return  # not the win32 backend: a click just does what it always did
+
+        def on_notify(wparam, lparam):
+            if lparam == 0x0405:  # NIN_BALLOONUSERCLICK (WM_USER + 5)
+                self.ui_queue.put(self._open_toasted)
+                return 0
+            return original(wparam, lparam)
+        handlers[pw.WM_NOTIFY] = on_notify
+
+    def _open_toasted(self) -> None:
+        self._show_window()
+        if self._toast_tid is not None:
+            self.view.open_thread(self._toast_tid, back="list")
 
     def _on_tray_open(self, icon: object, item: object) -> None:
         self.ui_queue.put(self._show_window)
@@ -1065,6 +1092,7 @@ class App:
             # fell back to a PowerShell subprocess and the failure was only
             # visible in the log. Swapping which fact goes in which field fixes
             # it without shortening either: subjects do not reach 256.
+            self._toast_tid = q["thread_id"]  # what a click on this toast opens
             notify.toast(f"New question from {identity.label(q['opened_by'])}",
                          q["subject"], icon=self.icon)
         self.root.title(window_title(self.db_path, len(open_qs)))
