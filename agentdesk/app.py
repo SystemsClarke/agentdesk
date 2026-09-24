@@ -901,6 +901,39 @@ class App:
                 self._usage_busy = False
         threading.Thread(target=work, daemon=True, name="usage-refresh").start()
 
+    BRIDGE_STALE_S = 90
+    _bridge_proc = None
+
+    def _keep_bridge_alive(self) -> None:
+        """Run the Slack bridge as this app's child and restart it if its heartbeat goes quiet.
+
+        Launched from here rather than its own scheduled task: task-launched copies hung silently on
+        this machine (no log, no heartbeat), while a child of the app runs normally.
+        """
+        import time
+        if not self.USAGE_REFRESH_S:  # real launches only (main() sets it); check scripts skip this
+            return
+        try:
+            beat = json.loads((paths.DATA_DIR / "slack_bridge.state").read_text(encoding="utf-8"))
+            age = time.time() - datetime.fromisoformat(beat["ts"]).timestamp()
+        except (OSError, ValueError, KeyError):
+            age = float("inf")
+        if age < self.BRIDGE_STALE_S:
+            return
+        p = self._bridge_proc
+        if p is not None and p.poll() is None:
+            if age < self.BRIDGE_STALE_S * 3:
+                return  # still starting up
+            p.kill()
+        script = Path(__file__).resolve().parent.parent / "scripts" / "slack_bridge.py"
+        pyw = Path(sys.executable).with_name("pythonw.exe")
+        try:
+            self._bridge_proc = subprocess.Popen([str(pyw if pyw.exists() else sys.executable), str(script)],
+                                                 cwd=str(script.parent.parent), creationflags=0x08000000)
+            log.info("started the Slack bridge (pid %s; heartbeat was %.0fs old)", self._bridge_proc.pid, age)
+        except OSError:
+            log.exception("could not start the Slack bridge")
+
     def _poll(self) -> None:
         self._do_poll(reschedule=True)
 
@@ -937,6 +970,10 @@ class App:
     def _do_poll(self, reschedule: bool) -> None:
         conn = None
         self._maybe_refresh_usage()
+        try:
+            self._keep_bridge_alive()
+        except Exception:
+            log.exception("bridge supervision failed")
         try:
             conn = db.connect(self.db_path)
             row = conn.execute("SELECT MAX(id) FROM messages").fetchone()

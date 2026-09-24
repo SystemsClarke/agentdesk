@@ -23,8 +23,10 @@ HUMAN_KIND...) followed by db.set_thread_status(..., STATUS_ANSWERED) if the
 thread was still open. Nothing here writes a status directly or takes a
 shortcut around that path.
 
-Run: `python scripts/slack_bridge.py` (or via the "AgentDesk Slack Bridge"
-Scheduled Task, which runs this hidden and keeps it alive across reboots).
+Run: the AgentDesk app starts this as its own child and restarts it whenever
+the heartbeat goes quiet (App._keep_bridge_alive). A scheduled task for it hung
+silently on this machine, so there deliberately is none. By hand:
+`python scripts/slack_bridge.py`.
 Needs `slack_bolt` installed and two credential files that are NOT part of
 this repo:
   C:\\Users\\palencharj\\.claude\\slack-notify\\bot-token.txt  (xoxb-...)
@@ -34,10 +36,16 @@ this repo:
 from __future__ import annotations
 
 import json
+import os
 import sys
 import threading
 import time
 from pathlib import Path
+
+if sys.stdout is None or sys.stderr is None:  # pythonw (the scheduled task): no console, so log to a file
+    _log = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "AgentDesk" / "slack_bridge.log"
+    _log.parent.mkdir(parents=True, exist_ok=True)
+    sys.stdout = sys.stderr = open(_log, "a", encoding="utf-8", buffering=1)
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
