@@ -1,5 +1,6 @@
 <Solution>
   <Folder Name="/src/">
+    <Project Path="src/AgentDesk.App/AgentDesk.App.csproj" />
     <Project Path="src/AgentDesk.Cli/AgentDesk.Cli.csproj" />
     <Project Path="src/AgentDesk.Contracts/AgentDesk.Contracts.csproj" />
     <Project Path="src/AgentDesk.Core/AgentDesk.Core.csproj" />

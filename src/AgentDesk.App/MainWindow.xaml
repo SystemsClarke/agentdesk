@@ -1,0 +1,66 @@
+<Window x:Class="AgentDesk.App.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="AgentDesk" Width="1120" Height="760" MinWidth="720" MinHeight="420"
+        FontFamily="Cascadia Mono, Cascadia Code, JetBrains Mono, Consolas, Courier New"
+        Background="{DynamicResource bg}" Foreground="{DynamicResource fg}">
+  <Window.Resources>
+    <Style TargetType="TextBlock" x:Key="Prompt">
+      <Setter Property="FontWeight" Value="Bold" />
+      <Setter Property="Foreground" Value="{DynamicResource ye}" />
+      <Setter Property="Margin" Value="10,4,6,0" />
+    </Style>
+    <Style TargetType="TextBox">
+      <Setter Property="Background" Value="{DynamicResource panel}" />
+      <Setter Property="Foreground" Value="{DynamicResource fg}" />
+      <Setter Property="CaretBrush" Value="{DynamicResource ye}" />
+      <Setter Property="SelectionBrush" Value="{DynamicResource textsel}" />
+      <Setter Property="Padding" Value="6,4" />
+      <Setter Property="Margin" Value="0,0,10,0" />
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="TextBox">
+            <Border x:Name="Edge" BorderThickness="1" BorderBrush="{DynamicResource line}" Background="{TemplateBinding Background}">
+              <ScrollViewer x:Name="PART_ContentHost" Margin="{TemplateBinding Padding}" VerticalScrollBarVisibility="Hidden" />
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsKeyboardFocused" Value="True">
+                <Setter TargetName="Edge" Property="BorderBrush" Value="{DynamicResource ye}" />
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+  </Window.Resources>
+  <DockPanel>
+    <TextBlock x:Name="TopText" DockPanel.Dock="Top" Padding="10,5" Background="{DynamicResource panel}" TextWrapping="NoWrap" />
+    <TextBlock x:Name="BarText" DockPanel.Dock="Bottom" Padding="10,5" Background="{DynamicResource panel}" TextWrapping="NoWrap"
+               AutomationProperties.LiveSetting="Polite" AutomationProperties.Name="Status" />
+    <StackPanel x:Name="Input" DockPanel.Dock="Bottom" Margin="0,4,0,0">
+      <DockPanel x:Name="SubjectRow" Margin="0,0,0,6">
+        <TextBlock Style="{StaticResource Prompt}" Text="subj>" Margin="10,0,6,0" VerticalAlignment="Center" />
+        <TextBox x:Name="Subject" AutomationProperties.Name="Subject" />
+      </DockPanel>
+      <TextBlock Margin="10,0,10,6" Foreground="{DynamicResource fa}"
+                 Text="Ctrl+Enter sends  ·  Ctrl+D dictates: local speech-to-text that runs on this PC (nothing leaves the machine; the first use downloads the model once)" />
+      <DockPanel Margin="0,0,0,6">
+        <TextBlock Style="{StaticResource Prompt}" Text="john>" VerticalAlignment="Top" />
+        <TextBox x:Name="Reply" AcceptsReturn="True" TextWrapping="Wrap" MinLines="3" MaxLines="3" AutomationProperties.Name="Reply as john"
+                 AutomationProperties.HelpText="Ctrl+Enter sends. Escape goes back. Page Up and Page Down scroll the message." />
+      </DockPanel>
+    </StackPanel>
+    <RichTextBox x:Name="Body" IsReadOnly="True" IsReadOnlyCaretVisible="False" BorderThickness="0" Padding="0"
+                 Background="{DynamicResource bg}" Foreground="{DynamicResource fg}" SelectionBrush="{DynamicResource textsel}"
+                 CaretBrush="Transparent" FocusVisualStyle="{x:Null}" VerticalScrollBarVisibility="Hidden"
+                 HorizontalScrollBarVisibility="Hidden" AutomationProperties.Name="AgentDesk screen">
+      <FlowDocument x:Name="Doc" PagePadding="12,8">
+        <FlowDocument.Resources>
+          <Style TargetType="Paragraph">
+            <Setter Property="Margin" Value="0" />
+          </Style>
+        </FlowDocument.Resources>
+      </FlowDocument>
+    </RichTextBox>
+  </DockPanel>
+</Window>
