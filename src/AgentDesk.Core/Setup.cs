@@ -52,7 +52,7 @@ static class Setup
     static void Register(bool on)
     {
         using (var run = Registry.CurrentUser.CreateSubKey(RunKey))
-            if (on) run.SetValue("AgentDesk", $"\"{Environment.ProcessPath}\""); else run.DeleteValue("AgentDesk", false);
+            if (on) run.SetValue("AgentDesk", $"\"{Environment.ProcessPath}\" --background"); else run.DeleteValue("AgentDesk", false);
 
         Edit(Path.Combine(Home, ".claude.json"), root =>
         {

@@ -45,7 +45,7 @@ public sealed class CoreConnection : IDisposable
         try { await pipe.ConnectAsync(500); }
         catch (TimeoutException)
         {
-            Process.Start(new ProcessStartInfo(Path.Combine(AppContext.BaseDirectory, "AgentDesk.Core.exe")) { UseShellExecute = false });
+            Process.Start(new ProcessStartInfo(Path.Combine(AppContext.BaseDirectory, "AgentDesk.Core.exe"), "--background") { UseShellExecute = false });
             await pipe.ConnectAsync(15_000); // the core keeps itself to one instance
         }
         return new CoreConnection(pipe, caller);

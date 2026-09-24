@@ -9,6 +9,7 @@ using AgentDesk.Core.Plugins;
 
 Setup.Run(); // Velopack: install/uninstall hooks exit here
 using var single = new Mutex(true, $@"Local\{PipeNames.Board}", out var first); // one core per pipe
+if (!args.Contains("--background")) Tray.Launch(0); // John started it (Start menu): show the window
 if (!first) return; // already running
 _ = Setup.KeepUpdated(apply => Tray.ApplyUpdate = apply);
 

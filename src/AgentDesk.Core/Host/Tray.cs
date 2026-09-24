@@ -79,7 +79,7 @@ static unsafe partial class Tray
     }
 
     /// <summary>Opens AgentDesk.App from beside the core, else from the installed current\ folder.</summary>
-    static void Launch(long thread)
+    public static void Launch(long thread)
     {
         if (Environment.TickCount64 - Interlocked.Exchange(ref lastLaunch, Environment.TickCount64) < 1000) return; // Enter sends NIN_KEYSELECT twice
         var exe = new[] { AppContext.BaseDirectory, Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "AgentDeskApp", "current") }
