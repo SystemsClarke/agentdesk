@@ -4,11 +4,8 @@ on:
   pull_request:
 
 jobs:
-  native:
+  build:
     runs-on: windows-latest
-    defaults:
-      run:
-        working-directory: native
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
@@ -18,11 +15,9 @@ jobs:
         with:
           python-version: "3.14"
       - name: Python deps (the parity tests run the Python board)
-        working-directory: .
         run: python -m venv .venv && .venv\Scripts\pip install -q -r requirements.txt
       - name: Tool table is in sync with mcp_server.py
-        working-directory: .
-        run: .venv\Scripts\python native/tools/gen_tools.py && git diff --exit-code native/src/AgentDesk.Contracts/Tools.g.cs
+        run: .venv\Scripts\python tools/gen_tools.py && git diff --exit-code src/AgentDesk.Contracts/Tools.g.cs
       - name: Build and test
         run: ./build.ps1 -Test
         shell: pwsh

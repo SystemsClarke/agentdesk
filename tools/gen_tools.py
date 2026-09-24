@@ -1,4 +1,4 @@
-"""Generate native/src/AgentDesk.Contracts/Tools.g.cs (run: python native/tools/gen_tools.py) from agentdesk/mcp_server.py.
+﻿"""Generate src/AgentDesk.Contracts/Tools.g.cs (run: python tools/gen_tools.py) from agentdesk/mcp_server.py.
 
 One file gives both sides what they need, with no reflection (so both can be Native AOT):
   Tools.All       name, description, JSON input schema per tool (the MCP shim lists these)
@@ -7,9 +7,9 @@ One file gives both sides what they need, with no reflection (so both can be Nat
 """
 import ast, json, pathlib
 
-ROOT = pathlib.Path(__file__).resolve().parents[2]  # the AgentDesk repo
+ROOT = pathlib.Path(__file__).resolve().parents[1]  # the AgentDesk repo
 SRC = ROOT / "agentdesk" / "mcp_server.py"
-OUT = ROOT / "native" / "src" / "AgentDesk.Contracts" / "Tools.g.cs"
+OUT = ROOT / "src" / "AgentDesk.Contracts" / "Tools.g.cs"
 NO_CALLER = {"formatting_help", "list_threads", "search_messages", "search_vault", "recent_messages", "list_work"}
 CONSTS = {"db.CLAIM_AUTO": "auto"}
 TYPES = {"str": ("string", "String", "string"), "int": ("int", "Int", "integer"), "bool": ("bool", "Bool", "boolean"),
@@ -72,3 +72,4 @@ public static partial class Tools
 }}
 """, encoding="utf-8")
 print("tools:", len(cases))
+

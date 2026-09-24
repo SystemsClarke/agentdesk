@@ -1,7 +1,7 @@
-"""Smoke test: drive a published agentdesk.exe over MCP stdio against a scratch copy of the board.
+﻿"""Smoke test: drive a published agentdesk.exe over MCP stdio against a scratch copy of the board.
 
     ./build.ps1 ; publish to %TEMP%\ad-e2e\bin, copy agentdesk.db to %TEMP%\ad-e2e\data, then:
-    python native/tools/smoke.py
+    python tools/smoke.py
 """
 import json, os, subprocess, sys, time
 
@@ -51,3 +51,4 @@ for name, args in [("list_threads", {"channel": "question", "limit": 3}), ("open
     print(f"{name:16} {ms:7.1f} ms  {json.dumps(summary)[:150]}")
 p.stdin.close()
 p.wait(5)
+

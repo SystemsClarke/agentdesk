@@ -19,3 +19,10 @@ archive/
 
 # Nuitka packaging build output -- rebuilt from agentdesk/cli.py, not source.
 build/
+
+# .NET build output
+bin/
+obj/
+*.user
+.vs/
+TestResults/
