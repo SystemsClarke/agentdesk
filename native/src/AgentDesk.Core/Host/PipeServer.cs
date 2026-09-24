@@ -6,12 +6,12 @@ using AgentDesk.Contracts;
 namespace AgentDesk.Core.Host;
 
 /// <summary>
-/// Serves the board on \\.\pipe\agentdesk-&lt;SID&gt;. Only this Windows account may connect; nothing
+/// Serves the core on \\.\pipe\agentdesk-&lt;SID&gt;. Only this Windows account may connect; nothing
 /// listens on the network. Requests on one connection run concurrently; replies carry their id.
 /// </summary>
 public static class PipeServer
 {
-    public static async Task Run(IAgentBoard board, CancellationToken stop)
+    public static async Task Run(Func<Request, CancellationToken, Task<string>> handle, CancellationToken stop)
     {
         var acl = new PipeSecurity();
         acl.AddAccessRule(new PipeAccessRule(WindowsIdentity.GetCurrent().User!, PipeAccessRights.FullControl, AccessControlType.Allow));
@@ -21,11 +21,11 @@ public static class PipeServer
             var pipe = NamedPipeServerStreamAcl.Create(PipeNames.Board, PipeDirection.InOut, NamedPipeServerStream.MaxAllowedServerInstances,
                                                        PipeTransmissionMode.Byte, PipeOptions.Asynchronous, 0, 0, acl);
             await pipe.WaitForConnectionAsync(stop);
-            _ = Serve(board, pipe, stop);
+            _ = Serve(handle, pipe, stop);
         }
     }
 
-    static async Task Serve(IAgentBoard board, NamedPipeServerStream pipe, CancellationToken stop)
+    static async Task Serve(Func<Request, CancellationToken, Task<string>> handle, NamedPipeServerStream pipe, CancellationToken stop)
     {
         await using var owned = pipe;
         using var reader = new StreamReader(pipe);
@@ -37,7 +37,7 @@ public static class PipeServer
                 _ = Task.Run(async () =>
                 {
                     string text;
-                    try { text = await Tools.Dispatch(board, req.Caller, req.Tool, req.Args); }
+                    try { text = await handle(req, stop); }
                     catch (Exception e) { Log.Warn($"{req.Tool} failed: {e}"); text = Tools.Error($"internal error: {e.Message}"); }
                     await Wire.Write(writer, new Response(req.Id, text), WireJson.Default.Response, gate);
                 }, stop);
@@ -45,4 +45,5 @@ public static class PipeServer
         catch (Exception e) when (e is IOException or OperationCanceledException) { } // the agent session ended
     }
 }
+
 

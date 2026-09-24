@@ -1,5 +1,7 @@
-// AgentDesk.Core: the one per-user process that owns the board. Started by the first agent's MCP
-// shim (or at login), it serves the board over a named pipe and calls Python where Python is best.
+// AgentDesk.Core: the one per-user process that owns the board. Started by the first agent session's
+// agentdesk.exe (or at login), it serves the board, hooks and waits over a named pipe, and calls Python
+// only where Python is best.
+using AgentDesk.Contracts;
 using AgentDesk.Core;
 using AgentDesk.Core.Board;
 using AgentDesk.Core.Host;
@@ -12,8 +14,14 @@ var data = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Loca
 Directory.CreateDirectory(data);
 var python = Environment.GetEnvironmentVariable("AGENTDESK_PYTHON")
              ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "NoOneDrive", "AgentDesk");
-var wait = $"\"{Path.Combine(python, ".venv", "Scripts", "python.exe")}\" \"{Path.Combine(python, "agentdesk", "wait.py")}\" {{0}}";
+var store = new BoardStore(Path.Combine(data, "agentdesk.db"));
+var board = new AgentBoard(store, new PythonPlugins(python), $"\"{Path.Combine(AppContext.BaseDirectory, "agentdesk.exe")}\" wait {{0}}");
+var hooks = new Hooks(store);
 
 Log.Info($"core starting (pid {Environment.ProcessId})");
-var board = new AgentBoard(new BoardStore(Path.Combine(data, "agentdesk.db")), new PythonPlugins(python), wait);
-await PipeServer.Run(board, CancellationToken.None);
+await PipeServer.Run((req, ct) => req.Tool switch
+{
+    ['h', 'o', 'o', 'k', ':', .. var hookEvent] => hooks.Run(hookEvent, req.Args),
+    "wait" => hooks.Wait(req.Args.GetInt32(), ct),
+    _ => Tools.Dispatch(board, req.Caller, req.Tool, req.Args),
+}, CancellationToken.None);
