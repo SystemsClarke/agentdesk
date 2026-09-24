@@ -15,6 +15,13 @@ from agentdesk import mdrich, mdview
 SECTION_MAX = 2900   # Slack's hard limit is 3000 characters per section
 HEADER_MAX = 150
 BLOCKS_MAX = 50
+# Slack wraps code blocks at the screen's width, and a phone fits about this many columns.
+PHONE_COLS = 44
+# iOS Slack's code font draws box-drawing horizontals as blanks, so code blocks use ASCII.
+_ASCII = str.maketrans({"─": "-", "│": "|", "┌": "+", "┐": "+", "└": "+", "┘": "+", "├": "+", "┤": "+",
+                        "┬": "+", "┴": "+", "┼": "+", "►": ">", "◄": "<", "▼": "v", "▲": "^", "┄": "-",
+                        "┆": ":", "╭": "+", "╮": "+", "╰": "+", "╯": "+", "◆": "+", "═": "=", "║": "|",
+                        "╔": "+", "╗": "+", "╚": "+", "╝": "+", "█": "#", "░": ".", "↺": "@", "▌": "|"})
 
 
 def _esc(s: str) -> str:
@@ -60,16 +67,32 @@ def _grid(header: list, delim: list, rows: list) -> str:
             parts.append(" " * left + c + " " * (gap - left))
         return "│ " + " │ ".join(parts) + " │"
 
+    if sum(widths) + 3 * ncols + 1 > PHONE_COLS:
+        # Too wide for a phone, where a code block wraps and the grid falls apart:
+        # one line per row instead, first column as the row's name.
+        out = []
+        for r in body:
+            rest = " · ".join(f"{head[j]} {r[j]}".strip() for j in range(1, ncols) if r[j])
+            out.append(f"• *{_esc(r[0])}*" + (f": {_esc(rest)}" if rest else ""))
+        return "\n".join(out)
     rule = lambda l, m, r: l + m.join("─" * (w + 2) for w in widths) + r
     lines = [rule("┌", "┬", "┐"), row(head), rule("├", "┼", "┤")] + [row(r) for r in body] + [rule("└", "┴", "┘")]
-    return "```\n" + "\n".join(lines) + "\n```"
+    return "```\n" + "\n".join(lines).translate(_ASCII) + "\n```"
 
 
 def _fence(lang: str, block: list) -> str:
     if lang == "mermaid":
-        drawn, ok = mdrich.mermaid(block, 90)
+        drawn, ok = mdrich.mermaid(block, PHONE_COLS, force_direction="TD")
+        art = ["".join(t for t, _ in segs).translate(_ASCII) for segs in drawn] if ok else []
+        if art and max(len(l) for l in art) <= PHONE_COLS:
+            return "```\n" + "\n".join(art) + "\n```"
         if ok:
-            return "```\n" + "\n".join("".join(t for t, _ in segs) for segs in drawn) + "\n```"
+            # Still too wide for a phone: say it as a list of steps instead.
+            _d, nodes, _o, edges = mdrich.parse_flow([l for l in block if l.strip()])
+            steps = [f"• {nodes[a]['label']} → {nodes[b]['label']}" + (f"  _({lbl})_" if lbl else "")
+                     for a, b, lbl, _dash in edges]
+            if steps:
+                return "\n".join(steps)
     return "```\n" + "\n".join(block) + "\n```"
 
 

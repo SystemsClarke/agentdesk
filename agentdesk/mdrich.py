@@ -242,8 +242,9 @@ def _levels(order: list, edges: list) -> tuple:
     return level, back
 
 
-def draw_flow(src: list, max_width: int) -> list:
+def draw_flow(src: list, max_width: int, force_direction: Optional[str] = None) -> list:
     direction, nodes, order, edges = parse_flow(src)
+    direction = force_direction or direction
     if not nodes:
         return []
     level, back = _levels(order, edges)
@@ -450,7 +451,7 @@ def draw_pie(src: list, max_width: int) -> list:
     return out
 
 
-def mermaid(block: list, max_width: int) -> tuple:
+def mermaid(block: list, max_width: int, force_direction: Optional[str] = None) -> tuple:
     """(lines, drawn) for a mermaid block. drawn is False when the type isn't supported."""
     src = [l for l in block if l.strip()]
     if not src:
@@ -460,7 +461,7 @@ def mermaid(block: list, max_width: int) -> tuple:
         if kind in ("graph", "flowchart") or kind.startswith("statediagram"):
             if kind.startswith("statediagram"):
                 src = [src[0]] + [re.sub(r"\[\*\]", "[*]", l) for l in src[1:]]
-            lines = draw_flow(src, max_width)
+            lines = draw_flow(src, max_width, force_direction)
         elif kind == "sequencediagram":
             lines = draw_sequence(src, max_width)
         elif kind == "pie":

@@ -123,6 +123,7 @@ def poll_loop() -> None:
                                   "Reply *in this thread* to answer. Markdown and Slack formatting both work."}]}])
                     resp = app.client.chat_postMessage(
                         channel=JOHN_DM_CHANNEL, blocks=blocks[:50],
+                        unfurl_links=False, unfurl_media=False,
                         text=f"Question #{q['thread_id']} from {asker}: {q['subject']} · "
                              + slackfmt.fallback_text(body, 200))
                     state["posted"][tid] = {
