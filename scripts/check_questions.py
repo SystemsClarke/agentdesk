@@ -60,6 +60,8 @@ os.environ["LOCALAPPDATA"] = str(_SCRATCH)
 from agentdesk import app as appmod  # noqa: E402
 from agentdesk import db, mcp_server, notify, paths, terminal, vault  # noqa: E402
 
+db.ANSWERED_GRACE_HOURS = 0  # these checks test filing itself, not the grace period
+
 # The vault redirect. See the module docstring -- this is not optional
 # housekeeping, it is the difference between a test and writing into John's
 # memory vault, which is a git repo he pushes.

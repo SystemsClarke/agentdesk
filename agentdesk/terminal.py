@@ -503,6 +503,8 @@ class TerminalView:
                 conn, channel=ch, limit=200,
                 status=paths.STATUS_ARCHIVED if only_archived else None,
                 include_archived=(ch != "question"))
+        if not self.show_archived:  # ringing first, then answered, each newest first
+            self.rows["question"].sort(key=lambda r: not waiting("question", r))
         self.prs = db.list_prs(conn, include_settled=self.show_settled)
         stamps = {r["id"]: r["updated_ts"] for rows in self.rows.values() for r in rows}
         for tid in list(self._threads):
@@ -936,16 +938,18 @@ class TerminalView:
         if ch == "question" and self.show_archived:
             L[0] = pad([S(" QUESTIONS  ·  the archive  ·  settled and filed to the vault", "barcy", "b")], W, "barcy")
         L.append([])
-        subj_w = max(20, W - 44)
+        q = ch == "question"
+        subj_w = max(20, W - (56 if q else 44))
         by_label = "HELD BY" if ch == "work" else "FROM"
-        L.append([S("    #  ST    " + fit("SUBJECT", subj_w) + " " + fit(by_label, 16) + fit("WHEN", 11) + " MSG", "mu")])
+        L.append([S("    #  ST    " + fit("SUBJECT", subj_w) + " " + fit(by_label, 16) + (fit("LAST WORD", 12) if q else "")
+                    + fit("WHEN", 11) + " MSG", "mu")])
         L.append([S("─" * W, "rule")])
         if not rows:
             L.append([S("   Nothing here yet. ", "mu"), S("N", "ye"), S(" starts the first thread.", "mu")])
         sel = min(self.sel[ch], max(0, len(rows) - 1))
         self.sel[ch] = sel
         first_row_line = len(L) + 1
-        visible = self._visible_rows(fixed=6)
+        visible = self._visible_rows(fixed=7 if q else 6)
         top = self.top_row[ch]
         if sel < top:
             top = sel
@@ -954,9 +958,18 @@ class TerminalView:
         top = max(0, min(top, max(0, len(rows) - visible)))
         self.top_row[ch] = top
         self._window = (top, min(len(rows), top + visible), len(rows))
+        offset = 0
         for i in range(top, min(len(rows), top + visible)):
             r = rows[i]
+            if q and not self.show_archived and i > 0 and waiting(ch, rows[i - 1]) and not waiting(ch, r):
+                L.append([S(f" ── answered · stays here {db.ANSWERED_GRACE_HOURS}h after the last reply,"
+                            " then files to the vault ", "fa")])
+                offset = 1
             code, ctags = state_code(ch, r)
+            last = ""
+            if q:
+                la = r["last_author"] if "last_author" in r.keys() else None
+                last = fit("you" if la == paths.HUMAN else ("↩ " + identity.label(la) if la else "—"), 12)
             if ch == "work":
                 who = holder(r)
                 by = identity.label(who) if who else "—"
@@ -964,13 +977,14 @@ class TerminalView:
                 by = identity.label(r["opened_by"])
             subj_tags = ("fg", "b") if code == "WAIT" else (("fg",) if code in ("OPEN", "HELD", "live") else ("mu",))
             if i == sel:
-                text = f" ▶{r['id']:>3}  {code}  {fit(r['subject'], subj_w)} {fit(by, 16)}{fit(when(r['updated_ts']), 11)} {r['message_count']:>3}"
+                text = f" ▶{r['id']:>3}  {code}  {fit(r['subject'], subj_w)} {fit(by, 16)}{last}{fit(when(r['updated_ts']), 11)} {r['message_count']:>3}"
                 L.append(pad([S(text, "cur")], W, "cur"))
             else:
                 L.append([S(f"  {r['id']:>3}  ", "ye"), S(code, *ctags), S("  "),
                           S(fit(r["subject"], subj_w), *subj_tags), S(" "), S(fit(by, 16), author_hue(r["opened_by"])),
+                          S(last, "gr" if last.startswith("you") else "cy"),
                           S(fit(when(r["updated_ts"]), 11), "fa"), S(f" {r['message_count']:>3}", "mu")])
-            self._click_map[first_row_line + i - top] = i
+            self._click_map[first_row_line + i - top + offset] = i
         L.append([S("─" * W, "rule")])
         footer = self._list_footer(ch, rows)
         if len(rows) > visible:
@@ -993,7 +1007,7 @@ class TerminalView:
             if ringing:
                 oldest = min(ringing, key=lambda r: r["updated_ts"])
                 out.append(S(f" · oldest waiting {ago(oldest['updated_ts'])}", "mu"))
-            out.append(S(f" · {settled} answered, filed to the vault on the next sweep", "mu"))
+            out.append(S(f" · {settled} answered, kept {db.ANSWERED_GRACE_HOURS}h after the last reply", "mu"))
             return out
         if ch == "work":
             counts = {}

@@ -51,6 +51,8 @@ sys.path.insert(0, str(REPO))
 from agentdesk import app as appmod               # noqa: E402
 from agentdesk import db, mcp_server, notify, paths, vault  # noqa: E402
 
+db.ANSWERED_GRACE_HOURS = 0  # these checks test filing itself, not the grace period
+
 _VAULT = _SCRATCH / "vault"
 paths.VAULT_DIR = _VAULT
 paths.VAULT_AGENTDESK = _VAULT / "agentdesk"

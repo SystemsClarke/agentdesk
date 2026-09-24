@@ -827,7 +827,10 @@ def work_thread(conn, work_id) -> Optional[dict]:
 # facts and this query is the gap between them, so the archive step can be
 # retried by whoever notices rather than only by whoever caused it.
 
-def questions_to_archive(conn) -> list:
+ANSWERED_GRACE_HOURS = 24
+
+
+def questions_to_archive(conn, grace_hours: float | None = None) -> list:
     """Settled question threads whose transcript is not in the vault yet.
 
     Settled means 'answered' or 'closed', AND not still waiting on John. The
@@ -852,12 +855,19 @@ def questions_to_archive(conn) -> list:
     with, and if that alone were enough to be re-archived the sweep would file
     it again on the next tick -- three seconds later, so the row would flash on
     the tab and vanish, and it would read as the button not working.
+
+    An ANSWERED question stays on the tab until it has been quiet for
+    `grace_hours`, so John can still see the agent's follow-up to his answer; any
+    reply bumps updated_ts and restarts the clock. CLOSED is him saying he is done
+    with it, so it is filed at once.
     """
+    grace = ANSWERED_GRACE_HOURS if grace_hours is None else grace_hours
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=grace)).isoformat(timespec="seconds")
     return [dict(r) for r in conn.execute(
         "SELECT id, subject, status, meta FROM threads t"
-        " WHERE t.channel='question' AND t.status IN (?,?)"
+        " WHERE t.channel='question' AND (t.status=? OR (t.status=? AND t.updated_ts <= ?))"
         " AND NOT (" + WAITING_SQL + ") ORDER BY t.id",
-        (paths.STATUS_ANSWERED, paths.STATUS_CLOSED))
+        (paths.STATUS_CLOSED, paths.STATUS_ANSWERED, cutoff))
         if not archive_held(r)]
 
 
@@ -1373,6 +1383,9 @@ def list_threads(conn, channel=None, status=None, limit=100, since=None,
     sql = [
         "SELECT t.*, COUNT(m.id) AS message_count,",
         "       (SELECT body FROM messages WHERE thread_id=t.id ORDER BY id DESC LIMIT 1) AS last_body,",
+        "       (SELECT author FROM messages WHERE thread_id=t.id AND COALESCE(CASE WHEN json_valid(meta)"
+        "        THEN json_extract(meta,'$.kind') END,'') NOT IN ('ack','ack-note','read-receipt')"
+        "        ORDER BY id DESC LIMIT 1) AS last_author,",
         # The window asks this per row for the red flag and the tab count, and
         # it is the same predicate as the view's -- one WRITING of it, three
         # readers. WAITING_SQL is false for every non-question channel, so a
