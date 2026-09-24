@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
   Build, test and install AgentDesk.
 .EXAMPLE
@@ -20,9 +20,10 @@ if ($Test) { dotnet test --no-build -v q --nologo; if ($LASTEXITCODE) { exit $LA
 
 if ($Install) {
     $bin = Join-Path $env:LOCALAPPDATA 'AgentDesk\bin'
-    foreach ($p in 'AgentDesk.Core', 'AgentDesk.Mcp') {
+    foreach ($p in 'AgentDesk.Core', 'AgentDesk.Cli') {
         dotnet publish "src/$p" -c Release -r win-x64 -o $bin -v q --nologo
         if ($LASTEXITCODE) { exit $LASTEXITCODE }
     }
     Get-ChildItem $bin -Filter *.exe | ForEach-Object { '{0,-24} {1,6:N1} MB' -f $_.Name, ($_.Length / 1MB) }
 }
+

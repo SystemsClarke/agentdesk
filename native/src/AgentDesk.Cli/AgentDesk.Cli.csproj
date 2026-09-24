@@ -10,6 +10,7 @@
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
+    <AssemblyName>agentdesk</AssemblyName>
     <PublishAot>true</PublishAot>
     <InvariantGlobalization>true</InvariantGlobalization>
     <OptimizationPreference>Size</OptimizationPreference>
@@ -17,4 +18,5 @@
   </PropertyGroup>
 
 </Project>
+
 
