@@ -8,8 +8,6 @@ an instruction in John's name, so a human decides each one.
 from __future__ import annotations
 
 import ctypes
-import shutil
-import subprocess
 from pathlib import Path
 
 from agentdesk import db, paths
@@ -44,17 +42,15 @@ def wake(conn, thread_id: int) -> str:
     if pid_alive(s["pid"]):
         db.set_delivery(conn, msg["id"], "wake", "stuck", "session still open")
         return f"{agent}'s session is still open; it sees your reply on its next board write"
-    exe = shutil.which("claude") or str(Path.home() / ".local" / "bin" / "claude.exe")
+    from agentdesk import sessions
+    if not sessions.claude_exe():
+        db.set_delivery(conn, msg["id"], "wake", "failed", "claude CLI not found")
+        return "couldn't find the claude CLI"
     cwd = s["cwd"] if s["cwd"] and Path(s["cwd"]).is_dir() else None
-    log = paths.DATA_DIR / f"wake-{thread_id}.log"
-    try:
-        with open(log, "ab") as out:
-            subprocess.Popen([exe, "--resume", s["session_id"], "-p",
-                              db.relay_prompt(thread_id, t["subject"], msg["body"])],
-                             cwd=cwd, stdout=out, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
-                             creationflags=0x08000000 | 0x00000008)  # no window, detached
-    except OSError as exc:
-        db.set_delivery(conn, msg["id"], "wake", "failed", repr(exc))
-        return f"couldn't start claude: {exc}"
+    # Through sessions.run: it takes a slot (the Options cap) and the chosen backend.
+    sessions.run_detached(agent, db.relay_prompt(thread_id, t["subject"], msg["body"]),
+                          resume=s["session_id"], cwd=cwd)
     db.set_delivery(conn, msg["id"], "wake", "resumed", s["session_id"])
-    return f"woke {agent}: resumed its session with your reply (log: {log.name})"
+    live = len(sessions.status()["live"])
+    queued = " (queued: every session slot is busy)" if live >= sessions.max_sessions() else ""
+    return f"woke {agent}: resuming its session with your reply{queued}"

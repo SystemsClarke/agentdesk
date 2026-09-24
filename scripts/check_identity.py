@@ -236,7 +236,7 @@ def part_window(db_path: Path) -> None:
 
 def part_crew(scratch: Path) -> None:
     hr("5. a crew role's session keeps its role, across session resets")
-    from agentdesk import crew, roles
+    from agentdesk import crew, roles, sessions
 
     fake = scratch / "claude.bat"
     # A stand-in for the claude CLI: it reports the environment it was handed,
@@ -247,7 +247,7 @@ def part_crew(scratch: Path) -> None:
                     'echo {"result":"%AGENTDESK_AUTHOR%","is_error":false}\r\n',
                     encoding="ascii")
     for role in roles.ROLES:
-        crew._claude_exe = lambda: str(fake)
+        sessions.claude_exe = lambda: str(fake)  # the spawn lives in sessions.py now
         res = crew.run_claude(role, "check", None, timeout=30)
         print(f"  {role.name:<10} child inherited AGENTDESK_AUTHOR={res.result!r}")
         check(f"{role.name}: the spawned session resolves to its role",

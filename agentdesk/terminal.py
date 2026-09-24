@@ -20,7 +20,8 @@ import webbrowser
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from agentdesk import db, identity, mdview, notify, paths, screech, settings, usage, vscode_themes
+from agentdesk import (crew, db, identity, mdview, notify, paths, providers, roles, screech, sessions, settings,
+                       usage, vscode_themes)
 
 PALETTES = {
     "monokai-pro": {
@@ -151,6 +152,10 @@ def ago(iso) -> str:
     if dt is None:
         return ""
     return usage.span((datetime.now(timezone.utc) - dt).total_seconds())
+
+
+def ago_s(seconds: float) -> str:
+    return "for " + usage.span(seconds)
 
 
 def _meta(raw) -> dict:
@@ -587,6 +592,13 @@ class TerminalView:
             self.sinks = {}
         self.usage_lines = usage.lines()
         self.usage_summary = usage.summary()
+        try:  # the Options screen's Agent sessions section; read here so keypresses never touch disk
+            self.sess = sessions.status()
+            self.sess_note = providers.describe(self.prefs.get("provider", "claude")).split(":", 1)[-1].strip()
+            self.crew_sess = {r: crew.load_session(r) for r in roles.names()}
+            self.crew_due = {r: db.torch_due(conn, r) for r in roles.names()}
+        except Exception:
+            log.exception("reading session status failed")
         if render:
             self.render()
 
@@ -1281,8 +1293,37 @@ class TerminalView:
         self._see_line = start + sel if callers else None
         return L
 
+    def _session_items(self) -> list:
+        """The Agent sessions section: cap, backend, crew switch, one row per crew identity."""
+        st = getattr(self, "sess", None) or {"live": {}, "max": 3, "backend": "claude", "answered": None}
+        live = st["live"]
+        be = self.prefs.get("provider", "claude")
+        answered = st.get("answered")
+        be_note = getattr(self, "sess_note", "")  # read in _tick: no file I/O on a keypress
+        if answered and answered != be:
+            be_note += f"  ·  last run fell back to {answered}"
+        running, _ = self.worker
+        rows = [
+            ("Sessions at once", f"{self.prefs.get('max_sessions', 3)}   (←/→)  ·  {len(live)} running now", "max_sessions"),
+            ("Backend", f"{be}   (←/→, from providers.json)  ·  {be_note}", "provider"),
+            ("Crew", ("ON" if running else "off") + "   ↵ toggles (same as Ctrl+W)", "crew"),
+        ]
+        for r in roles.names():
+            s = (getattr(self, "crew_sess", {}) or {}).get(r) or {}
+            run = live.get(r)
+            if run:
+                doing = f"● running {ago_s(time.time() - run['started'])} on {run['provider']}" + \
+                        (" (resumed)" if run.get("resume") else " (fresh)")
+            else:
+                doing = "○ idle"
+            sid = (s.get("id") or "")[:8]
+            mem = f"session {sid} · {s.get('items', 0)} items" if sid else "no session yet"
+            due = "  ·  fresh start queued" if (getattr(self, "crew_due", {}) or {}).get(r) else ""
+            rows.append((f"  {r}", f"{doing}  ·  {mem}{due}   ↵ fresh start", f"fresh:{r}"))
+        return rows
+
     def _option_items(self) -> list:
-        return [
+        return self._session_items() + [
             ("Theme", f"{self.pal['label']}   ({self.theme_order.index(self.prefs['theme']) + 1} of "
                       f"{len(self.theme_order)}, ←/→ to browse, from your VS Code themes)", "theme"),
             ("Modem screech on connect", "ON" if self.prefs.get("screech") else "off", "screech"),
@@ -1304,6 +1345,13 @@ class TerminalView:
             else:
                 L.append([S("   " + fit(label, 28), "fg"), S(" " + value, "ye" if value in ("ON",) else "mu")])
             self._click_map[start + i] = i
+        L.append([])
+        L.append([S(" Agent sessions: ", "cy", "b"), S("every headless Claude run (the crew, Wake) goes through one engine,", "mu")])
+        L.append([S(" which holds a slot per session. Past the cap, new runs wait their turn. The backend is a", "mu")])
+        L.append([S(" profile in ", "mu"), S(str(providers.CONFIG_PATH), "fa"),
+                  S("; if it gives no usable answer, the next profile is tried.", "mu")])
+        L.append([S(" A fresh start ends that agent's conversation and begins a new one from its handoff note:", "mu")])
+        L.append([S(" same name, same memory, clean context. That's Phoenix.", "mu")])
         L.append([])
         L.append([S(" Settings live in ", "fa"), S(str(paths.DATA_DIR / "settings.json"), "mu")])
         L.append([S(" The screech is synthesized from its parts (dial tone, DTMF, 2100 Hz answer tone,", "fa")])
@@ -1392,7 +1440,31 @@ class TerminalView:
 
     def _change_option(self, delta: int) -> None:
         key = self._option_items()[self.sel_opt][2]
-        if key == "theme":
+        if key == "max_sessions":
+            n = max(1, min(8, int(self.prefs.get("max_sessions", 3)) + (delta or 1)))
+            self.prefs["max_sessions"] = n
+            settings.save(self.prefs)
+            self.flash(f"Up to {n} agent session{'s' if n != 1 else ''} at once. Takes effect on the next start.", "ye")
+        elif key == "provider":
+            names = providers.chain()
+            cur = self.prefs.get("provider", "claude")
+            i = names.index(cur) if cur in names else 0
+            self.prefs["provider"] = names[(i + (delta or 1)) % len(names)]
+            settings.save(self.prefs)
+            self.flash(f"Agent sessions now start on {self.prefs['provider']}"
+                       + ("" if len(names) > 1 else " (the only profile in providers.json)") + ".", "ye")
+        elif key == "crew":
+            self.toggle_worker()
+        elif key.startswith("fresh:"):
+            role = key.split(":", 1)[1]
+            conn = db.connect(self.app.db_path)
+            try:
+                db.set_torch_due(conn, role, True)
+            finally:
+                conn.close()
+            self.crew_due = dict(getattr(self, "crew_due", {}), **{role: True})
+            self.flash(f"{role} starts a fresh session on its next item, seeded from its handoff note.", "ye")
+        elif key == "theme":
             i = self.theme_order.index(self.prefs["theme"])
             self.set_theme(self.theme_order[(i + (delta or 1)) % len(self.theme_order)])
         elif key == "screech":

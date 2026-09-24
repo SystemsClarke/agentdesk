@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 
 from agentdesk import paths
 
@@ -11,6 +12,8 @@ DEFAULTS = {
     "screech": True,
     "font_size": 11,
     "preroll": True,
+    "max_sessions": 3,     # agent sessions that may run at once (sessions.py enforces it everywhere)
+    "provider": "claude",  # backend for agent sessions: a profile in ~/.claude/providers.json
 }
 
 
@@ -33,6 +36,8 @@ def load() -> dict:
 def save(data: dict) -> None:
     try:
         paths.ensure_dirs()
-        _path().write_text(json.dumps(data, indent=2), encoding="utf-8")
+        tmp = _path().with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        os.replace(tmp, _path())  # a crash mid-write must not reset every preference
     except OSError:
         pass

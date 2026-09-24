@@ -61,10 +61,10 @@ from typing import Optional
 import re
 
 try:
-    from agentdesk import db, paths, providers, roles
+    from agentdesk import db, paths, providers, roles, sessions
 except ImportError:  # pragma: no cover - depends on how it was launched
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-    from agentdesk import db, paths, providers, roles
+    from agentdesk import db, paths, providers, roles, sessions
 
 REPO = Path(__file__).resolve().parent.parent
 
@@ -76,53 +76,23 @@ STATE_FILE = paths.WORKER_STATE
 PERMISSION_MODE = os.environ.get("AGENTDESK_CREW_PERMISSION", "auto")
 POLL_SECONDS = int(os.environ.get("AGENTDESK_CREW_POLL", "30"))
 RUN_TIMEOUT = int(os.environ.get("AGENTDESK_CREW_TIMEOUT", "3600"))
-MAX_CONCURRENT = int(os.environ.get("AGENTDESK_CREW_CONCURRENCY", "3"))
 MAX_ATTEMPTS = int(os.environ.get("AGENTDESK_CREW_MAX_ATTEMPTS", "3"))
 #: Items a role may run before its session is replaced by a fresh one.
 RESET_AFTER = int(os.environ.get("AGENTDESK_CREW_RESET_AFTER", "10"))
 
-#: Which provider profile every crew agent runs on. None = the profile default,
-#: which is the Claude subscription. Set AGENTDESK_CREW_PROVIDER=local to run
-#: the crew on Ollama, or =deepseek for Fireworks; the names come from
-#: ~/.claude/providers.json. Read agentdesk/providers.py before changing this:
-#: the crew used to inherit the parent session's provider silently, which is
-#: what made every crew run fail with unrecognized_model.
-CREW_PROVIDER = os.environ.get("AGENTDESK_CREW_PROVIDER", "").strip() or None
-
-# --- one provider for the whole crew -------------------------------------------
-#
-# The router decides, the workers follow. Without this the two would drift: the
-# router would fail over to Fireworks or Ollama and keep routing there while
-# every worker independently paid a dead first attempt against a subscription
-# that is down. Worse, a crew could end up with its coordinator on one backend
-# and its agents on another, which makes any question about "what model wrote
-# this" unanswerable.
-#
-# So the choice is made ONCE, by observation rather than by assumption, and
-# every later spawn puts it first. AGENTDESK_CREW_PROVIDER, when set, still
-# wins: an explicit instruction is not something to discover.
+# Which backend and how many sessions at once are John's settings (Options screen),
+# read live by sessions.py on every spawn. The crew only remembers what answered.
 _ACTIVE_PROVIDER: Optional[str] = None
 _ACTIVE_LOCK = threading.Lock()
 
 
 def _note_working(name: str) -> None:
-    """Record that `name` actually answered. Ordering for every later spawn."""
     global _ACTIVE_PROVIDER
     with _ACTIVE_LOCK:
         if _ACTIVE_PROVIDER != name:
             log(f"provider: this crew is running on {name}")
             _ACTIVE_PROVIDER = name
 
-
-def _active_provider() -> Optional[str]:
-    """The provider observed working, or None before anything has answered."""
-    with _ACTIVE_LOCK:
-        return _ACTIVE_PROVIDER
-
-
-def _provider_envs() -> list:
-    """(name, env) pairs in try order, with the observed provider first."""
-    return providers.env_chain(CREW_PROVIDER or _active_provider())
 
 SESSIONS_DIR = paths.DATA_DIR / "sessions"
 MEMORY_DIR = paths.DATA_DIR / "crew-memory"
@@ -217,30 +187,7 @@ def clear_state() -> None:
 
 
 def _claude_exe() -> Optional[str]:
-    return shutil.which("claude") or shutil.which("claude.cmd")
-
-
-def _no_window() -> dict:
-    """Extra Popen kwargs that stop a spawned child flashing a console window.
-
-    WHY THIS EXISTS, and why it is not paranoia. The crew normally runs under
-    `pythonw.exe`, which has NO console. When such a process spawns a console
-    application without CREATE_NO_WINDOW, Windows does not share a console --
-    it allocates the child a brand new one, which is a real window that appears
-    and takes focus. Every agent run and every router call is a spawn, and the
-    router runs once per item, so without this the crew throws a window in the
-    user's face several times a minute and interrupts whatever they are typing.
-
-    STARTUPINFO/SW_HIDE is belt-and-braces on top of the flag: CREATE_NO_WINDOW
-    prevents the console being created, and SW_HIDE covers the case where a
-    wrapper (a .cmd shim, a node launcher) creates its own anyway.
-    """
-    if os.name != "nt":
-        return {}
-    si = subprocess.STARTUPINFO()
-    si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-    si.wShowWindow = subprocess.SW_HIDE
-    return {"creationflags": subprocess.CREATE_NO_WINDOW, "startupinfo": si}
+    return sessions.claude_exe()
 
 
 def _session_path(role: str) -> Path:
@@ -465,115 +412,27 @@ true before."""
 # --- the agent process ---------------------------------------------------------
 
 
-class RunResult:
-    """What one `claude -p` run produced, with nothing thrown away."""
-
-    __slots__ = ("code", "out", "err", "session_id", "result", "is_error",
-                 "denials", "turns", "subtype")
-
-    def __init__(self, code, out, err):
-        self.code, self.out, self.err = code, out, err
-        self.session_id = self.result = self.subtype = None
-        self.is_error = None
-        self.denials = []
-        self.turns = None
-        self._parse()
-
-    def _parse(self) -> None:
-        try:
-            payload = json.loads(self.out or "")
-        except (TypeError, ValueError):
-            return
-        if not isinstance(payload, dict):
-            return
-        sid = payload.get("session_id")
-        self.session_id = sid if isinstance(sid, str) and sid else None
-        text = payload.get("result")
-        self.result = text.strip() if isinstance(text, str) and text.strip() else None
-        self.is_error = payload.get("is_error")
-        self.denials = payload.get("permission_denials") or []
-        self.turns = payload.get("num_turns")
-        self.subtype = payload.get("subtype")
-
-    @property
-    def ok(self) -> bool:
-        return self.code == 0 and not self.is_error
+#: What one run produced. The engine lives in sessions.py, shared with Wake.
+RunResult = sessions.Result
 
 
 def run_claude(role: roles.Role, prompt: str, resume: Optional[str],
-               timeout: int = RUN_TIMEOUT) -> RunResult:
-    """One agent run. Returns a RunResult; a mere failure does not raise."""
-    exe = _claude_exe()
-    if not exe:
-        raise FileNotFoundError("claude CLI not on PATH")
-
-    cmd = [exe, "-p", prompt,
-           "--permission-mode", role.permission_mode or PERMISSION_MODE,
-           "--output-format", "json",
-           "--add-dir", str(REPO)]
-    if role.model:
-        cmd += ["--model", role.model]
-    if resume:
-        cmd += ["--resume", resume]
-
-    # The role is stamped into the environment, not left to the prompt. The
-    # session's board name is derived from what it inherits (identity.py), and
-    # a role must keep that name across its session resets: complete_work
-    # matches on it, so an item claimed as `builder` has to be finished by
-    # something that still resolves to `builder`. A model that forgets the
-    # `author` argument then still posts as its role, and a rotated session
-    # still owns the work it was given.
-    # NOT dict(os.environ). Inheriting the parent's environment is what pointed
-    # every crew agent at the parent session's provider while still asking for
-    # an Anthropic model, so the run died in seconds with zero tokens and read
-    # as a bad answer. providers.env_for scrubs the override first.
-    # FAILOVER. Try each configured provider in turn, ending at `local`, so a
-    # dead subscription is a slow run rather than a lost one.
-    #
-    # The retry trigger is deliberately narrow: a run that produced NO usable
-    # output at all. A run that produced an ANSWER is never retried, even an
-    # unhappy one -- the agent answered, and putting the same question to a
-    # different model would quietly replace its report with a second opinion
-    # that the dispatcher then records as the result.
-    res: Optional[RunResult] = None
-    tried: list[str] = []
-    for name, base_env in _provider_envs():
-        child_env = dict(base_env)
-        child_env["AGENTDESK_AUTHOR"] = role.name
-        effort = providers.effort_for(name)
-        run_cmd = cmd + ["--effort", effort] if effort else cmd
-
-        proc = subprocess.Popen(
-            run_cmd, cwd=str(REPO), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True, encoding="utf-8", errors="replace", env=child_env,
-            **_no_window())
-        # Registered so a Stop can reach it; see _CHILDREN.
+               timeout: int = RUN_TIMEOUT, stop: Optional[threading.Event] = None) -> RunResult:
+    """One agent run through sessions.run: it waits for a session slot (the Options cap),
+    runs on the chosen backend, and fails over only when there was no usable answer."""
+    def register(proc):  # so Stop can reach it; see _CHILDREN
         with _CHILDREN_LOCK:
             _CHILDREN[role.name] = proc
-        try:
-            out, err = proc.communicate(timeout=timeout)
-            code = proc.returncode
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            out, err = proc.communicate()
-            code = -1
-            err = (err or "") + f"\n[crew] killed after {timeout}s"
-        finally:
-            with _CHILDREN_LOCK:
-                _CHILDREN.pop(role.name, None)
-
-        res = RunResult(code, out, err)
-        if res.ok and res.result:
-            _note_working(name)
-            if tried:
-                log(f"{role.name}: {name} answered after "
-                    f"{', '.join(tried)} refused")
-            return res
-        tried.append(name)
-        log(f"{role.name}: no usable output from {name}; trying the next "
-            f"provider")
-
-    return res if res is not None else RunResult(-1, "", "no provider configured")
+    try:
+        res = sessions.run(role.name, prompt, resume=resume, cwd=str(REPO),
+                           permission_mode=role.permission_mode or PERMISSION_MODE,
+                           model=role.model, timeout=timeout, stop=stop, on_spawn=register)
+    finally:
+        with _CHILDREN_LOCK:
+            _CHILDREN.pop(role.name, None)
+    if res.ok and res.result and res.provider:
+        _note_working(res.provider)
+    return res
 
 
 def failure_detail(res: RunResult) -> str:
@@ -855,6 +714,32 @@ def _claim_next(role_name: str):
     return None
 
 
+def _torch_due(name: str) -> bool:
+    """John (Fresh start on the Options screen) or the handoff protocol asked for a new session."""
+    conn = db.connect()
+    try:
+        return db.torch_due(conn, name)
+    finally:
+        conn.close()
+
+
+def _carry_over(name: str) -> str:
+    """What a FRESH session starts from: its last handoff note, then the running notes tail.
+
+    The handoff used to be written at reset and never read back in, so a fresh
+    session knew only the memory tail. This is the Phoenix loop closing."""
+    conn = db.connect()
+    try:
+        h = db.get_handoff(conn, name)
+    finally:
+        conn.close()
+    note = (h or {}).get("body", "").strip()
+    mem = _memory_excerpt(name)
+    parts = ([f"YOUR LAST HANDOFF NOTE ({(h or {}).get('updated_ts', '')}):\n{note[-6000:]}"] if note else []) + \
+            ([f"YOUR RUNNING NOTES (tail):\n{mem}"] if mem else [])
+    return "\n\n".join(parts)
+
+
 def worker_loop(role_name: str, stop: threading.Event, active: dict,
                 lock: threading.Lock, once: bool = False) -> None:
     """Take this role's items one at a time, for as long as the crew runs.
@@ -889,9 +774,9 @@ def worker_loop(role_name: str, stop: threading.Event, active: dict,
         # Replace the conversation once it has run long enough that its context
         # is more baggage than memory. The memory file carries the continuity.
         resume = sess["id"]
-        if sess["items"] >= RESET_AFTER:
+        if sess["items"] >= RESET_AFTER or _torch_due(role_name):
             log(f"{role_name}: {sess['items']} items on this session - starting a "
-                f"fresh one (the memory file carries continuity)")
+                f"fresh one, seeded from its handoff note")
             # Phoenix, Part A: the deterministic trigger (RESET_AFTER, a plain
             # int compare -- unchanged) fires the same handoff a torch_due
             # flag would for an interactive session. Sync whatever handoff.md
@@ -919,12 +804,17 @@ def worker_loop(role_name: str, stop: threading.Event, active: dict,
                     f"to sync (the role never wrote one)")
             resume = None
             sess = {"id": None, "items": 0}
+            conn = db.connect()
+            try:  # pass_the_torch only clears it when a note existed; a fresh start must never repeat
+                db.set_torch_due(conn, role_name, False)
+            finally:
+                conn.close()
 
         log(f"{role_name} starting #{tid}: {item['subject'][:60]}")
-        prompt = _prompt(role, item, _memory_excerpt(role_name))
+        prompt = _prompt(role, item, _carry_over(role_name) if resume is None else _memory_excerpt(role_name))
 
         try:
-            res = run_claude(role, prompt, resume)
+            res = run_claude(role, prompt, resume, stop=stop)
         except FileNotFoundError as exc:
             log(f"{role_name}: {exc}")
             return
@@ -1034,6 +924,16 @@ def main(argv=None) -> int:
                          once=True, dry_run=True)
         return 0
 
+    # One crew at a time. Two used to run side by side, overwriting each other's heartbeat
+    # and session files and both claiming items. The lock dies with the process.
+    import msvcrt
+    lock_fh = open(paths.DATA_DIR / "crew.lock", "a+")
+    try:
+        msvcrt.locking(lock_fh.fileno(), msvcrt.LK_NBLCK, 1)
+    except OSError:
+        log("another crew is already running - this one exits")
+        return 0
+
     global _STARTED_TS
     _STARTED_TS = db.now_iso()
     try:
@@ -1048,9 +948,8 @@ def main(argv=None) -> int:
 
     log(f"crew starting: roles={chosen} mode={PERMISSION_MODE} "
         f"claude={_claude_exe()}")
-    if MAX_CONCURRENT < len(chosen):
-        log(f"note: concurrency cap is {MAX_CONCURRENT} but {len(chosen)} workers "
-            f"are starting; the cap is not enforced per-worker yet")
+    log(f"sessions: up to {sessions.max_sessions()} at once, backend {sessions.backend()} "
+        f"({providers.describe(sessions.backend())})")
 
     threads = []
     if not args.no_coordinator:
