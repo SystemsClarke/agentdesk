@@ -7,10 +7,10 @@ using AgentDesk.Core.Board;
 using AgentDesk.Core.Host;
 using AgentDesk.Core.Plugins;
 
-Setup.Run(); // Velopack: install/uninstall hooks exit here; a downloaded update is applied here
+Setup.Run(); // Velopack: install/uninstall hooks exit here
 using var single = new Mutex(true, $@"Local\{PipeNames.Board}", out var first); // one core per pipe
 if (!first) return; // already running
-_ = Setup.KeepUpdated();
+_ = Setup.KeepUpdated(apply => Tray.ApplyUpdate = apply);
 
 var data = Environment.GetEnvironmentVariable("AGENTDESK_DATA")
            ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "AgentDesk");
@@ -22,6 +22,7 @@ var store = new BoardStore(Path.Combine(data, "agentdesk.db"));
 var board = new AgentBoard(store, new PythonPlugins(python), $"\"{Path.Combine(AppContext.BaseDirectory, "agentdesk.exe")}\" wait {{0}}");
 var hooks = new Hooks(store);
 var watch = new BoardWatch(store);
+Tray.Start(store);
 
 Log.Info($"core starting (pid {Environment.ProcessId})");
 await PipeServer.Run((req, push, gone) => req.Tool switch

@@ -15,6 +15,9 @@
     <InvariantGlobalization>true</InvariantGlobalization>
     <OptimizationPreference>Size</OptimizationPreference>
     <UseSystemResourceKeys>true</UseSystemResourceKeys>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <AssemblyTitle>AgentDesk</AssemblyTitle> <!-- the name Windows puts on the tray's toasts -->
+    <ApplicationIcon>../../agentdesk/assets/agentdesk.ico</ApplicationIcon>
   </PropertyGroup>
 
 </Project>

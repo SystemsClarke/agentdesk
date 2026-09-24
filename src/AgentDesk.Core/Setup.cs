@@ -22,21 +22,29 @@ static class Setup
         ("PostToolUse", "context", 10, "Phoenix context check"),
     ];
 
-    /// <summary>Runs a Velopack hook and exits if this launch is one; applies a downloaded update otherwise.</summary>
+    /// <summary>Runs a Velopack hook and exits if this launch is one. A downloaded update waits for John (see KeepUpdated).</summary>
     public static void Run() => VelopackApp.Build()
+        .SetAutoApplyOnStartup(false)
         .OnAfterInstallFastCallback(_ => Register(true))
         .OnAfterUpdateFastCallback(_ => Register(true))
         .OnBeforeUninstallFastCallback(_ => Register(false))
         .Run();
 
-    /// <summary>Downloads new GitHub releases now and every four hours; Run() applies them at the next start.</summary>
-    public static async Task KeepUpdated()
+    /// <summary>Downloads new GitHub releases now and every four hours, and hands <paramref name="ready"/> the restart that
+    /// applies one. Only John runs it (the tray's Restart to update): a restart drops every agent's pipe to the core.</summary>
+    public static async Task KeepUpdated(Action<Action> ready)
     {
         var updates = new UpdateManager(new GithubSource(Repo, Environment.GetEnvironmentVariable("AGENTDESK_GITHUB_TOKEN"), false));
         if (!updates.IsInstalled) return; // a dev build
+        if (updates.UpdatePendingRestart is { } pending) ready(() => updates.ApplyUpdatesAndRestart(pending));
         using var timer = new PeriodicTimer(TimeSpan.FromHours(4));
         do
-            try { if (await updates.CheckForUpdatesAsync() is { } next) await updates.DownloadUpdatesAsync(next); }
+            try
+            {
+                if (await updates.CheckForUpdatesAsync() is not { } next) continue;
+                await updates.DownloadUpdatesAsync(next);
+                ready(() => updates.ApplyUpdatesAndRestart(next.TargetFullRelease));
+            }
             catch (Exception e) { Log.Warn($"update check failed: {e.Message}"); }
         while (await timer.WaitForNextTickAsync());
     }

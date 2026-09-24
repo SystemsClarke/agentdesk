@@ -21,7 +21,10 @@ if ($Test) { dotnet test --no-build -v q --nologo; if ($LASTEXITCODE) { exit $LA
 if ($Package) {
     $stage = Join-Path $PSScriptRoot 'obj\package'
     Remove-Item $stage -Recurse -ErrorAction Ignore
-    foreach ($p in 'AgentDesk.Core', 'AgentDesk.Cli') {
+    # The window (AgentDesk.App, WPF) publishes framework-dependent (the default with -r): ~0.4 MB against ~140 MB
+    # self-contained, and --framework below has Setup install the .NET desktop runtime when it is missing.
+    # The core stays Native AOT and Velopack's main exe.
+    foreach ($p in 'AgentDesk.Core', 'AgentDesk.Cli', 'AgentDesk.App') {
         dotnet publish "src/$p" -c Release -r win-x64 -o $stage -v q --nologo
         if ($LASTEXITCODE) { exit $LASTEXITCODE }
     }
@@ -33,7 +36,8 @@ if ($Package) {
     dotnet tool restore | Out-Null
     dotnet vpk pack --packId AgentDeskApp --packTitle AgentDesk --packAuthors 'John Palenchar' `
         --packVersion "0.1.$(git rev-list --count HEAD)" --packDir $stage --mainExe AgentDesk.Core.exe `
-        --runtime win-x64 --shortcuts StartMenuRoot --outputDir releases `
+        --runtime win-x64 --framework net10.0-x64-desktop --icon agentdesk\assets\agentdesk.ico `
+        --shortcuts StartMenuRoot --outputDir releases `
         --signParams "/sha1 $thumb /fd SHA256 /tr http://timestamp.digicert.com /td SHA256"
     if ($LASTEXITCODE) { exit $LASTEXITCODE }
     Get-AuthenticodeSignature releases\*Setup.exe | Format-Table Status, @{ n = 'Signer'; e = { $_.SignerCertificate.Subject } }, Path -AutoSize

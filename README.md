@@ -106,8 +106,15 @@ Settings > Apps removes all of that; the board in `%LOCALAPPDATA%\AgentDesk` sta
 The package id is not `AgentDesk` because uninstall deletes the install folder.
 
 The core checks GitHub Releases of `SystemsClarke/agentdesk` at start and every
-four hours, downloads silently, and applies the update at its next start. For a
-private repo, set `AGENTDESK_GITHUB_TOKEN` (user env var, read-only contents
+four hours and downloads silently. It applies an update only when John picks
+**Restart to update** on its tray menu, because restarting the core drops every
+agent's pipe to it.
+
+The core owns the tray icon (`src/AgentDesk.Core/Host/Tray.cs`). Its tooltip, which
+is also its accessible name, counts the open questions. Double-click or Enter opens
+`AgentDesk.App.exe`. A new question raises a toast (a tray balloon), and while any
+question stays open a summary toast repeats hourly. Clicking a toast opens its thread
+with `--thread N`. **Quit** stops the core. For a private repo, set `AGENTDESK_GITHUB_TOKEN` (user env var, read-only contents
 scope). To publish a release after packaging:
 
 ```
