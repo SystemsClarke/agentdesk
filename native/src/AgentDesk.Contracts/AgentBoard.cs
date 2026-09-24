@@ -42,6 +42,7 @@ public interface IAgentBoard
 
 public static class PipeNames
 {
-    /// <summary>Per-user pipe; the server's ACL admits only this account.</summary>
-    public static string Board => $"agentdesk-{WindowsIdentity.GetCurrent().User?.Value ?? Environment.UserName}";
+    /// <summary>Per-user pipe; the server's ACL admits only this account. AGENTDESK_PIPE overrides it (dev and tests).</summary>
+    public static string Board => Environment.GetEnvironmentVariable("AGENTDESK_PIPE")
+                                  ?? $"agentdesk-{WindowsIdentity.GetCurrent().User?.Value ?? Environment.UserName}";
 }

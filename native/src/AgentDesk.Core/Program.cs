@@ -7,11 +7,13 @@ using AgentDesk.Core.Board;
 using AgentDesk.Core.Host;
 using AgentDesk.Core.Plugins;
 
-using var single = new Mutex(true, @"Local\AgentDesk.Core", out var first);
+using var single = new Mutex(true, $@"Local\{PipeNames.Board}", out var first); // one core per pipe
 if (!first) return; // already running
 
-var data = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "AgentDesk");
+var data = Environment.GetEnvironmentVariable("AGENTDESK_DATA")
+           ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "AgentDesk");
 Directory.CreateDirectory(data);
+Log.Path = Path.Combine(data, "core.log");
 var python = Environment.GetEnvironmentVariable("AGENTDESK_PYTHON")
              ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "NoOneDrive", "AgentDesk");
 var store = new BoardStore(Path.Combine(data, "agentdesk.db"));
