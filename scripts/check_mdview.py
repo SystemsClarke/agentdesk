@@ -93,8 +93,7 @@ sys.path.insert(0, str(REPO))
 # is the version that actually photographs the window.
 sys.path.insert(0, str(REPO / "scripts"))
 
-from agentdesk import app as appmod               # noqa: E402
-from agentdesk import db, mdview, notify, paths   # noqa: E402
+from agentdesk import db, mdview, paths          # noqa: E402
 
 # The vault is redirected as well, even though nothing here archives anything:
 # the App's poll loop runs the archive pass on every tick, and a board that
@@ -336,27 +335,50 @@ def install_webbrowser_probe():
     return original
 
 
-def show_window(app, page) -> None:
-    """Put the pane on screen for the clicks, and leave it there.
+class Pane:
+    """A plain Text this script owns, painted the way the old message pane was.
 
-    A Text has to be MAPPED for Tk to answer bbox(), and this App is withdrawn
-    while it settles. Both halves are needed: the window shown, and the page
-    the notebook's SELECTED tab -- a Text on a tab that is not displayed is
-    unmapped too, which is the same trap that once put the wrong tab in the
-    merge-list screenshot. Hidden again by hide_window() after the section,
-    rather than between clicks, because withdrawing re-unmaps the widget and
-    the next bbox() answers None.
+    The classic tabbed window (Page.refresh_detail) is gone; what it did for
+    rendering is reproduced here: clear the widget, then for every message of
+    the thread in order insert a meta line and mdview.render() the body, with a
+    receipt's whole range tagged "receipt" (grey) and raised above the md tags.
+    No _md_chart_theme is set, so tables are drawn as text grids.
     """
-    app.root.deiconify()
-    app.nb.select(page)
-    for _ in range(3):
-        app.root.update()
-        time.sleep(0.1)
 
+    def __init__(self, db_path: Path, thread_id: int) -> None:
+        self.db_path, self.thread_id = db_path, thread_id
+        self.root = tk.Tk()
+        self.msgs_txt = tk.Text(self.root, wrap="word", font="TkFixedFont")
+        mdview.configure(self.msgs_txt)
+        self.msgs_txt.tag_configure("meta", foreground="#666666")
+        self.msgs_txt.tag_configure("receipt", foreground="#9a9a9a")
+        self.msgs_txt.pack(fill="both", expand=True)
 
-def hide_window(app) -> None:
-    app.root.withdraw()
-    app.root.update()
+    def set_width(self, geometry: str) -> None:
+        self.root.geometry(geometry)
+        for _ in range(4):
+            self.root.update()
+            time.sleep(0.05)
+
+    def paint(self) -> None:
+        conn = db.connect(self.db_path)
+        try:
+            msgs = db.get_thread(conn, self.thread_id)["messages"]
+        finally:
+            conn.close()
+        txt = self.msgs_txt
+        txt.config(state="normal")
+        txt.delete("1.0", "end")
+        for m in msgs:
+            start = txt.index("end-1c")
+            txt.insert("end", f"{m['author']} ({m['author_kind']})\n", ("meta",))
+            mdview.render(txt, m["body"])
+            txt.insert("end", "\n\n")
+            if db.is_receipt(m.get("meta")):
+                txt.tag_add("receipt", start, "end-1c")
+        txt.tag_raise("receipt")
+        txt.config(state="disabled")
+        self.root.update()
 
 
 def click_link(page, needle: str) -> str:
@@ -422,19 +444,6 @@ def seed(conn) -> dict:
     db.reply(conn, ids["t"], "researcher", paths.AGENT_KIND, BODY_LINK_A)
     db.reply(conn, ids["t"], "builder", paths.AGENT_KIND, BODY_LINK_B)
     return ids
-
-
-def select_thread(app, channel: str, thread_id: int):
-    """Select a thread the way a reader does: through the tree, then the handler
-    the tree's binding calls. Assigning page.thread_id directly would skip
-    refresh_detail, which is the whole thing under test."""
-    page = app.pages[channel]
-    if not page.tree.exists(str(thread_id)):
-        return None
-    page.tree.selection_set(str(thread_id))
-    page._on_select(None)
-    app.root.update()
-    return page
 
 
 # --- sections -------------------------------------------------------------------
@@ -506,13 +515,12 @@ def check_fence_is_verbatim(page) -> None:
     check("...and its # was NOT read as a heading", "md-h1" in tags, False)
 
 
-def check_no_double_render(app, page) -> None:
+def check_no_double_render(page) -> None:
     hr("4. a repaint renders nothing twice")
     before = count_of(page.msgs_txt, "Heading one")
     show("occurrences of 'Heading one' before a repaint", before)
     for _ in range(2):
-        app.refresh_now()
-        app.root.update()
+        page.paint()
     after = count_of(page.msgs_txt, "Heading one")
     check("...and after two repaints", after, before)
     check("...and 'Heading one' appears once", after, 1)
@@ -533,13 +541,12 @@ def check_receipt_stays_grey(page) -> None:
     check("...and the markdown tag is still there", "md-bold" in tags, True)
 
 
-def check_links(app, page) -> None:
+def check_links(page) -> None:
     hr("6. every link opens its own url")
     note("this is the section that failed when this script was written: the")
     note("tag map was reset per message, so both links opened the last url.")
     print()
-    show_window(app, page)
-    try:
+    if True:
         got_c = click_link(page, "charlie")
         got_d = click_link(page, "delta")
         show("clicking charlie's link opened", got_c)
@@ -550,13 +557,10 @@ def check_links(app, page) -> None:
               "https://example.invalid/delta")
         print()
         note("and again after a repaint, because that is what re-renders the pane:")
-        app.refresh_now()
-        app.root.update()
+        page.paint()
         got_c2 = click_link(page, "charlie")
         check("...charlie still opens charlie", got_c2,
               "https://example.invalid/charlie")
-    finally:
-        hide_window(app)
 
 
 def measure_in(app, width_px: int, body: str) -> tuple[int, int, list[str]]:
@@ -616,36 +620,6 @@ def column_text(block: list[str]) -> list[str]:
         for j, cell in enumerate(grid_cells(line)):
             cols[j].append(cell)
     return [squash("".join(parts)) for parts in cols]
-
-
-def wait_for_fit(app, txt: tk.Text, cap: int, block: int = 0,
-                 avoid: Optional[int] = None) -> list[str]:
-    """The nth table's lines, once they fit `cap` and are not `avoid` wide.
-
-    `avoid` is the width the table had before a resize, and it is what makes
-    this a wait for a REDRAW rather than for a fit. Waiting only for the fit is
-    not enough and was the first version's bug: the table was already narrower
-    than the new pane, so the condition was satisfied before the poll could run
-    at all, and the section then reported "the table was redrawn" while having
-    measured the drawing made before the resize.
-
-    Gives up after two poll intervals and returns whatever is there, so that a
-    pane which never refits is a failure with a number attached rather than a
-    loop waiting for something that is not coming.
-    """
-    waited = 0.0
-    lines = pane_lines(txt)
-    while True:
-        block_lines = table_block(lines, block)
-        widest = max((len(ln) for ln in block_lines), default=0)
-        if block_lines and widest <= cap and widest != avoid:
-            return block_lines
-        if waited >= 2 * appmod.App.POLL_MS / 1000.0:
-            return block_lines
-        app.root.update()
-        time.sleep(0.2)
-        waited += 0.2
-        lines = pane_lines(txt)
 
 
 def check_values(block: list[str], where: tuple[tuple[int, str], ...]) -> None:
@@ -715,66 +689,35 @@ def check_table_in_the_pane(app, page) -> None:
     # characters (5 columns x the 6-character floor, plus 3 for each separator),
     # and at the app's own 426px pane there are only 48. So the window is made
     # wider to prove the redraw, not narrower.
-    show_window(app, page)
-    try:
-        pane_px = txt.winfo_width()
-        cap = mdview.capacity_chars(txt)
-        block = wait_for_fit(app, txt, cap)
-        widest = max((len(ln) for ln in block), default=0)
-        show("the pane, in pixels", pane_px)
-        show("...and the characters it can draw in it", cap)
-        show("...and the table's widest rendered line", f"{widest} characters")
-        check("...so the table is no wider than the pane it is drawn in",
-              widest <= cap, True)
+    # The classic window's resize -> Configure -> poll-repaint chain is gone
+    # with that window; here the pane is a Text this script owns, so a width
+    # change is a repaint the script performs. What survives is the renderer's
+    # half: repainted at a wider width, the table is redrawn to that width.
+    pane_px = txt.winfo_width()
+    cap = mdview.capacity_chars(txt)
+    block = table_block(pane_lines(txt), 0)
+    widest = max((len(ln) for ln in block), default=0)
+    show("the pane, in pixels", pane_px)
+    show("...and the characters it can draw in it", cap)
+    show("...and the table's widest rendered line", f"{widest} characters")
+    check("...so the table is no wider than the pane it is drawn in",
+          widest <= cap, True)
 
-        reference = app.root.geometry()
-        screen = app.root.winfo_screenwidth()
-        if screen >= 1500:
-            app.root.geometry("1440x640")
-            for _ in range(3):
-                app.root.update()
-                time.sleep(0.15)
-            cap_w = mdview.capacity_chars(txt)
-            block_w = wait_for_fit(app, txt, cap_w, avoid=widest)
-            widest_w = max((len(ln) for ln in block_w), default=0)
-            show("after widening the window to 1440px:", f"cap {cap_w}, "
-                 f"table {widest_w} characters")
-            check("...a wider window really is wider", cap_w > cap, True)
-            check("...and the table was redrawn to it", widest_w <= cap_w, True)
-            check("...at a different width, so it was redrawn and not merely "
-                  "re-clipped", widest_w != widest, True)
-            check("...and no message arrived to trigger that",
-                  len(pane_lines(txt)) > 0, True)
-
-            app.root.geometry(reference)
-            for _ in range(3):
-                app.root.update()
-                time.sleep(0.15)
-            wait_for_fit(app, txt, mdview.capacity_chars(txt))
-            show("...and back to", reference)
-        else:
-            note(f"the screen is {screen}px wide, too narrow to widen the")
-            note("window on it; the redraw is asserted below instead.")
-    finally:
-        hide_window(app)
-
-    # The same chain, driven directly, so that it is asserted whether or not
-    # this screen was wide enough to resize on. The two fields set here are the
-    # two the Configure handler sets, mirrored rather than called because that
-    # handler is a closure bound to the pane and cannot be invoked from
-    # outside. So the limit is worth stating: what this proves is that a marked
-    # pane is noticed by the next poll, repainted and unmarked; what it does not
-    # prove is that the handler sets exactly those two fields. The resize above
-    # is what covers that half, where the screen allows it.
-    page.detail_stale = True
-    page.shown_count = -1
-    check("a marked pane is noticed by the poll",
-          app._pane_needs_repaint(), True)
-    app.refresh_now()
-    app.root.update()
-    check("...and the poll repaints and unmarks it", page.detail_stale, False)
-    check("...so the tick after that has nothing to do",
-          app._pane_needs_repaint(), False)
+    reference = page.root.geometry()
+    page.set_width("1440x640")
+    page.paint()
+    cap_w = mdview.capacity_chars(txt)
+    block_w = table_block(pane_lines(txt), 0)
+    widest_w = max((len(ln) for ln in block_w), default=0)
+    show("after widening the pane to 1440px:", f"cap {cap_w}, "
+         f"table {widest_w} characters")
+    check("...a wider pane really is wider", cap_w > cap, True)
+    check("...and the table was redrawn to it", widest_w <= cap_w, True)
+    check("...at a different width, so it was redrawn and not merely "
+          "re-clipped", widest_w != widest, True)
+    page.set_width(reference)
+    page.paint()
+    show("...and back to", reference)
 
     block = table_block(pane_lines(txt), 0)
     check("his table rendered as something, and it opens the pane",
@@ -1068,63 +1011,41 @@ def main() -> int:
     print(f"  seeded{'':<37}thread {ids['t']}")
 
     original_open = install_webbrowser_probe()
-    app = None
+    page = None
     try:
-        app = appmod.App(paths.DB_PATH)
-        app.root.withdraw()
-        app.root.update()
-        time.sleep(0.3)
-        for _ in range(3):
-            app.refresh_now()
-            app.root.update()
+        page = Pane(paths.DB_PATH, ids["t"])
+        page.set_width("1000x700")
+        page.paint()
+        show("the pane is showing", f"thread {page.thread_id}")
+        check_structure(page)
+        check_inline(page)
+        check_fence_is_verbatim(page)
+        check_no_double_render(page)
+        check_receipt_stays_grey(page)
+        check_links(page)
+        # Section 8 starts at the narrow pane the classic window gave its
+        # detail side (~386px), so widening it afterwards has room to redraw.
+        page.set_width("386x700")
+        page.paint()
+        check_table_in_the_pane(page, page)
+        check_table_natural(page)
+        check_table_fitted(page)
 
-        page = select_thread(app, "discussion", ids["t"])
-        if page is None:
-            check("the seeded thread is on the discussion tab", False, True)
-            print("\n  the pane was never reached; nothing below is meaningful.")
-            FAILURES.append("the seeded thread never appeared on its tab")
-        else:
-            show("the pane is showing", f"thread {page.thread_id}")
-            check("...and it is the thread that was selected",
-                  page.thread_id, ids["t"])
-            check_structure(page)
-            check_inline(page)
-            check_fence_is_verbatim(page)
-            check_no_double_render(app, page)
-            check_receipt_stays_grey(page)
-            check_links(app, page)
-            check_table_in_the_pane(app, page)
-        check_table_natural(app)
-        check_table_fitted(app)
-
-        check_edge_bodies(app)
-        check_table_guards(app)
+        check_edge_bodies(page)
+        check_table_guards(page)
 
         if args.shot is not None:
             args.shot.mkdir(parents=True, exist_ok=True)
-            show_window(app, page)
             try:
-                # check_look's screenshot, not a screen grab: it asks the
-                # window to draw itself with PrintWindow, so what lands in the
-                # PNG is this window rather than whatever happens to be on top
-                # of it. A first attempt here used ImageGrab and reliably
-                # photographed the terminal instead.
                 from check_look import screenshot
                 png = (args.shot / "mdview.png").resolve()
-                show("screenshot", screenshot(app.root, png))
+                show("screenshot", screenshot(page.root, png))
             except Exception as exc:                    # noqa: BLE001
                 show("screenshot FAILED", repr(exc))
-            finally:
-                hide_window(app)
     finally:
         webbrowser.open = original_open
-        if app is not None:
-            if app.icon is not None:
-                try:
-                    app.icon.stop()
-                except Exception:
-                    pass
-            app.root.destroy()
+        if page is not None:
+            page.root.destroy()
 
     hr()
     if FAILURES:

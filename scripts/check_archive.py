@@ -117,9 +117,27 @@ def open_ids() -> list:
         conn.close()
 
 
-def listed_ids(page) -> list:
-    """The ids the Questions page is showing right now, from the widget."""
-    return [int(i) for i in page.tree.get_children()]
+def listed_ids(app) -> list:
+    """The ids the Questions list is showing right now, from the terminal view."""
+    return [int(r["id"]) for r in app.view.rows["question"]]
+
+
+def goto_questions(app) -> None:
+    """Show the Questions list, as selecting the old tab did.
+
+    Recorded as a check rather than allowed to raise: if the list screen cannot
+    render, that is a failure to report, and the backend checks after it still
+    deserve to run. On failure the view is put back on the main screen so later
+    redraws do not keep re-raising the same error.
+    """
+    try:
+        app.view.goto("list", "question")
+        app.root.update()
+        err = None
+    except Exception as e:  # noqa: BLE001
+        err = f"{type(e).__name__}: {e}"
+        app.view.screen = "main"
+    check("the Questions list screen renders", err, None)
 
 
 TOASTS: list = []
@@ -179,11 +197,7 @@ def section_settle_and_file(app, ids) -> None:
     note("the status: the window's own poll sweep is what files it.")
     print()
 
-    conn = db.connect(paths.DB_PATH)
-    try:
-        before = [int(i) for i in app.pages["question"].tree.get_children()]
-    finally:
-        conn.close()
+    before = listed_ids(app)
 
     app.post_reply("question", tid, "Keep them; the mirror is the point.")
     app.root.update()
@@ -196,7 +210,7 @@ def section_settle_and_file(app, ids) -> None:
     show("vault files", files)
     check("the transcript is in the vault", f"question-{tid}.md" in files, True)
 
-    now = [int(i) for i in app.pages["question"].tree.get_children()]
+    now = listed_ids(app)
     show("the tab showed, before", before)
     show("the tab shows, after", now)
     check("it left the default list", tid in now, False)
@@ -222,6 +236,11 @@ def section_toast_stops(app, ids) -> None:
     show("questions still open", n_open)
     want = f"{n_open} open question" + ("" if n_open == 1 else "s")
     check("the title counts exactly the open ones", want in title, True)
+    top = app.view.top.get("1.0", "end-1c")
+    show("the terminal top line", top.strip())
+    check("the view rings for exactly the open ones", len(app.view.open_qs), n_open)
+    check("...and says so on the top line",
+          f"{n_open} ringing for you" in top if n_open else "nobody's calling" in top, True)
 
     print()
     note("and the hourly toast. notify_open_questions is called for real -- it")
@@ -277,12 +296,12 @@ def section_still_findable(ids) -> None:
 
 def section_filter_and_bring_back(app, ids) -> None:
     hr("6. the Archived filter, and bringing it back")
-    page = app.pages["question"]
+    view = app.view
     tid = ids["q1"]
 
-    show("filter starts on", "Archived" if page.show_archived.get() else "Active")
-    check("the tab opens on Active", page.show_archived.get(), False)
-    check("...and the archived one is not in it", tid in listed_ids(page), False)
+    show("filter starts on", "Archived" if view.show_archived else "Active")
+    check("the tab opens on Active", view.show_archived, False)
+    check("...and the archived one is not in it", tid in listed_ids(app), False)
 
     # Close the poll's gate first. It only redraws when its change signature
     # moves, and section 5's read_thread posted a receipt, so without this the
@@ -292,18 +311,18 @@ def section_filter_and_bring_back(app, ids) -> None:
     app.refresh_now()
     app.root.update()
     check("the tab is showing exactly the Active list before the flip",
-          listed_ids(page), [ids["q2"]])
+          listed_ids(app), [ids["q2"]])
 
-    page.show_archived.set(True)
-    page._on_archived_filter()
+    view.show_archived = True
+    app.redraw()
     app.root.update()
-    show("after switching to Archived, the tab shows", listed_ids(page))
-    check("the archived question is listed", tid in listed_ids(page), True)
-    check("...and it is the ONLY thing listed", listed_ids(page), [tid])
+    show("after switching to Archived, the tab shows", listed_ids(app))
+    check("the archived question is listed", tid in listed_ids(app), True)
+    check("...and it is the ONLY thing listed", listed_ids(app), [tid])
 
     print()
-    note("now the Bring back button, through the widget's own handler.")
-    if tid not in listed_ids(page):
+    note("now Bring back, through app.unarchive_question (what 'u' calls).")
+    if tid not in listed_ids(app):
         # Selecting a row that is not there raises TclError, which would abort
         # the run and hide every check after it behind a traceback. On a
         # working board this is unreachable; on broken code it is the whole
@@ -311,21 +330,16 @@ def section_filter_and_bring_back(app, ids) -> None:
         check("the archived row is on the tab, to press the button on", False, True)
         note("the rest of this section needs a row to press the button on.")
         return
-    page.tree.selection_set(str(tid))
-    page._on_select()
-    app.root.update()
-    check("the button is enabled for an archived row",
-          str(page.unarchive_btn.cget("state")), "normal")
-    page._unarchive()
+    app.unarchive_question(tid)
     app.root.update()
 
     show("its status is now", status_of(tid))
     show("its meta is now", meta_of(tid))
-    show("the filter is now", "Archived" if page.show_archived.get() else "Active")
+    show("the filter is now", "Archived" if view.show_archived else "Active")
     check("it is settled again, not reopened", status_of(tid), paths.STATUS_ANSWERED)
     check("...and it carries the hold", meta_of(tid).get("archive_hold"), True)
-    check("the filter flipped back to Active", page.show_archived.get(), False)
-    check("it is back on the tab", tid in listed_ids(page), True)
+    check("the filter flipped back to Active", view.show_archived, False)
+    check("it is back on the tab", tid in listed_ids(app), True)
     check("open_questions still does not list it", tid in open_ids(), False)
 
 
@@ -343,7 +357,7 @@ def section_traps(app, ids) -> None:
     show("after three more polls, its status is", status_of(tid))
     check("the sweep left the restored question alone",
           status_of(tid), paths.STATUS_ANSWERED)
-    check("...and it is still on the tab", tid in listed_ids(app.pages["question"]), True)
+    check("...and it is still on the tab", tid in listed_ids(app), True)
 
     print()
     check("a second Bring back changes nothing",
@@ -360,7 +374,7 @@ def section_traps(app, ids) -> None:
     check("the hold is gone", meta_of(tid).get("archive_hold"), None)
     check("...and it recorded what it was settled as",
           meta_of(tid).get("archived_from"), paths.STATUS_CLOSED)
-    check("it left the tab", tid in listed_ids(app.pages["question"]), False)
+    check("it left the tab", tid in listed_ids(app), False)
 
     print()
     note("and the other channels are untouched by any of this. A discussion is")
@@ -466,7 +480,7 @@ def main() -> int:
         for _ in range(3):
             app.refresh_now()
             app.root.update()
-        app.pages and app.nb.select(app.pages["question"])
+        goto_questions(app)
         app.root.update()
 
         show("open questions at the start", open_ids())
@@ -485,15 +499,15 @@ def main() -> int:
             time.sleep(0.3)
             show("screenshot (active)", screenshot(
                 app.root, (args.shot / "questions-active.png").resolve()))
-            app.pages["question"].show_archived.set(True)
-            app.pages["question"]._on_archived_filter()
+            app.view.show_archived = True
+            app.redraw()
             for _ in range(5):
                 app.root.update()
                 time.sleep(0.15)
             # Printed so the picture can be trusted: an empty tree in the PNG
             # is a rendering race unless these ids are also empty.
             show("the archived list actually holds",
-                 listed_ids(app.pages["question"]))
+                 listed_ids(app))
             show("screenshot (archived)", screenshot(
                 app.root, (args.shot / "questions-archived.png").resolve()))
             app.root.withdraw()

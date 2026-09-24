@@ -7,7 +7,6 @@ import json
 from agentdesk import paths
 
 DEFAULTS = {
-    "ui": "terminal",
     "theme": "monokai-pro",
     "screech": True,
     "font_size": 11,

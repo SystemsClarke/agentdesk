@@ -122,7 +122,11 @@ def gh_answers(mapping: dict) -> None:
 def gh_call_count() -> int:
     if not _CALLS.exists():
         return 0
-    return len([ln for ln in _CALLS.read_text(encoding="utf-8").splitlines() if ln.strip()])
+    # Only `gh pr view <url>` calls. The watcher pass also runs pr_scan, which
+    # calls `gh search prs ...` (logged as its flags, not a URL); those are the
+    # scan's business, not the per-PR status check these counts are about.
+    return len([ln for ln in _CALLS.read_text(encoding="utf-8").splitlines()
+                if ln.startswith("https://")])
 
 
 # --- reporting ------------------------------------------------------------------
@@ -174,8 +178,26 @@ def pr_id_of(url: str) -> int:
     return int(row["id"])
 
 
-def pr_row_in(page, pr_id: int) -> bool:
-    return str(pr_id) in page.tree.get_children()
+def pr_row_in(app, pr_id: int) -> bool:
+    return pr_id in [int(r["id"]) for r in app.view.prs]
+
+
+def view_open_prs(app) -> int:
+    """The open-PR count the terminal view shows (main menu and sysop)."""
+    return sum(1 for r in app.view.prs if r["state"] == paths.PR_OPEN)
+
+
+def body_text(app) -> str:
+    return app.view.body.get("1.0", "end")
+
+
+def select_pr(app, url: str) -> None:
+    """Go to the merge desk and move the cursor onto the row for url."""
+    app.view.goto("prs")
+    idx = [r["url"] for r in app.view.prs].index(url)
+    app.view.sel_prs = idx
+    app.view.render()
+    app.root.update()
 
 
 def open_pr_count() -> int:
@@ -221,10 +243,9 @@ def check_register_and_tab(ids: dict, app) -> None:
     app.refresh_now()
     app.root.update()
 
-    page = app.pr_page
-    show("rows on the merge list", page.tree.get_children())
+    show("rows on the merge list", [r["id"] for r in app.view.prs])
     check("the seeded PR is on the tab",
-          pr_row_in(page, pr_id_of("https://github.com/Vispero/Fusion/pull/80")),
+          pr_row_in(app, pr_id_of("https://github.com/Vispero/Fusion/pull/80")),
           True)
 
     hr("2. an agent asks through the real MCP tool")
@@ -260,10 +281,8 @@ def check_register_and_tab(ids: dict, app) -> None:
     app.refresh_now()
     app.root.update()
     check("both PRs are now on the tab",
-          len(page.tree.get_children()), open_pr_count())
-    show("the Pull Requests tab label", repr(app.nb.tab(page, "text")))
-    check("the tab counts them", app.nb.tab(page, "text"),
-          f"Pull Requests ({open_pr_count()})")
+          len(app.view.prs), open_pr_count())
+    check("the view counts them", view_open_prs(app), open_pr_count())
 
 
 def check_clickable(ids: dict, app) -> None:
@@ -277,33 +296,17 @@ def check_clickable(ids: dict, app) -> None:
 
     webbrowser.open = spy
     try:
-        page = app.pr_page
         target = "https://github.com/Vispero/SetupSDK/pull/21"
-        row = [r for r in page.rows if r["url"] == target]
+        row = [r for r in app.view.prs if r["url"] == target]
         check("the PR is listed", len(row), 1)
-        # Selected through the widget, so <<TreeviewSelect>> fires as it does
-        # for a click. Assigning page.pr_id directly, which this did first,
-        # skips _on_select -- and with it the only thing that fills the detail
-        # pane, so the pane was asserted empty and the failure had nothing to
-        # do with the pane.
-        page.tree.selection_set(str(row[0]["id"]))
-        page._on_select(None)
-        check("...and selecting it fills the detail pane", page.url_lbl.cget("text"),
-              target)
-        page._open_selected()
-        check("selecting and clicking Open on GitHub opened it", opened[-1:], [target])
-
-        # The button a person actually presses, not the method behind it.
-        page.open_btn.invoke()
-        check("...and so did the real button", opened[-1:], [target])
-
-        # Double-clicking the row is the other way John would try.
-        page._on_double(None)
+        select_pr(app, target)
+        check("...and selecting it shows the URL in the detail",
+              target in body_text(app), True)
+        app.view._activate()
+        check("selecting and activating it opened it", opened[-1:], [target])
+        opened.clear()
+        app.view._on_double(None)
         check("...and so did double-clicking the row", opened[-1:], [target])
-
-        show("the URL shown in the detail pane", page.url_lbl.cget("text"))
-        check("the pane shows the URL too",
-              page.url_lbl.cget("text"), target)
     finally:
         webbrowser.open = real_open
 
@@ -322,20 +325,17 @@ def check_merge_clears(ids: dict, app) -> None:
 
     app.refresh_now()
     app.root.update()
-    page = app.pr_page
     check("the merged PR left the merge list",
-          url in [r["url"] for r in page.rows], False)
+          url in [r["url"] for r in app.view.prs], False)
     check("...the still-open one did not",
           "https://github.com/Vispero/Fusion/pull/80"
-          in [r["url"] for r in page.rows], True)
-    show("the Pull Requests tab label", repr(app.nb.tab(page, "text")))
+          in [r["url"] for r in app.view.prs], True)
     # One of the two open PRs settled, so the count falls by exactly one. The
     # expected label is built from the board rather than written as a literal:
     # the value being asserted is "the tab agrees with the list", and a literal
     # would silently stop testing that the moment a section adds a PR.
     want_open = open_pr_count()
-    check("the tab count dropped", app.nb.tab(page, "text"),
-          f"Pull Requests ({want_open})" if want_open else "Pull Requests")
+    check("the view's count dropped", view_open_prs(app), want_open)
     check("...and it counts only the unsettled ones", want_open, 1)
 
     stored = conn_status(url)
@@ -398,9 +398,8 @@ def check_failure_never_clears(ids: dict, app) -> None:
     app.refresh_now()
     app.root.update()
 
-    page = app.pr_page
     pid = pr_id_of(url)
-    check("the PR is STILL on the list", pr_row_in(page, pid), True)
+    check("the PR is STILL on the list", pr_row_in(app, pid), True)
     stored = conn_status(url)
     check("...its state is still open", stored.get("state"), "open")
     check("...no settled timestamp was written", stored.get("settled_ts"), None)
@@ -415,17 +414,13 @@ def check_failure_never_clears(ids: dict, app) -> None:
     check("...in fact this section posted nothing at all", len(new), 0)
 
     # And it is visible, not merely stored.
-    check("the tab says the check failed",
-          page.tree.set(str(pid), "checked"), "failed")
-    page.pr_id = pid
-    conn = db.connect(paths.DB_PATH)
-    try:
-        page.refresh_detail(conn)
-    finally:
-        conn.close()
-    body = page.body_txt.get("1.0", "end")
-    check("...the pane explains it and says the row is still waiting",
-          "rate limit exceeded" in body and "still on the list" in body, True)
+    select_pr(app, url)
+    body = body_text(app)
+    row_line = [ln for ln in body.splitlines() if "Fusion#80" in ln]
+    check("the list says the check failed",
+          bool(row_line) and "failed" in row_line[0], True)
+    check("...the detail explains it and says the row is still waiting",
+          "rate limit exceeded" in body and "stays on the list" in body, True)
 
     hr("6b. and when GitHub answers again, the error clears")
     gh_answers({url: {"state": "OPEN", "title": "still open"}})
@@ -456,7 +451,7 @@ def check_closed_unmerged(ids: dict, app) -> None:
 
     stored = conn_status(out["url"])
     check("its state is closed", stored.get("state"), "closed")
-    check("...it left the list", out["url"] in [r["url"] for r in app.pr_page.rows],
+    check("...it left the list", out["url"] in [r["url"] for r in app.view.prs],
           False)
     new = thread_messages(ids["thread"])[before:]
     check("...a notice was posted", len(new), 1)
@@ -645,47 +640,27 @@ def check_cli() -> None:
 
 def check_look(app, shot: Path | None) -> None:
     hr("12. the tab, as John would see it")
-    page = app.pr_page
-    # Refreshed first, because this section is the one that claims to show the
-    # list as it stands. The poll only redraws when the signature moves and the
-    # window's timer never fires here -- this harness drives Tk with update(),
-    # not mainloop() -- so without this the dump is of an older list with the
-    # sections' later registrations missing from it.
     app.refresh_now()
     app.root.update()
-    # And brought to the front, for the same reason one step on: nothing before
-    # this selects the tab, so the first version of this section photographed
-    # whichever tab happened to be showing -- Questions -- and still reported a
-    # saved screenshot, which looks like evidence of the merge list and is not.
-    app.nb.select(page)
+    app.view.goto("prs")
     app.root.update()
-    rows = []
-    for iid in page.tree.get_children():
-        rows.append((iid, page.tree.set(iid, "state"),
-                     page.tree.set(iid, "pull"),
-                     page.tree.set(iid, "title")[:30],
-                     page.tree.set(iid, "checked")))
     print("  the merge list, row by row:")
-    for r in rows:
-        print(f"      #{r[0]}  {r[1]:<7} {r[2]:<22} {r[3]:<32} {r[4]}")
-    # The failure marker is the reason the bug this section found mattered, so
-    # it is asserted rather than only printed: a row whose check failed must not
-    # be able to render as though it had merely been checked.
-    failed = [r for r in rows if r[4] == "failed"]
-    show("rows whose last check failed", [r[0] for r in failed])
-
-    cols = list(page.tree["columns"])
-    total = sum(page.tree.column(c, "width") for c in cols)
-    avail = page.tree.winfo_width()
-    show("column widths", {c: page.tree.column(c, "width") for c in cols})
-    show("the list's width", avail)
-    check("...every column fits, so the failed marker is on screen",
-          total <= avail, True)
-    show("the tab label", repr(app.nb.tab(page, "text")))
-    show("the footer", repr(page.footer.cget("text")))
-    show("the blurb over the list", repr(page.banner.cget("text")[:80] + "..."))
-    check("the blurb says the list clears itself",
-          "clears itself" in page.banner.cget("text"), True)
+    for r in app.view.prs:
+        chk = "failed" if r["last_error"] else (r["checked_ts"] or "never")
+        print(f"      #{r['id']}  {r['state']:<7} {r['repo']}#{r['number']:<10} "
+              f"{r['title'][:30]:<32} {chk}")
+    failed = [r["id"] for r in app.view.prs if r["last_error"]]
+    show("rows whose last check failed", failed)
+    body = body_text(app)
+    for pid in failed:
+        r = next(x for x in app.view.prs if x["id"] == pid)
+        ref = f"{r['repo']}#{r['number']}"[:20]   # the column is 22 wide, fit() clips
+        line = [ln for ln in body.splitlines() if ref in ln]
+        check(f"...#{pid} renders as failed on screen",
+              bool(line) and "failed" in line[0], True)
+    show("the title line", repr(app.view.top.get("1.0", "end-1c")[:80]))
+    check("the header says the list clears itself",
+          "clears itself" in body, True)
 
     if shot is not None:
         from check_look import screenshot

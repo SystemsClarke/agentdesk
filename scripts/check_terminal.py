@@ -98,7 +98,7 @@ def main() -> int:
         conn.close()
 
     appmod._enable_dpi_awareness()
-    app = appmod.App(paths.DB_PATH, ui="terminal")
+    app = appmod.App(paths.DB_PATH)
     app._stop_pr_watch()
     v = app.view
     app.root.deiconify()
@@ -283,6 +283,9 @@ def main() -> int:
     v.zoom(-1)
     app.root.update()
     consistent(app, "after zoom out")
+    log_text = (paths.DATA_DIR / "terminal.log").read_text(encoding="utf-8", errors="replace")
+    errors = [l for l in log_text.splitlines() if " ERROR " in l]
+    check("no screen raised an error while drawing (terminal.log)", not errors, "; ".join(errors[:2]))
     check("no screen is ever drawn twice or left with stale lines", not consistency_errors,
           "; ".join(consistency_errors[:4]))
     print("\nkeypress to paint, ms (median / worst):")

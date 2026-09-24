@@ -92,11 +92,6 @@ def guarded(fn):
     return wrap
 
 
-def _app():
-    from agentdesk import app as appmod
-    return appmod
-
-
 def S(text, *tags):
     return (text, tags)
 
@@ -173,9 +168,9 @@ def author_hue(author: str) -> str:
 
 
 def state_code(channel: str, row) -> tuple:
-    word = _app().state_of(channel, row)[0]
-    if channel == "question" and _app().waiting_on_john(channel, row):
+    if waiting(channel, row):
         return ("WAIT", ("pk", "b"))
+    word = row["status"]
     return {
         "open": ("OPEN", ("ye",)) if channel == "work" else ("live", ("mu",)),
         "claimed": ("HELD", ("cy",)),
@@ -185,6 +180,45 @@ def state_code(channel: str, row) -> tuple:
         "fyi": ("fyi ", ("mu",)),
         "archived": ("arch", ("fa",)),
     }.get(word, (fit(word, 4), ("mu",)))
+
+
+def waiting(channel: str, row) -> bool:
+    """Does this question still owe John an answer? (db computes `waiting` from its messages.)"""
+    try:
+        return channel == "question" and bool(row["waiting"])
+    except (IndexError, KeyError, TypeError):
+        return False
+
+
+def holder(row) -> str:
+    """The agent holding a work item, from its meta JSON, or ""."""
+    return _meta(row.get("meta") if isinstance(row, dict) else None).get("assignee") or ""
+
+
+def clock(iso) -> str:
+    dt = _parse(iso)
+    return dt.astimezone().strftime("%H:%M:%S") if dt else ""
+
+
+def activity(row, events: list) -> tuple:
+    """(label, [(clock, body, tag)]) for the worker's progress on one work item."""
+    if row is None:
+        return "No item selected.", []
+    word = state_code("work", row)[0].strip().lower()
+    who = holder(row)
+    held = f"held by {identity.label(who)}" if who else ""
+    if not events:
+        if row["status"] == paths.STATUS_CLAIMED:
+            return " · ".join(x for x in (word, held, "no progress reported") if x), [
+                ("", "Nothing has reported progress. An item claimed by hand, not by the worker, has none.",
+                 "ev-unknown")]
+        return f"{word} · nothing has run this item", []
+    started = next((e for e in events if e["kind"] == db.WORK_START), events[0])
+    last = events[-1]
+    bits = [word, held, f"started {ago(started['ts'])} ago", f"last activity {ago(last['ts'])} ago"]
+    if last["kind"] == db.WORK_ERROR:
+        bits.append(last["body"])
+    return " · ".join(b for b in bits if b), [(clock(e["ts"]), e["body"], f"ev-{e['kind']}") for e in events]
 
 
 class TerminalView:
@@ -705,7 +739,7 @@ class TerminalView:
         left = [S("AgentDesk", "ye", "b"), S(f" · {title}", "mu")]
         if running:
             item = self.held_row["id"] if self.held_row else None
-            who = _app().holder(self.held_row) if self.held_row else ""
+            who = holder(self.held_row) if self.held_row else ""
             mid = [S("● worker online", "gr")] + ([S(f" · #{item}", "ye")] if item else [S(" · idle", "mu")]) \
                 + ([S(f" · {identity.label(who)}", "mu")] if who else [])
         else:
@@ -924,7 +958,7 @@ class TerminalView:
             r = rows[i]
             code, ctags = state_code(ch, r)
             if ch == "work":
-                who = _app().holder(r)
+                who = holder(r)
                 by = identity.label(who) if who else "—"
             else:
                 by = identity.label(r["opened_by"])
@@ -953,11 +987,11 @@ class TerminalView:
         if ch == "question":
             if self.show_archived:
                 return [S(f" {len(rows)} archived. ", "mu"), S("U", "ye"), S(" on one brings it back.", "mu")]
-            waiting = [r for r in rows if _app().waiting_on_john("question", r)]
-            settled = len(rows) - len(waiting)
-            out = [S(f" {len(waiting)} still ringing", "pk", "b") if waiting else S(" nothing ringing", "gr")]
-            if waiting:
-                oldest = min(waiting, key=lambda r: r["updated_ts"])
+            ringing = [r for r in rows if waiting("question", r)]
+            settled = len(rows) - len(ringing)
+            out = [S(f" {len(ringing)} still ringing", "pk", "b") if ringing else S(" nothing ringing", "gr")]
+            if ringing:
+                oldest = min(ringing, key=lambda r: r["updated_ts"])
                 out.append(S(f" · oldest waiting {ago(oldest['updated_ts'])}", "mu"))
             out.append(S(f" · {settled} answered, filed to the vault on the next sweep", "mu"))
             return out
@@ -1005,7 +1039,6 @@ class TerminalView:
 
         head = f"═ Msg #{thread['id']} ═ {pos} "
         put([S("╔", "rule"), S(head, "ye", "b"), S("═" * max(0, W - 2 - len(head)) + "╗", "rule")])
-        who = thread["opened_by"] if ch != "work" else (_app().holder(thread) or thread["opened_by"])
         put([S("  From: ", "mu"), S(fit(identity.describe(thread["opened_by"]), 30), author_hue(thread["opened_by"])),
              S("To: ", "mu"), S(fit(paths.HUMAN if ch == "question" else "everyone", 12), "ye"),
              S("Status: ", "mu"), S(status_word, *ctags)])
@@ -1015,8 +1048,8 @@ class TerminalView:
         for n, chunk in enumerate(chunks):
             put([S("  Subj: " if n == 0 else "        ", "mu"), S(chunk, "fg", "b")])
         extra = []
-        if ch == "work" and _app().holder(thread):
-            extra = [S("   Held by: ", "mu"), S(identity.label(_app().holder(thread)), "cy")]
+        if ch == "work" and holder(thread):
+            extra = [S("   Held by: ", "mu"), S(identity.label(holder(thread)), "cy")]
         put([S("  Date: ", "mu"), S(fit(when(thread["created_ts"]), 16)),
              S("Replies: ", "mu"), S(str(max(0, len(msgs) - 1)))] + extra +
             ([S("   Echo: ", "mu"), S("SlackNet", "pu")] if slack else []))
@@ -1092,7 +1125,7 @@ class TerminalView:
         if running and self.held_row:
             started = next((e for e in self.held_events if e["kind"] == db.WORK_START), None)
             dur = f" for {ago(started['ts'])}" if started else ""
-            who = _app().holder(self.held_row)
+            who = holder(self.held_row)
             stat("Worker", [S(f"● online · on #{self.held_row['id']}{dur}", "gr")] +
                  ([S(f" · {identity.label(who)}", "mu")] if who else []))
         elif running:
@@ -1125,7 +1158,7 @@ class TerminalView:
         stat("Claude plan", [S(self.usage_summary, "mu")])
         L.append([])
         if self.held_row:
-            label, lines = _app().activity_text(self.held_row, self.held_events)
+            label, lines = activity(self.held_row, self.held_events)
             rows = [[S(label, "mu")]]
             hue = {"ev-start": "cy", "ev-step": "fg", "ev-output": "mu", "ev-done": "gr", "ev-error": "pk"}
             word = {"ev-start": "START ", "ev-step": "step  ", "ev-output": "said  ", "ev-done": "DONE  ",
@@ -1141,7 +1174,7 @@ class TerminalView:
         jrows = []
         for r in jobs:
             code, ctags = state_code("work", r)
-            who = _app().holder(r)
+            who = holder(r)
             jrows.append([S(f"#{r['id']:<5}", "ye"), S(code, *ctags), S("  "), S(fit(r["subject"], W - 34)),
                           S(" "), S(fit(identity.label(who) if who else "—", 14), "mu")])
         if not jrows:
@@ -1165,8 +1198,8 @@ class TerminalView:
                   S(fit("reading the Who's On list", doing_w)), S("     now", "fa")])
         held_by = {}
         for r in self.rows["work"]:
-            if r["status"] == paths.STATUS_CLAIMED and _app().holder(r):
-                held_by[_app().holder(r)] = r
+            if r["status"] == paths.STATUS_CLAIMED and holder(r):
+                held_by[holder(r)] = r
         sel = min(self.sel_who, max(0, len(callers) - 1))
         self.sel_who = sel
         start = len(L) + 1
@@ -1219,7 +1252,6 @@ class TerminalView:
             ("Dictation pre-roll", ("ON" if self.prefs.get("preroll", True) else "off")
              + "   keeps the last 2 s in RAM while a box has focus, so Ctrl+D catches what you just said",
              "preroll"),
-            ("Classic window", "the old tabbed look, relaunches the window", "classic"),
         ]
 
     def _options(self, W: int) -> list:
@@ -1345,11 +1377,6 @@ class TerminalView:
                 log.exception("toggling dictation pre-roll failed")
             self.flash("Pre-roll on: the mic keeps a 2-second rolling buffer while you're in a box."
                        if self.prefs["preroll"] else "Pre-roll off: the mic only opens when you press Ctrl+D.", "ye")
-        elif key == "classic":
-            self.prefs["ui"] = "classic"
-            settings.save(self.prefs)
-            self.app._reload_code()
-            return
         self.render()
 
     def set_theme(self, key: str) -> None:

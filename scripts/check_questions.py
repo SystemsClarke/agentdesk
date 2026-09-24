@@ -58,7 +58,7 @@ _SCRATCH = Path(tempfile.mkdtemp(prefix="agentdesk-questions-"))
 os.environ["LOCALAPPDATA"] = str(_SCRATCH)
 
 from agentdesk import app as appmod  # noqa: E402
-from agentdesk import db, mcp_server, notify, paths, vault  # noqa: E402
+from agentdesk import db, mcp_server, notify, paths, terminal, vault  # noqa: E402
 
 # The vault redirect. See the module docstring -- this is not optional
 # housekeeping, it is the difference between a test and writing into John's
@@ -134,20 +134,18 @@ def transcript_path(thread_id: int) -> Path:
 
 
 def tab_ids(app, channel: str) -> list[int]:
-    """What the tab is actually showing, from the widget rather than from rows.
+    """What the terminal view's list for `channel` holds right now.
 
-    The tree's own children, because `page.rows` is what the page asked the
-    database for and the tree is what a reader sees; a filter that applied to
-    one and not the other is exactly the bug this is here to catch.
+    The view's rows are what its list screen paints, one line per row; there
+    is no separate widget tree any more to disagree with them.
     """
-    return sorted(int(i) for i in app.pages[channel].tree.get_children())
+    return sorted(int(r["id"]) for r in app.view.rows[channel])
 
 
 def tab_states(app, channel: str) -> list[tuple]:
-    """(thread id, the word the tab prints for it) for every row on a tab."""
-    page = app.pages[channel]
-    return sorted((int(r["id"]), appmod.state_of(channel, r)[0])
-                  for r in page.rows)
+    """(thread id, the state code the list prints for it) for every row."""
+    return sorted((int(r["id"]), terminal.state_code(channel, r)[0].strip())
+                  for r in app.view.rows[channel])
 
 
 # --- the board under test -------------------------------------------------------
@@ -402,7 +400,7 @@ def check_leaves_only_after_landing(app) -> None:
     show("the tab", tab_states(app, "question"))
     check("the question is still on the tab", qid in tab_ids(app, "question"), True)
     check("...shown as answered, not archived",
-          dict(tab_states(app, "question")).get(qid), "answered")
+          dict(tab_states(app, "question")).get(qid), "ansd")
     conn = db.connect(paths.DB_PATH)
     try:
         check("...and the DATABASE still says answered, not archived",
@@ -439,8 +437,6 @@ def conn_status(thread_id: int) -> str:
 
 def check_close_button(app) -> None:
     hr("6. closing a question without answering it, through the real button")
-    check("no Close button on a non-question page",
-          app.pages["discussion"].close_btn, None)
     # The invariant, checked as an absence rather than asserted: only John may
     # settle a question, so there must be no MCP tool an agent could call to
     # close one. @server.tool() returns the plain function, so a tool that
@@ -477,24 +473,14 @@ def check_close_button(app) -> None:
     app.refresh_now()
     app.root.update()
 
-    page = app.pages["question"]
-    app.nb.select(page)
-    app.root.update_idletasks()
-    app.root.update()
-    page.tree.selection_set(str(qid2))
-    page._on_select()
-    app.root.update_idletasks()
-    app.root.update()
-    check("the button is there on the question page",
-          page.close_btn is not None and page.close_btn.cget("text"),
-          "Close & archive")
+    check("the new question is on the list to close", qid2 in tab_ids(app, "question"), True)
 
     # The click itself. It runs the real handler, which sets the status and then
     # asks for a refresh -- and that refresh is a poll, so the sweep runs inside
     # this call and the item is archived by the time it returns. There is
     # deliberately no observable 'closed' instant from outside for that reason;
     # the check above is where that state is shown.
-    page.close_btn.invoke()
+    app.close_question(qid2)
     app.root.update()
     check("the button archived it", conn_status(qid2), paths.STATUS_ARCHIVED)
     check("...so it left the tab", qid2 in tab_ids(app, "question"), False)
@@ -658,10 +644,10 @@ def check_reask_survives_the_one_way_door(app) -> None:
     states = dict(tab_states(app, "question"))
     show("the word the tab prints for it", states.get(qid))
     check("it reads as waiting, not as the status it is stored with",
-          states.get(qid), "open")
-    page = app.pages["question"]
-    check("and its row carries the red tag",
-          "isopen" in page.tree.item(str(qid), "tags"), True)
+          states.get(qid), "WAIT")
+    row = next((r for r in app.view.rows["question"] if r["id"] == qid), None)
+    check("and the view counts it as waiting (the red row)",
+          bool(row) and terminal.waiting("question", row), True)
     # The title is checked against the VIEW rather than against a number, so
     # this says the two surfaces agree and not merely that a number appeared.
     title = app.root.title()
@@ -837,10 +823,16 @@ def check_look(app, shot: Path | None) -> None:
     app.refresh_now()
     app.root.update()
 
-    page = app.pages["question"]
-    app.nb.select(page)
-    page.tree.selection_set(str(qid))
-    page._on_select()
+    try:
+        app.view.open_thread(qid)
+        err = None
+    except Exception as e:  # noqa: BLE001
+        err = f"{type(e).__name__}: {e}"
+        app.view.screen = "main"
+    check("the thread opens in the reader", err, None)
+    if err is None:
+        body = app.view.read_view.get("1.0", "end")
+        check("...and the reader shows the agent's reply", "SEEDQ9R" in body, True)
     app.root.deiconify()
     app.root.update_idletasks()
     app.root.update()
@@ -851,7 +843,7 @@ def check_look(app, shot: Path | None) -> None:
     for tid, word in tab_states(app, "question"):
         print(f"      #{tid}  {word}")
     show("the title bar", repr(app.root.title()))
-    show("the blurb over the list", repr(app.pages["question"].banner.cget("text")))
+    show("the top line", repr(app.view.top.get("1.0", "end-1c").strip()))
     if shot is not None:
         shot.mkdir(parents=True, exist_ok=True)
         from check_look import screenshot  # shared with the look checks
