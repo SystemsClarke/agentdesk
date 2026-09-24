@@ -290,11 +290,16 @@ def grid_cells(line: str) -> list[str]:
     column is empty still yields its empty final cell instead of quietly losing
     the column -- which is the exact difference sections 8 and 9 turn on.
     """
-    return [c.strip() for c in line.split("│")]
+    s = line.strip()
+    if s[:1] in "│├┌└":
+        s = s[1:]
+    if s[-1:] in "│┤┐┘":
+        s = s[:-1]
+    return [c.strip() for c in s.split("│")]
 
 
 def boundaries(line: str, font, sep: str = "│") -> list[int]:
-    """Pixel x of each column separator. Alignment, measured not assumed.
+    """Pixel x of each INNER column separator (the box's outer border is skipped).
 
     The rule line joins its dashes with a CROSS and not with the separator the
     rows use, so the caller names the character. That is not cosmetic: the cross
@@ -303,8 +308,9 @@ def boundaries(line: str, font, sep: str = "│") -> list[int]:
     list rather than an error -- which is how this check first failed, claiming
     the rule had no boundaries when it had three.
     """
+    last = len(line.rstrip()) - 1
     return [font.measure(line[:m.start() + 1])
-            for m in re.finditer(re.escape(sep), line)]
+            for m in re.finditer(re.escape(sep), line) if 0 < m.start() < last]
 
 
 class Click:
@@ -869,7 +875,7 @@ def check_table_natural(app) -> None:
     check("...so the labels are one column right of the data they name",
           grid_cells(hdr).index("time"), 3)
     check("...and no rendered line ends in a blank",
-          [ln[-1:] for ln in block], ["s", "─", "│", "│", "│"])
+          [ln[-1:] for ln in block], ["│", "┤", "│", "│", "│"])
 
     # The control: the same table with the stray cell removed. The comparison
     # is between two independent renders, so "it lines up now" is measured

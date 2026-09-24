@@ -194,6 +194,67 @@ def main() -> int:
     shot("10-main-light")
     rec("switch theme", press(app, "t", "t"))
 
+    showcase = "\n".join([
+        "# Build speed report",
+        "> [!WARNING]",
+        "> JAWS MAIN symbol upload is the long pole.",
+        "",
+        "| lane | before | after | change |",
+        "|:-----|-------:|------:|:------:|",
+        "| compile | 41m | 29m | **-29%** |",
+        "| sign | 12m | 7m | -42% |",
+        "",
+        "```mermaid",
+        "graph LR",
+        "  A[Queue] --> B{Worker free?}",
+        "  B -->|yes| C[Compile]",
+        "  B -->|no| D[Wait]",
+        "  C --> E[Sign]",
+        "```",
+        "",
+        "```mermaid",
+        "sequenceDiagram",
+        "  builder->>john: OK to land?",
+        "  john-->>builder: yes, all branches",
+        "```",
+        "",
+        "```mermaid",
+        "pie title Where the time goes",
+        '  "compile" : 29',
+        '  "sign" : 7',
+        '  "symbols" : 14',
+        "```",
+        "",
+        "```python",
+        "def stagger(timers, gap=15):  # minutes",
+        "    return [t + i * gap for i, t in enumerate(timers)]",
+        "```",
+        "",
+        "- [x] stagger the nightly timers",
+        "- [ ] add SYMTOOLS to more agents",
+        "  - survey the fleet first",
+        "~~old plan~~ and https://github.com/ogden-marrow/agentdesk",
+    ])
+    conn = db.connect(paths.DB_PATH)
+    try:
+        md_tid = db.start_thread(conn, "discussion", "markdown showcase", "builder", paths.AGENT_KIND, showcase)
+    finally:
+        conn.close()
+    app.refresh_now()
+    v.open_thread(md_tid)
+    app.root.update()
+    shown = v.read_view.get("1.0", "end")
+    check("a markdown table renders as a boxed grid", "┌" in shown and "┼" in shown and "└" in shown)
+    check("a mermaid flowchart is drawn, not shown as source", "►" in shown and "graph LR" not in shown)
+    check("a mermaid sequence diagram is drawn", "OK to land?" in shown and "->>" not in shown)
+    check("a mermaid pie renders as bars", "█" in shown and "Where the time goes" in shown)
+    check("code gets a language label", "╭─ python" in shown)
+    check("a GitHub callout gets its label", "WARNING" in shown and "[!WARNING]" not in shown)
+    check("task list items render as boxes", "☑" in shown and "☐" in shown)
+    shot("11-markdown")
+    v.read_view.yview_moveto(1.0)
+    shot("12-markdown-bottom")
+
     v.zoom(1)
     app.root.update()
     consistent(app, "after zoom in")

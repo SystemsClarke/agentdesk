@@ -1,59 +1,12 @@
 """Render a message body's Markdown into a tk Text widget.
 
-Bodies on the board are written in Markdown -- the agents write headings,
-bold, fenced code blocks, lists and links into every thread -- and the window
-used to show those markers as literal text. This renders them instead.
-
-It is a renderer and not a Markdown library on purpose: no new dependency for
-a GUI that already ships three, and the output is Text-widget tags rather
-than HTML, which is the only thing this window can display. The subset is
-what the board actually carries: headings, fenced code, bold / italic /
-inline code, links, bullet and numbered lists, quotes, rules and tables.
-Anything else passes through as plain text, which is the safe failure.
-
-Two passes, deliberately: line structure (headings, fences, lists, tables) is
-decided per line FIRST, and inline spans only run on the content of a line that
-has none of that structure -- so a `*` that opens a bullet is never also read as
-the start of italics, and a fence is never parsed for bold.
-
-Every rendered span also carries the base "md" tag, which is this module's
-replacement for the literal-body margin the old insert used.
-
-A TABLE is rendered as a grid of padded monospace columns, not as a widget --
-there is no grid widget in this window, and a `Text` is the only thing the pane
-has. Column widths come from the widest cell in each column, cells are rendered
-through the same inline pass as prose so bold and code survive inside a cell,
-and padding is computed on the VISIBLE text so the markup markers do not throw
-the columns out.
-
-THE TABLE IS LAID OUT TO THE PANE IT IS DRAWN IN, because it has to be. The
-detail pane is about 400px at the window's default size -- some 47 monospace
-characters -- and a four-column table of ordinary values wants 78, so a table
-at its natural width is not a grid in that pane, it is a grid the widget wraps
-at the edge, and wrapping destroys the alignment that is the entire point. So
-`render` reads the widget's own width, and if the table is too wide for it the
-widest columns are narrowed and their cells are wrapped onto continuation lines
-inside the cell -- rows get taller, the grid holds. A cell whose word carries
-inline markup is never cut, because cutting mid-span turns `**bold**` into
-`**bold`; such a word overflows its column instead, which is visible and rare.
-An unmapped widget reports a width of 1, and then the natural widths are used
-and nothing is fitted -- the first paint of a window that is still being built
-gets the full-width table, and the next refresh gets the fitted one.
-
-`wrap` is a widget option in Tk and not a tag option, so fitting in this way is
-the only lever the renderer has: it cannot ask the pane to give the table more
-room, so it asks the table to take less.
-
-Leniency is load-bearing, and it is worth naming why. GFM requires the
-delimiter row to have the same number of cells as the header, and renders
-anything else as plain text. John's own reported table (work item #102) opens
-`u| run | container | time | submodule phases |` -- five cells -- over a
-four-cell `|---|---|---|---|`. Taken strictly that is not a table at all, which
-is exactly the bug report: it renders as its own source. So the column count
-here is the widest row in the block and no cell is ever dropped; a header that
-disagrees with its rows shows every value it was written with, in a grid, one
-column out of step. That is a worse-looking table than a typo-free one and a
-much better outcome than a silent deletion or a wall of pipes.
+Tk-tag output rather than HTML (a Text widget is all the window has), and no Markdown
+library. Line structure (fences, tables, headings, quotes, lists) is decided per line
+first; inline spans only run on content with no structure, so a bullet's `*` is never
+italics. Fenced code gets a label and highlighting, and ```mermaid is drawn as a
+diagram (see mdrich). Tables are boxed monospace grids fitted to the pane's width:
+wide columns are narrowed proportionally and their cells wrap inside the grid, and
+the column count is the widest row so a malformed table never drops a cell.
 """
 
 from __future__ import annotations
@@ -63,14 +16,28 @@ import tkinter as tk
 import tkinter.font as tkfont
 import webbrowser
 
-# Inline spans, code tried before bold so a backtick span is never further
-# marked up, and bold before italic so **x** is never read as two *x*.
+from agentdesk import mdrich
+
+# Inline spans. Code first so a backtick span is never further marked up, bold before
+# italic so **x** is never two *x*, images before links, explicit links before bare URLs.
 _INLINE = re.compile(
     r"`(?P<code>[^`\n]+)`"
     r"|\*\*(?P<bold>[^*\n]+?)\*\*"
+    r"|__(?P<bold2>[^_\n]+?)__"
+    r"|~~(?P<strike>[^~\n]+?)~~"
     r"|\*(?P<ital>[^*\n]+)\*"
+    r"|!\[(?P<ialt>[^\]\n]*)\]\((?P<iurl>[^)\s]+)\)"
     r"|\[(?P<ltxt>[^\]\n]+)\]\((?P<lurl>[^)\s]+)\)"
+    r"|<(?P<aurl>https?://[^>\s]+)>"
+    r"|(?P<burl>https?://[^\s)>\]]+)"
 )
+_TASK = re.compile(r"^\[( |x|X)\]\s+(.*)$")
+_ADMONITION = re.compile(r"^\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]\s*(.*)$", re.I)
+_ADM_LOOK = {"NOTE": ("cy", "ⓘ NOTE"), "TIP": ("gr", "✓ TIP"), "IMPORTANT": ("pu", "★ IMPORTANT"),
+             "WARNING": ("ye", "⚠ WARNING"), "CAUTION": ("pk", "✖ CAUTION")}
+_COLORS = ("fg", "mu", "fa", "rule", "pk", "or", "ye", "gr", "cy", "pu")
+_LIGHT_COLORS = {"fg": "#24292f", "mu": "#6a737d", "fa": "#8a8a8a", "rule": "#aaaaaa", "pk": "#c0392b",
+                 "or": "#b35900", "ye": "#8a6d3b", "gr": "#2e7d32", "cy": "#0b5394", "pu": "#6f42c1"}
 _HEADING = re.compile(r"^(#{1,6})\s+(.+?)\s*#*\s*$")
 _BULLET = re.compile(r"^(\s*)[-*+]\s+(.*)$")
 _NUMBERED = re.compile(r"^(\s*)(\d+)[.)]\s+(.*)$")
@@ -95,7 +62,7 @@ _MD_TAG = "md"
 # be made to fit at this floor is left at its natural width: a grid that
 # overflows the pane is worse than a narrow one, but a grid of two-character
 # columns is worse than either.
-_TABLE_MIN_COL = 6
+_TABLE_MIN_COL = 5
 # Blank columns either side of the text, and slack so that a table which exactly
 # fills the available width cannot trip the widget's wrap on a rounding error.
 _TABLE_SLACK_PX = 12
@@ -133,6 +100,12 @@ def configure(widget: tk.Text) -> None:
     widget.tag_configure("md-th", font=(mono, size, "bold"))
     widget.tag_configure("md-trule", font=(mono, size), foreground="#999999")
     widget.tag_configure("md-link", foreground="#0b5394", underline=True)
+    # Rich-mode tags; the terminal view recolours the mdc-* set to its palette.
+    for name in _COLORS:
+        widget.tag_configure(f"mdc-{name}", foreground=_LIGHT_COLORS[name])
+    widget.tag_configure("md-strike", overstrike=True)
+    widget.tag_configure("md-diagram", font=(mono, size))
+    widget.tag_configure("md-zebra", background="#f6f6f6")
     # One shared binding: the handler resolves which URL from the more
     # specific per-link tag under the cursor, not from the event itself.
     widget.tag_bind("md-link", "<Button-1>", _link_click)
@@ -165,29 +138,25 @@ def render(widget: tk.Text, text: str) -> None:
         line = lines[i]
         stripped = line.strip()
         if stripped.startswith("```"):
-            # A fenced block is verbatim: no inline markup inside it, and the
-            # content keeps its own line breaks. An unterminated fence takes
-            # the rest of the body, which beats silently eating the markers.
+            # Verbatim to the closing fence; an unterminated fence takes the rest of the body.
+            lang = stripped[3:].strip().lower()
             block: list[str] = []
             i += 1
             while i < len(lines) and not lines[i].strip().startswith("```"):
                 block.append(lines[i])
                 i += 1
             if i < len(lines):
-                i += 1  # the closing fence
-            widget.insert("end", "\n".join(block), ("md", "md-codeblock"))
-            _newline(widget, "md-codeblock")
+                i += 1
+            _fence(widget, lang, block)
             continue
-        # A table is tried before the rule, because a delimiter row is made of
-        # hyphens and would otherwise be caught by _RULE. It cannot swallow a
-        # bare rule: _table_at requires a pipe on the line above.
+        # Tables before rules: a delimiter row is hyphens and would otherwise match _RULE.
         table = _table_at(lines, i)
         if table is not None:
             header, delim, rows, i = table
             _table(widget, header, delim, rows)
             continue
         if _RULE.match(line):
-            widget.insert("end", "─" * 46, ("md", "md-rule"))
+            widget.insert("end", "─" * _width(widget), ("md", "md-rule"))
             _newline(widget)
             i += 1
             continue
@@ -196,28 +165,40 @@ def render(widget: tk.Text, text: str) -> None:
             depth = len(m.group(1))
             tag = ("md-h1" if depth == 1 else "md-h2" if depth == 2 else
                    "md-h3" if depth == 3 else "md-h456")
-            widget.insert("end", m.group(2), ("md", tag))
+            _inline(widget, m.group(2), (tag,))
             _newline(widget)
+            if depth == 1:
+                widget.insert("end", "═" * min(_width(widget), len(_plain(m.group(2))) + 2), ("md", "mdc-ye"))
+                _newline(widget)
             i += 1
             continue
-        m = _QUOTE.match(line)
-        if m:
-            widget.insert("end", m.group(1), ("md", "md-quote", "md-italic"))
-            _newline(widget)
-            i += 1
+        if _QUOTE.match(line):
+            quote = []
+            while i < len(lines) and _QUOTE.match(lines[i]):
+                quote.append(_QUOTE.match(lines[i]).group(1))
+                i += 1
+            _quote(widget, quote)
             continue
         m = _BULLET.match(line)
         if m:
-            widget.insert("end", ("    " if m.group(1) else "") + "• ",
-                          ("md", "md-bullet"))
-            _inline(widget, m.group(2), ("md-bullet",))
+            level = min(3, len(m.group(1).expandtabs(4)) // 2)
+            indent = "  " * level
+            task = _TASK.match(m.group(2))
+            if task:
+                done = task.group(1).lower() == "x"
+                widget.insert("end", indent + ("☑ " if done else "☐ "),
+                              ("md", "md-bullet", "mdc-gr" if done else "mdc-mu"))
+                _inline(widget, task.group(2), ("md-bullet",) + (("mdc-mu",) if done else ()))
+            else:
+                widget.insert("end", indent + "•◦▪·"[level] + " ", ("md", "md-bullet", "mdc-cy"))
+                _inline(widget, m.group(2), ("md-bullet",))
             _newline(widget)
             i += 1
             continue
         m = _NUMBERED.match(line)
         if m:
-            widget.insert("end", f"{m.group(1)}{m.group(2)}. ",
-                          ("md", "md-bullet"))
+            level = min(3, len(m.group(1).expandtabs(4)) // 2)
+            widget.insert("end", "  " * level + f"{m.group(2)}. ", ("md", "md-bullet", "mdc-cy"))
             _inline(widget, m.group(3), ("md-bullet",))
             _newline(widget)
             i += 1
@@ -225,6 +206,55 @@ def render(widget: tk.Text, text: str) -> None:
         _inline(widget, line)
         _newline(widget)
         i += 1
+
+
+def _width(widget: tk.Text) -> int:
+    return capacity_chars(widget) or 60
+
+
+def _fence(widget: tk.Text, lang: str, block: list) -> None:
+    """A code block with a language label and highlighting; Mermaid is drawn as a diagram."""
+    width = _width(widget)
+    if lang == "mermaid":
+        drawn, ok = mdrich.mermaid(block, width)
+        if ok and max(sum(len(t) for t, _ in segs) for segs in drawn) <= width:
+            for segs in drawn:
+                for text, color in segs:
+                    widget.insert("end", text, ("md", "md-diagram") + ((f"mdc-{color}",) if color else ()))
+                _newline(widget, "md-diagram")
+            return
+        lang = "mermaid · too wide to draw here, widen the window" if ok else "mermaid · source"
+    inner = max(12, width - 1)
+    label = f"╭─ {lang or 'code'} "
+    widget.insert("end", label + "─" * max(0, inner - len(label)), ("md", "md-codeblock", "mdc-rule"))
+    _newline(widget, "md-codeblock")
+    base = lang.split()[0] if lang else ""
+    for raw in block:
+        widget.insert("end", "│ ", ("md", "md-codeblock", "mdc-rule"))
+        for text, color in mdrich.highlight(raw, base):
+            widget.insert("end", text, ("md", "md-codeblock") + ((f"mdc-{color}",) if color else ()))
+        _newline(widget, "md-codeblock")
+    widget.insert("end", "╰" + "─" * (inner - 1), ("md", "md-codeblock", "mdc-rule"))
+    _newline(widget, "md-codeblock")
+
+
+def _quote(widget: tk.Text, quote: list) -> None:
+    """A quote with a left bar; GitHub callouts (> [!NOTE] ...) get a coloured, labelled bar."""
+    m = _ADMONITION.match(quote[0].strip()) if quote else None
+    if m:
+        color, title = _ADM_LOOK[m.group(1).upper()]
+        widget.insert("end", "▌ ", ("md", f"mdc-{color}"))
+        widget.insert("end", title, ("md", "md-bold", f"mdc-{color}"))
+        _newline(widget)
+        for q in ([m.group(2)] if m.group(2) else []) + quote[1:]:
+            widget.insert("end", "▌ ", ("md", f"mdc-{color}"))
+            _inline(widget, q)
+            _newline(widget)
+        return
+    for q in quote:
+        widget.insert("end", "▌ ", ("md", "mdc-rule"))
+        _inline(widget, q, ("md-quote",))
+        _newline(widget)
 
 
 # --- tables ---------------------------------------------------------------------
@@ -310,10 +340,13 @@ def _plain(text: str) -> str:
     pos = 0
     for m in _INLINE.finditer(text):
         out.append(text[pos:m.start()])
-        for group in ("code", "bold", "ital", "ltxt"):
-            if m.group(group) is not None:
-                out.append(m.group(group))
-                break
+        if m.group("ialt") is not None:
+            out.append("▣ " + (m.group("ialt") or "image"))
+        else:
+            for group in ("code", "bold", "bold2", "strike", "ital", "ltxt", "aurl", "burl"):
+                if m.group(group) is not None:
+                    out.append(m.group(group))
+                    break
         pos = m.end()
     out.append(text[pos:])
     return "".join(out)
@@ -460,85 +493,49 @@ def _pads(cell: str, width: int, align: str) -> tuple[int, int]:
     return 0, gap
 
 
-def _table_line(widget: tk.Text, cells: list[str], widths: list[int],
-                aligns: list[str], tags: tuple) -> None:
-    """One rendered row: every cell padded to its column width.
-
-    Trailing blanks are invisible but they are not nothing: they make the line
-    longer than its text, and a pane that word-wraps will wrap a table line that
-    would otherwise have fitted -- right at the moment a row's last cell is
-    empty, which is the common case for a ragged row. So the last column takes
-    no padding, and when it holds nothing at all it takes no separator blank
-    either. Constructing that in rather than deleting it afterwards keeps this
-    free of Tk's end-relative index arithmetic, which is off by one from the
-    obvious reading and silent when it is wrong. The column WIDTHS are
-    unaffected: the header's rule still spans every column in full.
-    """
-    last = len(cells) - 1
-    tail_is_blank = _plain(cells[last]) == ""
-    for j, cell in enumerate(cells):
-        if j:
-            widget.insert("end", " │" if j == last and tail_is_blank else " │ ",
-                          ("md",) + tags)
-        if j == last and tail_is_blank:
-            continue
-        left, right = _pads(cell, widths[j], aligns[j])
-        if j == last:
-            right = 0
-        if left:
-            widget.insert("end", " " * left, ("md",) + tags)
-        _inline(widget, cell, tags)
-        if right:
-            widget.insert("end", " " * right, ("md",) + tags)
-    _newline(widget)
-
-
-def _emit_row(widget: tk.Text, parts: list[list[str]], widths: list[int],
-              aligns: list[str], tags: tuple) -> None:
-    """One logical row, as the physical lines its tallest cell needs.
-
-    The header goes through here exactly as a data row does. It was drawn as a
-    single line to begin with, and the result was a header wider than the pane
-    it had just been fitted to -- "submodule phases" in a six-character column,
-    sticking 12px out past the edge of a table whose rows all fit. The header is
-    a row; it wraps like one.
-    """
+def _boxed_row(widget: tk.Text, parts: list, widths: list, aligns: list, tags: tuple) -> None:
+    """One logical row as the physical lines its tallest wrapped cell needs, inside │ borders."""
     for k in range(max(len(p) for p in parts)):
-        _table_line(widget, [p[k] if k < len(p) else "" for p in parts],
-                    widths, aligns, tags)
+        widget.insert("end", "│ ", ("md", "md-table", "md-trule"))
+        for j, part in enumerate(parts):
+            cell = part[k] if k < len(part) else ""
+            left, right = _pads(cell, widths[j], aligns[j])
+            if left:
+                widget.insert("end", " " * left, ("md",) + tags)
+            _inline(widget, cell, tags)
+            if right:
+                widget.insert("end", " " * right, ("md",) + tags)
+            widget.insert("end", " │ " if j < len(parts) - 1 else " │", ("md", "md-table", "md-trule"))
+        _newline(widget)
 
 
-def _table(widget: tk.Text, header: list[str], delim: list[str],
-           rows: list[list[str]]) -> None:
-    """Render a whole table as a padded monospace grid, fitted to the pane."""
-    # The column count is the widest row in the block, header and delimiter
-    # included, so that NO cell is ever dropped. A body row with an extra cell
-    # (a delimiter row somebody under-counted, which is common) then widens the
-    # table instead of losing its last value; a short row is padded, which is
-    # visible as an empty cell and honest about what was written.
+def _table(widget: tk.Text, header: list, delim: list, rows: list) -> None:
+    """A table as a boxed monospace grid, fitted to the pane. No cell is ever dropped."""
     ncols = max([len(header), len(delim)] + [len(r) for r in rows])
 
-    def cells_of(row: list[str]) -> list[str]:
+    def cells_of(row: list) -> list:
         return [row[j] if j < len(row) else "" for j in range(ncols)]
 
     header = cells_of(header)
     body = [cells_of(r) for r in rows]
-    natural = [max(len(_plain(cell)) for cell in [header[j]] + [r[j] for r in body])
+    natural = [max(1, max(len(_plain(cell)) for cell in [header[j]] + [r[j] for r in body]))
                for j in range(ncols)]
-    widths = _fit_widths(natural, capacity_chars(widget))
+    widths = _fit_widths(natural, max(0, capacity_chars(widget) - 4))
     aligns = _aligns(delim, ncols)
-    _emit_row(widget, [_wrap_cell(header[j], widths[j]) for j in range(ncols)],
-              widths, aligns, ("md-table", "md-th"))
-    widget.insert("end", "─┼─".join("─" * w for w in widths),
-                  ("md", "md-table", "md-trule"))
-    _newline(widget)
-    # A row is as many physical lines as its tallest wrapped cell needs. Short
-    # cells on the continuation lines are blank, and blank is drawn as blank --
-    # the separator is still emitted for them, so a reader can follow a column
-    # down through a row that wrapped.
-    for row in body:
-        _emit_row(widget, [_wrap_cell(row[j], widths[j]) for j in range(ncols)],
-                  widths, aligns, ("md-table",))
+
+    def rule(left: str, mid: str, right: str) -> None:
+        widget.insert("end", left + mid.join("─" * (w + 2) for w in widths) + right,
+                      ("md", "md-table", "md-trule"))
+        _newline(widget)
+
+    rule("┌", "┬", "┐")
+    _boxed_row(widget, [_wrap_cell(header[j], widths[j]) for j in range(ncols)],
+               widths, aligns, ("md-table", "md-th"))
+    rule("├", "┼", "┤")
+    for n, row in enumerate(body):
+        _boxed_row(widget, [_wrap_cell(row[j], widths[j]) for j in range(ncols)],
+                   widths, aligns, ("md-table",) + (("md-zebra",) if n % 2 else ()))
+    rule("└", "┴", "┘")
 
 
 def _inline(widget: tk.Text, text: str, extra: tuple = ()) -> None:
@@ -549,19 +546,24 @@ def _inline(widget: tk.Text, text: str, extra: tuple = ()) -> None:
             widget.insert("end", text[pos:m.start()], ("md",) + extra)
         if m.group("code") is not None:
             widget.insert("end", m.group("code"), ("md", "md-code") + extra)
-        elif m.group("bold") is not None:
-            widget.insert("end", m.group("bold"), ("md", "md-bold") + extra)
+        elif m.group("bold") is not None or m.group("bold2") is not None:
+            widget.insert("end", m.group("bold") or m.group("bold2"), ("md", "md-bold") + extra)
+        elif m.group("strike") is not None:
+            widget.insert("end", m.group("strike"), ("md", "md-strike") + extra)
         elif m.group("ital") is not None:
             widget.insert("end", m.group("ital"), ("md", "md-italic") + extra)
         else:
-            # Each link range gets its own tag on top of the shared "md-link"
-            # look, and the URL is looked up through that tag on click -- the
-            # event carries a position, not the URL, and two links on one
-            # line must not resolve to each other.
+            # Each link gets its own tag on top of the shared "md-link" look; the click
+            # handler resolves the URL through it, since the event carries only a position.
+            if m.group("ialt") is not None:
+                label, url = "▣ " + (m.group("ialt") or "image"), m.group("iurl")
+            elif m.group("ltxt") is not None:
+                label, url = m.group("ltxt"), m.group("lurl")
+            else:
+                label = url = m.group("aurl") or m.group("burl")
             ltag = f"md-link-{len(widget._md_links)}"
-            widget._md_links[ltag] = m.group("lurl")
-            widget.insert("end", m.group("ltxt"),
-                          ("md", "md-link", ltag) + extra)
+            widget._md_links[ltag] = url
+            widget.insert("end", label, ("md", "md-link", ltag) + extra)
         pos = m.end()
     if pos < len(text):
         widget.insert("end", text[pos:], ("md",) + extra)

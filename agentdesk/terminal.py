@@ -411,6 +411,11 @@ class TerminalView:
         b.tag_configure("md-table", font=(mono, size))
         b.tag_configure("md-th", font=(mono, size, "bold"))
         b.tag_configure("md-link", foreground=p["cy"])
+        for name in ("fg", "mu", "fa", "rule", "pk", "or", "ye", "gr", "cy", "pu"):
+            b.tag_configure(f"mdc-{name}", foreground=p[name])
+        b.tag_configure("md-diagram", font=(mono, size))
+        b.tag_configure("md-zebra", background=p["panel"])
+        b._md_char_px = self.font.measure("0")
         b.tag_raise("rcpt")
         self.lines_view.tag_raise("sel")
         _titlebar(self.root, p)
