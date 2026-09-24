@@ -14,6 +14,10 @@ public sealed class CoreBoard : IBoard, IDisposable
     {
         this.core = core;
         core.Pushed += text => { if (text.Contains("board.changed")) Changed?.Invoke(this, EventArgs.Empty); };
+        core.Reconnected += async () => // the core restarted (an update): subscribe again and redraw
+        {
+            try { await core.Call("ui:subscribe"); Changed?.Invoke(this, EventArgs.Empty); } catch (System.IO.IOException) { }
+        };
     }
 
     public static async Task<CoreBoard> Connect()

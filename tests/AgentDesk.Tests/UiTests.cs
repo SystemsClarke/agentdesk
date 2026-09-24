@@ -199,6 +199,27 @@ public sealed class UiTests : IDisposable
     }
 
     [Fact]
+    public async Task A_connection_outlives_a_core_restart()
+    {
+        Environment.SetEnvironmentVariable("AGENTDESK_DATA", Path.GetTempPath());
+        Environment.SetEnvironmentVariable("AGENTDESK_PIPE", $"agentdesk-test-{Guid.NewGuid():N}");
+        var first = new CancellationTokenSource();
+        var server = PipeServer.Run((_, _, _) => Task.FromResult("one"), first.Token);
+        using var core = await CoreConnection.Connect(new Caller(null, null, null, "ui", Environment.ProcessId));
+        var back = new TaskCompletionSource();
+        core.Reconnected += () => back.TrySetResult();
+        Assert.Equal("one", await core.Call("x"));
+
+        first.Cancel(); // the update restart
+        await server.WaitAsync(TimeSpan.FromSeconds(5)).ContinueWith(_ => { });
+        using var second = new CancellationTokenSource();
+        _ = PipeServer.Run((_, _, _) => Task.FromResult("two"), second.Token);
+        await back.Task.WaitAsync(TimeSpan.FromSeconds(10)); // a subscriber reconnects on its own
+        Assert.Equal("two", await core.Call("x"));
+        second.Cancel();
+    }
+
+    [Fact]
     public async Task A_subscriber_is_pushed_a_write_made_elsewhere()
     {
         Environment.SetEnvironmentVariable("AGENTDESK_DATA", Path.GetTempPath()); // were the core ever auto-started, not the live board
