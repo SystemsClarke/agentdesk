@@ -57,9 +57,13 @@ def main():
         (DATA_DIR / "statusline_keys.json").write_text(
             json.dumps(sorted(data.keys()) if isinstance(data, dict) else []), encoding="utf-8")
         if five or week:
-            out = {"source": "claude code status line",
-                   "captured_ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-                   "five_hour": five, "seven_day": week}
+            try:  # merge, so the last-known monthly spend ("extra") survives
+                out = json.loads((DATA_DIR / "claude_usage.json").read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                out = {}
+            out.update({"source": "claude code status line",
+                        "captured_ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                        "five_hour": five, "seven_day": week})
             tmp = DATA_DIR / "claude_usage.json.tmp"
             tmp.write_text(json.dumps(out, indent=2), encoding="utf-8")
             os.replace(tmp, DATA_DIR / "claude_usage.json")

@@ -32,13 +32,13 @@ from PIL import Image
 # a relative import; fall back to putting the repo root on the path.
 try:
     from agentdesk import (aumid, db, dictate, icon, identity, notify,
-                          paths, pr_scan, prs, settings, vault, winedit)
+                          paths, pr_scan, prs, settings, usage, vault, winedit)
 except ImportError:  # pragma: no cover - depends on how the file was launched
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     from agentdesk import (aumid, db, dictate, icon, identity, notify,
-                          paths, pr_scan, prs, settings, vault, winedit)
+                          paths, pr_scan, prs, settings, usage, vault, winedit)
 
-log = logging.getLogger("agentdesk.app")
+log =logging.getLogger("agentdesk.app")
 
 def _self_argv(subcommand: str, extra: Optional[list[str]] = None) -> list[str]:
     """The argv to re-invoke this program as `subcommand`, from source or exe.
@@ -880,6 +880,26 @@ class App:
 
     # --- poll ----------------------------------------------------------------
 
+    USAGE_REFRESH_S = 300
+    _usage_at = 0.0
+    _usage_busy = False
+
+    def _maybe_refresh_usage(self) -> None:
+        """Every 5 minutes, re-read plan usage from the claude CLI on a worker thread (it takes ~10 s)."""
+        import time
+        if self._usage_busy or time.monotonic() - self._usage_at < self.USAGE_REFRESH_S:
+            return
+        self._usage_busy, self._usage_at = True, time.monotonic()
+
+        def work():
+            try:
+                usage.refresh()
+            except Exception:
+                log.exception("usage refresh failed")
+            finally:
+                self._usage_busy = False
+        threading.Thread(target=work, daemon=True, name="usage-refresh").start()
+
     def _poll(self) -> None:
         self._do_poll(reschedule=True)
 
@@ -915,6 +935,7 @@ class App:
 
     def _do_poll(self, reschedule: bool) -> None:
         conn = None
+        self._maybe_refresh_usage()
         try:
             conn = db.connect(self.db_path)
             row = conn.execute("SELECT MAX(id) FROM messages").fetchone()
