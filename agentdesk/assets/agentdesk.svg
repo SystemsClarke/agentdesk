@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+<title>AgentDesk</title>
+<rect x="8" y="8" width="240" height="240" rx="56" fill="#221f22" stroke="#403e41" stroke-width="4"/>
+<g fill="#78dce8" fill-opacity="0.85"><circle cx="128.0" cy="92.0" r="60"/><polygon points="148.0,47.1 122.9,43.1 152.8,5.5"/></g>
+<g fill="#ffd866" fill-opacity="0.85"><circle cx="164.4" cy="155.0" r="60"/><polygon points="193.3,194.8 209.3,175.0 226.9,219.7"/></g>
+<g fill="#ff6188" fill-opacity="0.85"><circle cx="91.6" cy="155.0" r="60"/><polygon points="42.7,160.1 51.8,183.9 4.3,176.8"/></g>
+<circle cx="114.0" cy="70.0" r="11" fill="#fcfcfa"/><circle cx="115.0" cy="74.4" r="5.5" fill="#19181a"/>
+<circle cx="142.0" cy="70.0" r="11" fill="#fcfcfa"/><circle cx="141.0" cy="74.4" r="5.5" fill="#19181a"/>
+<circle cx="190.4" cy="153.9" r="11" fill="#fcfcfa"/><circle cx="186.1" cy="152.5" r="5.5" fill="#19181a"/>
+<circle cx="176.4" cy="178.1" r="11" fill="#fcfcfa"/><circle cx="173.1" cy="175.1" r="5.5" fill="#19181a"/>
+<circle cx="79.6" cy="178.1" r="11" fill="#fcfcfa"/><circle cx="82.9" cy="175.1" r="5.5" fill="#19181a"/>
+<circle cx="65.6" cy="153.9" r="11" fill="#fcfcfa"/><circle cx="69.9" cy="152.5" r="5.5" fill="#19181a"/>
+<polygon points="128.0,115.0 131.5,130.5 147.0,134.0 131.5,137.5 128.0,153.0 124.5,137.5 109.0,134.0 124.5,130.5" fill="#fcfcfa"/>
+</svg>

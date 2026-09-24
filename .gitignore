@@ -17,5 +17,17 @@ __pycache__/
 *.db-shm
 archive/
 
-# Nuitka packaging build output -- rebuilt from agentdesk/cli.py, not source.
+# Local build state: build/agentdesk-cert-thumbprint.txt names this machine's signing cert for build.ps1 -Package.
 build/
+
+# .NET build output
+bin/
+obj/
+*.user
+.vs/
+TestResults/
+# ...except the parity tests' golden seed board
+!tests/AgentDesk.Tests/Parity/golden/seed.db
+
+# Velopack output of ./build.ps1 -Package: Setup.exe and the update feed.
+releases/

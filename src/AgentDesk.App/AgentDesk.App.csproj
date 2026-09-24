@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <UseWPF>true</UseWPF>
+    <!-- WPF cannot be trimmed or AOT-compiled; the root props opt every project in. -->
+    <IsAotCompatible>false</IsAotCompatible>
+    <PublishAot>false</PublishAot>
+    <!-- The exe's icon is also every window's taskbar and title-bar icon. -->
+    <ApplicationIcon>../../agentdesk/assets/agentdesk.ico</ApplicationIcon>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\AgentDesk.Contracts\AgentDesk.Contracts.csproj" />
+  </ItemGroup>
+
+</Project>

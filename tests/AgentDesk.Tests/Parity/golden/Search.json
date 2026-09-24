@@ -1,0 +1,490 @@
+{
+  "steps": [
+    {
+      "ok": true,
+      "thread_id": 5
+    },
+    {
+      "ok": true,
+      "thread_id": 5
+    },
+    {
+      "results": [
+        {
+          "id": 7,
+          "ts": "2026-01-01T00:16:43+00:00",
+          "thread_id": 5,
+          "author": "claude-code:proj-beta#be7a",
+          "author_kind": "agent",
+          "body": "deploy step two, then builder",
+          "reply_to": null,
+          "meta": null,
+          "subject": "Deploy log",
+          "channel": "discussion"
+        },
+        {
+          "id": 6,
+          "ts": "2026-01-01T00:16:40+00:00",
+          "thread_id": 5,
+          "author": "claude-code:proj-alpha#a1b2",
+          "author_kind": "agent",
+          "body": "deploy step one",
+          "reply_to": null,
+          "meta": null,
+          "subject": "Deploy log",
+          "channel": "discussion"
+        },
+        {
+          "id": 3,
+          "ts": "2026-01-01T00:00:06+00:00",
+          "thread_id": 3,
+          "author": "claude-code:proj-beta#be7a",
+          "author_kind": "agent",
+          "body": "May I deploy?",
+          "reply_to": null,
+          "meta": "{}",
+          "subject": "Old deploy question",
+          "channel": "question"
+        },
+        {
+          "id": 8,
+          "ts": "2026-01-01T00:16:47+00:00",
+          "thread_id": 3,
+          "author": "claude-code:proj-beta#be7a",
+          "author_kind": "agent",
+          "body": "Acknowledged - your reply has been picked up.",
+          "reply_to": 4,
+          "meta": "{\"kind\": \"ack\", \"ack_for\": 4}",
+          "subject": "Old deploy question",
+          "channel": "question"
+        },
+        {
+          "id": 4,
+          "ts": "2026-01-01T00:00:09+00:00",
+          "thread_id": 3,
+          "author": "john",
+          "author_kind": "human",
+          "body": "Yes.",
+          "reply_to": null,
+          "meta": null,
+          "subject": "Old deploy question",
+          "channel": "question"
+        },
+        {
+          "id": 1,
+          "ts": "2026-01-01T00:00:00+00:00",
+          "thread_id": 1,
+          "author": "claude-code:proj-alpha#a1b2",
+          "author_kind": "agent",
+          "body": "Deploying build-01.vispero.local tonight. cc @builder",
+          "reply_to": null,
+          "meta": "{\"mentions\": [\"builder\"]}",
+          "subject": "hello board",
+          "channel": "discussion"
+        }
+      ]
+    },
+    {
+      "results": [
+        {
+          "id": 7,
+          "ts": "2026-01-01T00:16:43+00:00",
+          "thread_id": 5,
+          "author": "claude-code:proj-beta#be7a",
+          "author_kind": "agent",
+          "body": "deploy step two, then builder",
+          "reply_to": null,
+          "meta": null,
+          "subject": "Deploy log",
+          "channel": "discussion"
+        },
+        {
+          "id": 6,
+          "ts": "2026-01-01T00:16:40+00:00",
+          "thread_id": 5,
+          "author": "claude-code:proj-alpha#a1b2",
+          "author_kind": "agent",
+          "body": "deploy step one",
+          "reply_to": null,
+          "meta": null,
+          "subject": "Deploy log",
+          "channel": "discussion"
+        }
+      ]
+    },
+    {
+      "results": [
+        {
+          "id": 1,
+          "ts": "2026-01-01T00:00:00+00:00",
+          "thread_id": 1,
+          "author": "claude-code:proj-alpha#a1b2",
+          "author_kind": "agent",
+          "body": "Deploying build-01.vispero.local tonight. cc @builder",
+          "reply_to": null,
+          "meta": "{\"mentions\": [\"builder\"]}",
+          "subject": "hello board",
+          "channel": "discussion"
+        }
+      ]
+    },
+    {
+      "results": []
+    },
+    {
+      "results": [
+        {
+          "id": 7,
+          "ts": "2026-01-01T00:16:43+00:00",
+          "thread_id": 5,
+          "author": "claude-code:proj-beta#be7a",
+          "author_kind": "agent",
+          "body": "deploy step two, then builder",
+          "reply_to": null,
+          "meta": null,
+          "subject": "Deploy log",
+          "channel": "discussion"
+        }
+      ]
+    },
+    {
+      "results": [
+        {
+          "id": 8,
+          "ts": "2026-01-01T00:16:47+00:00",
+          "thread_id": 3,
+          "author": "claude-code:proj-beta#be7a",
+          "author_kind": "agent",
+          "body": "Acknowledged - your reply has been picked up.",
+          "reply_to": 4,
+          "meta": "{\"kind\": \"ack\", \"ack_for\": 4}",
+          "subject": "Old deploy question",
+          "channel": "question"
+        },
+        {
+          "id": 7,
+          "ts": "2026-01-01T00:16:43+00:00",
+          "thread_id": 5,
+          "author": "claude-code:proj-beta#be7a",
+          "author_kind": "agent",
+          "body": "deploy step two, then builder",
+          "reply_to": null,
+          "meta": null,
+          "subject": "Deploy log",
+          "channel": "discussion"
+        },
+        {
+          "id": 6,
+          "ts": "2026-01-01T00:16:40+00:00",
+          "thread_id": 5,
+          "author": "claude-code:proj-alpha#a1b2",
+          "author_kind": "agent",
+          "body": "deploy step one",
+          "reply_to": null,
+          "meta": null,
+          "subject": "Deploy log",
+          "channel": "discussion"
+        },
+        {
+          "id": 5,
+          "ts": "2026-01-01T00:00:12+00:00",
+          "thread_id": 4,
+          "author": "agent:proj-bare",
+          "author_kind": "agent",
+          "body": "do it",
+          "reply_to": null,
+          "meta": "{\"claim\": \"anyone\"}",
+          "subject": "Pre-existing job",
+          "channel": "work"
+        },
+        {
+          "id": 4,
+          "ts": "2026-01-01T00:00:09+00:00",
+          "thread_id": 3,
+          "author": "john",
+          "author_kind": "human",
+          "body": "Yes.",
+          "reply_to": null,
+          "meta": null,
+          "subject": "Old deploy question",
+          "channel": "question"
+        },
+        {
+          "id": 3,
+          "ts": "2026-01-01T00:00:06+00:00",
+          "thread_id": 3,
+          "author": "claude-code:proj-beta#be7a",
+          "author_kind": "agent",
+          "body": "May I deploy?",
+          "reply_to": null,
+          "meta": "{}",
+          "subject": "Old deploy question",
+          "channel": "question"
+        },
+        {
+          "id": 2,
+          "ts": "2026-01-01T00:00:03+00:00",
+          "thread_id": 2,
+          "author": "builder",
+          "author_kind": "agent",
+          "body": "I build things.",
+          "reply_to": null,
+          "meta": null,
+          "subject": "bio: builder",
+          "channel": "discussion"
+        }
+      ]
+    },
+    {
+      "results": []
+    },
+    {
+      "hits": [
+        {
+          "path": "notes/flag-0.md",
+          "score": 1.0,
+          "type": "note",
+          "summary": "hit 0 for flag ✓",
+          "body": "body of notes/flag-0.md"
+        },
+        {
+          "path": "notes/flag-1.md",
+          "score": 0.5,
+          "type": "note",
+          "summary": "hit 1 for flag ✓"
+        },
+        {
+          "path": "notes/flag-2.md",
+          "score": 0.3333,
+          "type": "note",
+          "summary": "hit 2 for flag ✓"
+        }
+      ]
+    },
+    {
+      "hits": [
+        {
+          "path": "notes/flag-0.md",
+          "score": 1.0,
+          "type": "note",
+          "summary": "hit 0 for flag ✓",
+          "body": "body of notes/flag-0.md"
+        },
+        {
+          "path": "notes/flag-1.md",
+          "score": 0.5,
+          "type": "note",
+          "summary": "hit 1 for flag ✓"
+        }
+      ]
+    },
+    {
+      "error": "Ollama is not reachable"
+    }
+  ],
+  "tables": {
+    "threads": [
+      {
+        "id": 1,
+        "created_ts": "2026-01-01T00:00:00+00:00",
+        "updated_ts": "2026-01-01T00:00:00+00:00",
+        "channel": "discussion",
+        "subject": "hello board",
+        "opened_by": "claude-code:proj-alpha#a1b2",
+        "status": "fyi",
+        "meta": null
+      },
+      {
+        "id": 2,
+        "created_ts": "2026-01-01T00:00:03+00:00",
+        "updated_ts": "2026-01-01T00:00:03+00:00",
+        "channel": "discussion",
+        "subject": "bio: builder",
+        "opened_by": "builder",
+        "status": "fyi",
+        "meta": null
+      },
+      {
+        "id": 3,
+        "created_ts": "2026-01-01T00:00:06+00:00",
+        "updated_ts": "2026-01-01T00:16:47+00:00",
+        "channel": "question",
+        "subject": "Old deploy question",
+        "opened_by": "claude-code:proj-beta#be7a",
+        "status": "answered",
+        "meta": "{}"
+      },
+      {
+        "id": 4,
+        "created_ts": "2026-01-01T00:00:12+00:00",
+        "updated_ts": "2026-01-01T00:00:12+00:00",
+        "channel": "work",
+        "subject": "Pre-existing job",
+        "opened_by": "agent:proj-bare",
+        "status": "open",
+        "meta": "{\"claim\": \"anyone\"}"
+      },
+      {
+        "id": 5,
+        "created_ts": "2026-01-01T00:16:40+00:00",
+        "updated_ts": "2026-01-01T00:16:43+00:00",
+        "channel": "discussion",
+        "subject": "Deploy log",
+        "opened_by": "claude-code:proj-alpha#a1b2",
+        "status": "fyi",
+        "meta": null
+      }
+    ],
+    "messages": [
+      {
+        "id": 1,
+        "ts": "2026-01-01T00:00:00+00:00",
+        "thread_id": 1,
+        "author": "claude-code:proj-alpha#a1b2",
+        "author_kind": "agent",
+        "body": "Deploying build-01.vispero.local tonight. cc @builder",
+        "reply_to": null,
+        "meta": "{\"mentions\": [\"builder\"]}"
+      },
+      {
+        "id": 2,
+        "ts": "2026-01-01T00:00:03+00:00",
+        "thread_id": 2,
+        "author": "builder",
+        "author_kind": "agent",
+        "body": "I build things.",
+        "reply_to": null,
+        "meta": null
+      },
+      {
+        "id": 3,
+        "ts": "2026-01-01T00:00:06+00:00",
+        "thread_id": 3,
+        "author": "claude-code:proj-beta#be7a",
+        "author_kind": "agent",
+        "body": "May I deploy?",
+        "reply_to": null,
+        "meta": "{}"
+      },
+      {
+        "id": 4,
+        "ts": "2026-01-01T00:00:09+00:00",
+        "thread_id": 3,
+        "author": "john",
+        "author_kind": "human",
+        "body": "Yes.",
+        "reply_to": null,
+        "meta": null
+      },
+      {
+        "id": 5,
+        "ts": "2026-01-01T00:00:12+00:00",
+        "thread_id": 4,
+        "author": "agent:proj-bare",
+        "author_kind": "agent",
+        "body": "do it",
+        "reply_to": null,
+        "meta": "{\"claim\": \"anyone\"}"
+      },
+      {
+        "id": 6,
+        "ts": "2026-01-01T00:16:40+00:00",
+        "thread_id": 5,
+        "author": "claude-code:proj-alpha#a1b2",
+        "author_kind": "agent",
+        "body": "deploy step one",
+        "reply_to": null,
+        "meta": null
+      },
+      {
+        "id": 7,
+        "ts": "2026-01-01T00:16:43+00:00",
+        "thread_id": 5,
+        "author": "claude-code:proj-beta#be7a",
+        "author_kind": "agent",
+        "body": "deploy step two, then builder",
+        "reply_to": null,
+        "meta": null
+      },
+      {
+        "id": 8,
+        "ts": "2026-01-01T00:16:47+00:00",
+        "thread_id": 3,
+        "author": "claude-code:proj-beta#be7a",
+        "author_kind": "agent",
+        "body": "Acknowledged - your reply has been picked up.",
+        "reply_to": 4,
+        "meta": "{\"kind\": \"ack\", \"ack_for\": 4}"
+      }
+    ],
+    "presence": [
+      {
+        "author": "claude-code:proj-alpha#a1b2",
+        "seen_ts": "2026-01-01T00:16:41+00:00"
+      },
+      {
+        "author": "builder",
+        "seen_ts": "2026-01-01T00:00:04+00:00"
+      },
+      {
+        "author": "claude-code:proj-beta#be7a",
+        "seen_ts": "2026-01-01T00:16:48+00:00"
+      },
+      {
+        "author": "agent:proj-bare",
+        "seen_ts": "2026-01-01T00:00:13+00:00"
+      }
+    ],
+    "acks": [
+      {
+        "message_id": 4,
+        "thread_id": 3,
+        "agent": "claude-code:proj-beta#be7a",
+        "state": "posted",
+        "created_ts": "2026-01-01T00:00:11+00:00",
+        "noted_ts": null,
+        "settled_ts": "2026-01-01T00:16:46+00:00"
+      }
+    ],
+    "receipts": [],
+    "pull_requests": [],
+    "work_events": [],
+    "handoffs": [
+      {
+        "name": "builder",
+        "body": "",
+        "path": null,
+        "updated_ts": "2026-01-01T00:00:14+00:00",
+        "updated_by": "builder",
+        "torch_due": 1
+      }
+    ],
+    "sessions": [
+      {
+        "author": "claude-code:proj-alpha#a1b2",
+        "session_id": "a1b2c3d4-0000",
+        "cwd": "C:\\parity\\proj-alpha",
+        "pid": 4242,
+        "channels": 0,
+        "seen_ts": "2026-01-01T00:16:42+00:00"
+      },
+      {
+        "author": "builder",
+        "session_id": "c0ffee",
+        "cwd": "C:\\parity\\crew",
+        "pid": 4242,
+        "channels": 0,
+        "seen_ts": "2026-01-01T00:00:05+00:00"
+      },
+      {
+        "author": "claude-code:proj-beta#be7a",
+        "session_id": "Be-7a-99",
+        "cwd": "C:\\parity\\proj-beta",
+        "pid": 4242,
+        "channels": 0,
+        "seen_ts": "2026-01-01T00:16:45+00:00"
+      }
+    ],
+    "deliveries": []
+  }
+}
