@@ -114,18 +114,22 @@ def poll_loop() -> None:
                         continue
                     body = latest_body(q["thread_id"])
                     asker = identity.label(q.get("opened_by") or "an agent")
+                    body_blocks, images = slackfmt.md_to_slack(body)
                     blocks = ([{"type": "section", "text": {"type": "mrkdwn", "text":
                                 f"*☎ Question #{q['thread_id']}* from *{slackfmt._esc(asker)}*\n"
                                 f"*{slackfmt._inline(q['subject'])}*"}},
                                {"type": "divider"}]
-                              + slackfmt.md_to_slack(body)
+                              + body_blocks
                               + [{"type": "context", "elements": [{"type": "mrkdwn", "text":
-                                  "Reply *in this thread* to answer. Markdown and Slack formatting both work."}]}])
+                                  "Reply *in this thread* to answer. Photos work too."}]}])
                     resp = app.client.chat_postMessage(
                         channel=JOHN_DM_CHANNEL, blocks=blocks[:50],
                         unfurl_links=False, unfurl_media=False,
                         text=f"Question #{q['thread_id']} from {asker}: {q['subject']} · "
                              + slackfmt.fallback_text(body, 200))
+                    for png, filename, title in images:
+                        app.client.files_upload_v2(channel=JOHN_DM_CHANNEL, thread_ts=resp["ts"],
+                                                   content=png, filename=filename, title=title)
                     state["posted"][tid] = {
                         "ts": resp["ts"], "updated_ts": q["updated_ts"]}
                     save_state(state)
@@ -133,6 +137,33 @@ def poll_loop() -> None:
         except Exception as exc:  # a bad pass must not kill future polling
             print(f"[slack_bridge] poll error: {exc}", file=sys.stderr)
         time.sleep(POLL_SECONDS)
+
+
+ATTACHMENTS = paths.DATA_DIR / "attachments"
+
+
+def save_photos(files: list, thread_ts: str) -> list:
+    """Download images attached to a Slack reply into LOCALAPPDATA; returns their paths."""
+    import urllib.request
+    saved = []
+    for f in files:
+        if not str(f.get("mimetype", "")).startswith("image/"):
+            continue
+        url = f.get("url_private_download") or f.get("url_private")
+        name = "".join(c for c in (f.get("name") or "photo.jpg") if c.isalnum() or c in "._-") or "photo.jpg"
+        dest = ATTACHMENTS / f"{thread_ts.replace('.', '_')}_{f.get('id', '')}_{name}"
+        try:
+            ATTACHMENTS.mkdir(parents=True, exist_ok=True)
+            req = urllib.request.Request(url, headers={"Authorization": f"Bearer {BOT_TOKEN}"})
+            with urllib.request.urlopen(req, timeout=30) as r:
+                data = r.read()
+            if data[:1] == b"<":
+                continue  # an HTML sign-in page, not the image: the files:read scope is missing
+            dest.write_bytes(data)
+            saved.append(dest)
+        except Exception as exc:
+            print(f"[slack_bridge] photo download failed: {exc}", file=sys.stderr)
+    return saved
 
 
 @app.event("message")
@@ -155,6 +186,11 @@ def handle_reply(event: dict, say) -> None:
         return
 
     body = slackfmt.slack_to_md(event.get("text", ""))
+    photos = save_photos(event.get("files") or [], thread_ts)
+    if photos:
+        body = (body + "\n\n" if body.strip() else "") + "\n".join(f"![photo]({p.as_uri()})" for p in photos)
+    if not body.strip():
+        return
     conn = db.connect()
     try:
         thread = db.get_thread(conn, tid)["thread"]

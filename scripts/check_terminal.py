@@ -32,6 +32,7 @@ from agentdesk import db, paths  # noqa: E402
 
 FRAME_MS = 16.7
 failures: list = []
+PHOTO = SCRATCH / "photo.png"
 
 
 def check(name, ok, detail=""):
@@ -85,6 +86,8 @@ def main() -> int:
         if (REAL_DATA / name).exists():
             shutil.copy(REAL_DATA / name, paths.DATA_DIR / name)
     (paths.DATA_DIR / "settings.json").write_text(json.dumps({"screech": False}), encoding="utf-8")
+    from PIL import Image
+    Image.new("RGB", (300, 200), "#78dce8").save(PHOTO)
     conn = db.connect(paths.DB_PATH)
     try:
         for subj in ("Stagger the JAWS MAIN nightly timers, or add SYMTOOLS agents?",
@@ -235,6 +238,8 @@ def main() -> int:
         '"series":{"JAWS":[41,38,33,29]},"goal":25}',
         "```",
         "",
+        f"![photo]({PHOTO.as_uri()})",
+        "",
         "- [x] stagger the nightly timers",
         "- [ ] add SYMTOOLS to more agents",
         "  - survey the fleet first",
@@ -250,7 +255,7 @@ def main() -> int:
     app.root.update()
     shown = v.read_view.get("1.0", "end")
     images = len(v.read_view.image_names())
-    check("the markdown table and the ```chart render as images", images >= 2, f"{images} images")
+    check("the table, the ```chart and a Slack photo render as images", images >= 3, f"{images} images")
     check("no raw table or chart JSON is left in the text", "| lane |" not in shown and '"type":"line"' not in shown)
     check("a mermaid flowchart is drawn, not shown as source", "►" in shown and "graph LR" not in shown)
     check("a mermaid sequence diagram is drawn", "OK to land?" in shown and "->>" not in shown)

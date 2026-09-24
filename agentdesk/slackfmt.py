@@ -96,8 +96,9 @@ def _fence(lang: str, block: list) -> str:
     return "```\n" + "\n".join(block) + "\n```"
 
 
-def _pieces(md: str) -> list:
-    """("text", mrkdwn) / ("header", plain) / ("divider", "") in order."""
+def _pieces(md: str, images: list) -> list:
+    """("text", mrkdwn) / ("header", plain) / ("divider", "") in order. Charts are rendered to PNG
+    and appended to `images` as (png_bytes, filename, title) for the caller to upload."""
     out, lines, i = [], md.split("\n"), 0
 
     def text(s):
@@ -113,6 +114,16 @@ def _pieces(md: str) -> list:
                 block.append(lines[i])
                 i += 1
             i += 1
+            if lang == "chart":
+                from agentdesk import charts
+                try:
+                    spec = charts.parse("\n".join(block))
+                    title = spec.get("title") or spec["type"]
+                    images.append((charts.png(charts.render(spec, "dark", 2.0)), f"chart-{len(images) + 1}.png", title))
+                    text(f"📊 *{_esc(title)}*  _(chart below)_")
+                    continue
+                except charts.ChartError as exc:
+                    text(f"_chart could not be drawn: {_esc(str(exc))}_")
             text(_fence(lang, block))
             continue
         table = mdview._table_at(lines, i)
@@ -186,9 +197,9 @@ def _chunks(s: str) -> list:
     return out
 
 
-def md_to_slack(md: str) -> list:
-    """Block Kit blocks for a Markdown body."""
-    blocks, buf = [], []
+def md_to_slack(md: str) -> tuple:
+    """(blocks, images) for a Markdown body; images are chart PNGs to upload into the thread."""
+    blocks, buf, images = [], [], []
 
     def flush():
         if buf:
@@ -198,7 +209,7 @@ def md_to_slack(md: str) -> list:
                     blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": c}})
             buf.clear()
 
-    for kind, value in _pieces(md or ""):
+    for kind, value in _pieces(md or "", images):
         if kind == "text":
             buf.append(value)
         else:
@@ -211,7 +222,7 @@ def md_to_slack(md: str) -> list:
     if len(blocks) > BLOCKS_MAX:
         blocks = blocks[: BLOCKS_MAX - 1] + [{"type": "context", "elements": [
             {"type": "mrkdwn", "text": "_(message truncated for Slack; the full text is on the board)_"}]}]
-    return blocks
+    return blocks, images
 
 
 def fallback_text(md: str, limit: int = 300) -> str:

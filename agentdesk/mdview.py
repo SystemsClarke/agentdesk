@@ -32,6 +32,7 @@ _INLINE = re.compile(
     r"|(?P<burl>https?://[^\s)>\]]+)"
 )
 _TASK = re.compile(r"^\[( |x|X)\]\s+(.*)$")
+_IMAGE_LINE = re.compile(r"^\s*!\[([^\]]*)\]\(([^)\s]+)\)\s*$")
 _ADMONITION = re.compile(r"^\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]\s*(.*)$", re.I)
 _ADM_LOOK = {"NOTE": ("cy", "ⓘ NOTE"), "TIP": ("gr", "✓ TIP"), "IMPORTANT": ("pu", "★ IMPORTANT"),
              "WARNING": ("ye", "⚠ WARNING"), "CAUTION": ("pk", "✖ CAUTION")}
@@ -204,9 +205,38 @@ def render(widget: tk.Text, text: str) -> None:
             _newline(widget)
             i += 1
             continue
+        m = _IMAGE_LINE.match(line)
+        if m and _local_image(widget, m.group(2)):
+            i += 1
+            continue
         _inline(widget, line)
         _newline(widget)
         i += 1
+
+
+def _local_image(widget: tk.Text, url: str) -> bool:
+    """Show a local image (a Slack photo saved by the bridge) inline, fitted to the pane."""
+    from urllib.parse import unquote, urlparse
+    from urllib.request import url2pathname
+    from pathlib import Path
+    try:
+        path = Path(url2pathname(unquote(urlparse(url).path))) if url.startswith("file:") else Path(url)
+        if not path.is_file():
+            return False
+        from PIL import Image
+        img = Image.open(path)
+        img.load()
+    except Exception:
+        return False
+    k = _scale(widget)
+    px = widget.winfo_width()
+    max_w = (px - 60) if px > 100 else int(640 * k)
+    max_h = int(420 * k)
+    ratio = min(1.0, max_w / img.width, max_h / img.height)
+    if ratio < 1.0:
+        img = img.resize((max(1, int(img.width * ratio)), max(1, int(img.height * ratio))), Image.LANCZOS)
+    _image(widget, img.convert("RGB"))
+    return True
 
 
 def _width(widget: tk.Text) -> int:
