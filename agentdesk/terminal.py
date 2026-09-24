@@ -351,7 +351,15 @@ class TerminalView:
             view.bind("<Double-Button-1>", self._on_double)
         self.lines_view.bind("<Configure>", self._on_resize)
         self.reply.bind("<Control-Return>", self._send)
-        self.reply.bind("<Escape>", lambda e: (self._focus_body(), "break")[1])
+        # The reply box has focus whenever a message is open, so its keys are the reader's keys.
+        self.reply.bind("<Escape>", lambda e: (self.go_back(), "break")[1])
+        self.reply.bind("<Prior>", lambda e: (self.read_view.yview_scroll(-1, "pages"), "break")[1])
+        self.reply.bind("<Next>", lambda e: (self.read_view.yview_scroll(1, "pages"), "break")[1])
+        self.reply.bind("<Alt-n>", lambda e: (self.reader_step(1), "break")[1])
+        self.reply.bind("<Alt-p>", lambda e: (self.reader_step(-1), "break")[1])
+        self.reply.bind("<Alt-c>", lambda e: (self.reader_close(), "break")[1])
+        self.reply.bind("<Alt-u>", lambda e: (self.reader_unarchive(), "break")[1])
+        self.reply.bind("<Control-w>", lambda e: (self.toggle_worker(), "break")[1])
         self.subject_ent.bind("<Control-Return>", self._send)
         self.subject_ent.bind("<Escape>", lambda e: (self.go_back(), "break")[1])
         self.subject_ent.bind("<Return>", lambda e: (self.reply.focus_set(), "break")[1])
@@ -461,6 +469,8 @@ class TerminalView:
         self.last_filed = dict(row) if row else None
         self.tick(conn, render=False)
         self.render()
+        if getattr(self, "_read_conn", None) is None:
+            self.root.after_idle(self._reader)  # open it now, not on the first message you read
         self._prefetch()
 
     @guarded
@@ -686,7 +696,7 @@ class TerminalView:
             mid = [S("● worker online", "gr")] + ([S(f" · #{item}", "ye")] if item else [S(" · idle", "mu")]) \
                 + ([S(f" · {identity.label(who)}", "mu")] if who else [])
         else:
-            mid = [S("○ worker offline", "or")]
+            mid = [S("○ worker offline", "or"), S(" · Ctrl+W starts it", "fa")]
         ringing = len(self.open_qs)
         right = [S(f"{ringing} ringing for you", "pk", "b") if ringing else S("nobody's calling", "mu"),
                  S(" · ", "fa")] + self._slack_seg()
@@ -718,16 +728,17 @@ class TerminalView:
                 h += k("H", "archived" if not self.show_archived else "active")
             return h + k("Esc", "main menu")
         if s == "read":
-            h = k("R", "reply") + k("Ctrl+↵", "send") + k("Ctrl+D", "dictate") + k("N/P", "next/prev")
+            h = k("type", "to reply") + k("Ctrl+↵", "send") + k("Ctrl+D", "dictate") \
+                + k("PgUp/PgDn", "scroll") + k("Alt+N/P", "next/prev")
             if self.channel == "question":
-                h += k("C", "close & archive") + k("U", "bring back")
+                h += k("Alt+C", "close") + k("Alt+U", "bring back")
             return h + k("Esc", "back")
         if s == "prs":
             return k("↑↓", "move") + k("↵", "open on GitHub") + k("C", "check now") \
                 + k("H", "settled" if not self.show_settled else "open only") + k("Esc", "menu")
         if s == "sysop":
             running = self.worker[0]
-            return k("W", "stop worker (after this item)" if running else "start worker") \
+            return k("Ctrl+W", "stop worker (after this item)" if running else "start worker") \
                 + k("R", "reload code") + k("J", "job board") + k("L", "read held item") + k("Esc", "menu")
         if s == "who":
             return k("↑↓", "pick a caller") + k("↵", "read bio") + k("P", "page them") + k("Esc", "menu")
@@ -811,7 +822,7 @@ class TerminalView:
         elif running:
             sysop = ("worker idle", "gr")
         else:
-            sysop = ("worker offline", "or")
+            sysop = ("offline · Ctrl+W starts it", "or")
         agents = len({c["author"] for c in self.callers if c["author"] != paths.HUMAN})
         theme = self.pal["label"] + (" · screech on" if self.prefs.get("screech") else "")
         items = [
@@ -1074,7 +1085,7 @@ class TerminalView:
         elif running:
             stat("Worker", [S("● online · idle, the queue is empty", "gr")])
         else:
-            stat("Worker", [S("○ offline", "or"), S("  W starts it", "fa")])
+            stat("Worker", [S("○ offline", "or"), S("  Ctrl+W starts it", "fa")])
         s = self.slack
         if s and self._slack_seg()[0][1] == ("cy",):
             relay = s.get("last_relay")
@@ -1191,6 +1202,9 @@ class TerminalView:
             ("Modem screech on connect", "ON" if self.prefs.get("screech") else "off", "screech"),
             ("Play the screech now", "↵", "play"),
             ("Font size", f"{self.prefs.get('font_size', 11)} pt   (←/→ or Ctrl +/-)", "font"),
+            ("Dictation pre-roll", ("ON" if self.prefs.get("preroll", True) else "off")
+             + "   keeps the last 2 s in RAM while a box has focus, so Ctrl+D catches what you just said",
+             "preroll"),
             ("Classic window", "the old tabbed look, relaunches the window", "classic"),
         ]
 
@@ -1230,7 +1244,10 @@ class TerminalView:
         self.lines_view.yview_moveto(0)
         self.render()
         self._prefetch()
-        if screen not in ("compose",):
+        if screen == "read":
+            self.reply.focus_set()
+            self.reply.mark_set("insert", "end-1c")
+        elif screen != "compose":
             self._focus_body()
 
     def go_back(self) -> None:
@@ -1305,6 +1322,15 @@ class TerminalView:
         elif key == "font":
             self.zoom(delta or 1)
             return
+        elif key == "preroll":
+            self.prefs["preroll"] = not self.prefs.get("preroll", True)
+            settings.save(self.prefs)
+            try:
+                self.app.dictation.enable_preroll(self.prefs["preroll"])
+            except Exception:
+                log.exception("toggling dictation pre-roll failed")
+            self.flash("Pre-roll on: the mic keeps a 2-second rolling buffer while you're in a box."
+                       if self.prefs["preroll"] else "Pre-roll off: the mic only opens when you press Ctrl+D.", "ye")
         elif key == "classic":
             self.prefs["ui"] = "classic"
             settings.save(self.prefs)
@@ -1353,8 +1379,41 @@ class TerminalView:
             self._reader_key = None
             self.render()
             self.flash(f"Sent to #{self.read_tid}.", "gr")
-            self._focus_body()
         return "break"
+
+    def toggle_worker(self) -> None:
+        running = self.worker[0]
+        log.info("worker toggle requested (was %s)", "running" if running else "stopped")
+        self.app._toggle_worker()
+        self.flash("Stop requested. It finishes the item it holds first." if running
+                   else "Starting the worker...", "ye")
+
+    def reader_step(self, delta: int) -> None:
+        rows = self.rows.get(self.channel, [])
+        idx = next((i for i, r in enumerate(rows) if r["id"] == self.read_tid), None)
+        if idx is None or not rows:
+            return
+        j = max(0, min(len(rows) - 1, idx + delta))
+        if j == idx:
+            self.flash("That's the " + ("last" if delta > 0 else "first") + " one.", "mu")
+            return
+        self.sel[self.channel] = j
+        self.open_thread(rows[j]["id"], back=self.read_back)
+
+    def reader_close(self) -> None:
+        if self.channel != "question" or not self.read_tid:
+            self.flash("Only questions can be closed & archived.", "mu")
+            return
+        tid = self.read_tid
+        self.confirm = (f"Close & archive #{tid}? It goes to the vault on the next sweep.",
+                        lambda: (self.app.close_question(tid), self.flash(f"#{tid} closed. The sweep files it.", "gr")))
+        self._focus_body()
+        self.render()
+
+    def reader_unarchive(self) -> None:
+        if self.channel == "question" and self.read_tid:
+            self.app.unarchive_question(self.read_tid)
+            self.flash(f"#{self.read_tid} is back on the desk.", "gr")
 
     def _page(self) -> None:
         callers = self._who_rows()
@@ -1421,6 +1480,8 @@ class TerminalView:
                 self.zoom(1)
             elif k == "minus":
                 self.zoom(-1)
+            elif k == "w":
+                self.toggle_worker()
             elif k in ("c", "a", "insert"):
                 return None
             return "break"
@@ -1434,6 +1495,8 @@ class TerminalView:
             else:
                 self.flash("Never mind, then.", "mu")
             self.render()
+            if self.screen == "read":
+                self.reply.focus_set()
             return "break"
 
         if keysym == "Escape":
@@ -1463,22 +1526,13 @@ class TerminalView:
                 self.reply.focus_set()
                 return "break"
             if ch in ("n", "p"):
-                rows = self.rows.get(self.channel, [])
-                idx = next((i for i, r in enumerate(rows) if r["id"] == self.read_tid), None)
-                if idx is not None:
-                    j = max(0, min(len(rows) - 1, idx + (1 if ch == "n" else -1)))
-                    self.sel[self.channel] = j
-                    self.open_thread(rows[j]["id"], back=self.read_back)
+                self.reader_step(1 if ch == "n" else -1)
                 return "break"
-            if ch == "c" and self.channel == "question":
-                tid = self.read_tid
-                self.confirm = (f"Close & archive #{tid}? It goes to the vault on the next sweep.",
-                                lambda: (self.app.close_question(tid), self.flash(f"#{tid} closed. The sweep files it.", "gr")))
-                self.render()
+            if ch == "c":
+                self.reader_close()
                 return "break"
-            if ch == "u" and self.channel == "question":
-                self.app.unarchive_question(self.read_tid)
-                self.flash(f"#{self.read_tid} is back on the desk.", "gr")
+            if ch == "u":
+                self.reader_unarchive()
                 return "break"
             if ch == "o":
                 pr = next((r for r in self.prs if r.get("thread_id") == self.read_tid), None)
@@ -1518,11 +1572,6 @@ class TerminalView:
                 self._activate()
                 return "break"
         if s == "sysop":
-            if ch == "w":
-                self.app._toggle_worker()
-                self.flash("Stop requested. It finishes the item it holds first." if self.worker[0]
-                           else "Starting the worker...", "ye")
-                return "break"
             if ch == "r":
                 self.app._reload_code()
                 return "break"

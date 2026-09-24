@@ -1529,6 +1529,49 @@ class DictationController:
 
     def attach(self, root: tk.Misc) -> None:
         root.bind_all("<Control-d>", self._on_key)
+        self.mic: Optional[dictate.Mic] = None
+        self._disarm_job = None
+        for cls in ("Text", "Entry", "TEntry"):
+            root.bind_class(cls, "<FocusIn>", self._on_focus_in, add="+")
+            root.bind_class(cls, "<FocusOut>", self._on_focus_out, add="+")
+
+    def enable_preroll(self, on: bool) -> None:
+        """Keep the last ~2 s of mic audio in RAM while a text box has focus (real launches only)."""
+        if on and self.mic is None and dictate.is_downloaded():
+            self.mic = dictate.Mic(seconds=2.0)
+        elif not on and self.mic is not None:
+            self.mic.disarm()
+            self.mic = None
+
+    def _typing_widget(self, w) -> bool:
+        if getattr(w, "_agentdesk_readonly", False):
+            return False
+        try:
+            return str(w.cget("state")) == "normal"
+        except tk.TclError:
+            return False
+
+    def _on_focus_in(self, event: tk.Event) -> None:
+        if self.mic is None or not self._typing_widget(event.widget):
+            return
+        if self._disarm_job is not None:
+            self.app.root.after_cancel(self._disarm_job)
+            self._disarm_job = None
+        self.mic.arm()
+
+    def _on_focus_out(self, _event: tk.Event) -> None:
+        if self.mic is None:
+            return
+        # A grace period, so tabbing between two boxes doesn't close and reopen the device.
+        if self._disarm_job is not None:
+            self.app.root.after_cancel(self._disarm_job)
+        self._disarm_job = self.app.root.after(1500, self._disarm)
+
+    def _disarm(self) -> None:
+        self._disarm_job = None
+        focused = self.app.root.focus_get()
+        if self.mic is not None and not (focused is not None and self._typing_widget(focused)):
+            self.mic.disarm()
 
     def _on_key(self, event: tk.Event) -> Optional[str]:
         if self.session is not None:
@@ -1558,6 +1601,7 @@ class DictationController:
                 self.app.ui_queue.put(lambda: self._on_text(text, final)),
             on_error=lambda exc:
                 self.app.ui_queue.put(lambda: self._on_error(exc)),
+            mic=self.mic,
         )
         self.session.start()
 
@@ -1586,20 +1630,40 @@ class DictationController:
             "This is usually a missing or busy microphone -- Settings > "
             "Privacy > Microphone, or another app holding it exclusively.")
 
+    _DOTS = ("●  ·  ·", "·  ●  ·", "·  ·  ●", "·  ●  ·")
+
     def _show_indicator(self, widget: tk.Widget) -> None:
-        top = widget.winfo_toplevel()
-        self.indicator = tk.Label(
-            top, text="\U0001F399 Listening... (Ctrl+D to stop)",
-            bg=_DICTATE_INDICATOR_BG, fg=_DICTATE_INDICATOR_FG,
-            font=("Segoe UI", 8), padx=4, pady=1)
-        # Anchored to the widget itself via `in_=`, not to absolute screen
-        # coordinates, so it tracks the right field even if the window has
-        # moved or the field is inside a scrolled/dialog frame.
-        self.indicator.place(in_=widget, relx=0, y=-2, x=0, anchor="sw")
+        """Three pulsing dots tucked into the field's top-right corner, in the field's own colours."""
+        try:
+            bg = widget.cget("background")
+            fg = widget.cget("insertbackground")
+        except tk.TclError:
+            bg, fg = _DICTATE_INDICATOR_BG, _DICTATE_INDICATOR_FG
+        self.indicator = tk.Label(widget.winfo_toplevel(), text=self._DOTS[0], bg=bg, fg=fg,
+                                  font=("Segoe UI", 9, "bold"), padx=6, pady=0, bd=0)
+        # Anchored to the widget via `in_=`, so it tracks the field if the window moves.
+        self.indicator.place(in_=widget, relx=1.0, x=-8, y=4, anchor="ne")
+        self._dot_step = 0
+        self._animate_dots()
+
+    def _animate_dots(self) -> None:
+        if self.indicator is None:
+            return
+        self._dot_step = (self._dot_step + 1) % len(self._DOTS)
+        try:
+            self.indicator.configure(text=self._DOTS[self._dot_step])
+            self._dot_job = self.indicator.after(260, self._animate_dots)
+        except tk.TclError:
+            self.indicator = None
 
     def _hide_indicator(self) -> None:
         if self.indicator is not None:
-            self.indicator.destroy()
+            try:
+                if getattr(self, "_dot_job", None):
+                    self.indicator.after_cancel(self._dot_job)
+                self.indicator.destroy()
+            except tk.TclError:
+                pass
             self.indicator = None
 
     def _download_then(self, then: Callable[[], None]) -> None:
@@ -2645,6 +2709,9 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     ui = args.ui or settings.load().get("ui", "terminal")
     app = App(args.db, ui="terminal" if ui == "terminal" else "classic")
+    # Real launches only; check scripts build App directly and skip both.
+    dictate.warm()
+    app.dictation.enable_preroll(bool(settings.load().get("preroll", True)))
     # Attached so _reload_code can release it before spawning a replacement
     # process -- see SingleInstance.release(). A plain attribute, not a
     # constructor argument: App is also built directly by the check scripts,

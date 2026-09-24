@@ -181,6 +181,14 @@ def main() -> int:
             shot({"s": "04-sysop", "b": "05-whos-on", "p": "06-prs", "o": "07-options",
                   "j": "08-work", "w": "09-wiki"}[k])
     check("SysOp shows the Claude plan row", "Claude plan" in (press(app, "s", "s") and v.body.get("1.0", "end")))
+    toggled = []
+    app._toggle_worker = lambda: toggled.append(True)
+    v._on_key(SimpleNamespace(keysym="w", char="\x17", state=0x4))
+    app.root.update_idletasks()
+    check("Ctrl+W toggles the worker and stays on the screen", v.screen == "sysop" and toggled == [True])
+    press(app, "w", "w")
+    check("plain W is still global navigation to the Wiki", v.screen == "list" and v.channel == "wiki")
+    press(app, "s", "s")
     rec("switch theme", press(app, "t", "t"))
     press(app, "m", "m")
     shot("10-main-light")

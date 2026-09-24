@@ -111,6 +111,102 @@ def _get_recognizer():
         return _recognizer
 
 
+def warm() -> None:
+    """Load the model and the audio library ahead of the first Ctrl+D (seconds, off the UI thread)."""
+    if not is_downloaded():
+        return
+
+    def _load() -> None:
+        try:
+            import sounddevice  # noqa: F401
+            _get_recognizer()
+        except Exception:
+            pass  # a warm-up failure resurfaces, with its real error, on the first Ctrl+D
+
+    threading.Thread(target=_load, name="agentdesk-dictate-warm", daemon=True).start()
+
+
+class Mic:
+    """A pre-roll microphone: while armed it keeps only the last few seconds of audio in memory.
+
+    Armed while an editable text box has focus. When a Session attaches, the buffered
+    seconds are handed over first and live audio follows on the same open stream, so
+    Ctrl+D both skips opening the device and keeps what was said just before the press.
+    Audio is only ever held in this ring buffer in RAM; nothing is written anywhere.
+    """
+
+    def __init__(self, seconds: float = 2.0) -> None:
+        from collections import deque
+        self._buf = deque(maxlen=max(1, int(seconds * SAMPLE_RATE / _CHUNK_SAMPLES)))
+        self._sink: Optional["queue.Queue"] = None
+        self._stream = None
+        self._lock = threading.Lock()
+        self._want = False
+
+    @property
+    def live(self) -> bool:
+        return self._stream is not None
+
+    def arm(self) -> None:
+        self._want = True
+        if self._stream is not None:
+            return
+
+        def _open() -> None:
+            try:
+                import sounddevice as sd
+                s = sd.InputStream(samplerate=SAMPLE_RATE, channels=1, dtype="float32",
+                                   blocksize=_CHUNK_SAMPLES, callback=self._callback)
+                s.start()
+                with self._lock:
+                    if self._want and self._stream is None:
+                        self._stream = s
+                        return
+                s.close()
+            except Exception:
+                pass  # no mic, or it's busy: Ctrl+D falls back to opening its own stream
+
+        threading.Thread(target=_open, name="agentdesk-mic-arm", daemon=True).start()
+
+    def disarm(self) -> None:
+        with self._lock:
+            self._want = False
+            if self._sink is not None:
+                return  # a session is using it; release when it detaches
+            stream, self._stream = self._stream, None
+            self._buf.clear()
+        if stream is not None:
+            try:
+                stream.close()
+            except Exception:
+                pass
+
+    def _callback(self, indata, _frames, _time, _status) -> None:
+        chunk = indata[:, 0].copy()
+        with self._lock:
+            if self._sink is not None:
+                self._sink.put(chunk)
+            else:
+                self._buf.append(chunk)
+
+    def attach(self, q: "queue.Queue") -> bool:
+        with self._lock:
+            if self._stream is None:
+                return False
+            for chunk in self._buf:
+                q.put(chunk)
+            self._buf.clear()
+            self._sink = q
+            return True
+
+    def detach(self) -> None:
+        with self._lock:
+            self._sink = None
+            release = not self._want
+        if release:
+            self.disarm()
+
+
 class Session:
     """One press-to-stop dictation session, running on its own thread.
 
@@ -126,7 +222,8 @@ class Session:
     """
 
     def __init__(self, on_text: Callable[[str, bool], None],
-                 on_error: Callable[[Exception], None]) -> None:
+                 on_error: Callable[[Exception], None], mic: Optional[Mic] = None) -> None:
+        self._mic = mic
         self._on_text = on_text
         self._on_error = on_error
         self._audio_q: "queue.Queue[Optional[object]]" = queue.Queue()
@@ -147,9 +244,6 @@ class Session:
         try:
             import sounddevice as sd
 
-            recognizer = _get_recognizer()
-            stream = recognizer.create_stream()
-
             def _callback(indata, _frames, _time, status) -> None:
                 # Runs on PortAudio's own thread, a THIRD thread besides this
                 # one and the tk thread -- so this may not touch the
@@ -158,9 +252,10 @@ class Session:
                 self._audio_q.put(indata[:, 0].copy())
 
             last_text = ""
-            with sd.InputStream(samplerate=SAMPLE_RATE, channels=1,
-                                dtype="float32", blocksize=_CHUNK_SAMPLES,
-                                callback=_callback):
+            # The mic opens BEFORE the model is fetched: on a cold start the model
+            # takes seconds to load, and audio captured meanwhile waits in the
+            # queue instead of being lost.
+            def _loop(recognizer, stream, last_text):
                 while True:
                     try:
                         chunk = self._audio_q.get(timeout=0.5)
@@ -177,6 +272,23 @@ class Session:
                     if text and text != last_text:
                         last_text = text
                         self._on_text(text, False)
+                return last_text
+
+            if self._mic is not None and self._mic.attach(self._audio_q):
+                # Pre-roll path: the mic is already open and the last seconds are queued.
+                try:
+                    recognizer = _get_recognizer()
+                    stream = recognizer.create_stream()
+                    last_text = _loop(recognizer, stream, last_text)
+                finally:
+                    self._mic.detach()
+            else:
+                with sd.InputStream(samplerate=SAMPLE_RATE, channels=1,
+                                    dtype="float32", blocksize=_CHUNK_SAMPLES,
+                                    callback=_callback):
+                    recognizer = _get_recognizer()
+                    stream = recognizer.create_stream()
+                    last_text = _loop(recognizer, stream, last_text)
 
             # Drain whatever audio is still queued (the mic keeps producing
             # for a moment after the InputStream context exits) before the

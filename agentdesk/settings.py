@@ -11,6 +11,7 @@ DEFAULTS = {
     "theme": "monokai-pro",
     "screech": True,
     "font_size": 11,
+    "preroll": True,
 }
 
 
