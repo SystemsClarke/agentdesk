@@ -23,6 +23,8 @@ static unsafe partial class Tray
     static long lastLaunch;
     /// <summary>Set once Velopack has downloaded an update; the menu then offers to restart into it.</summary>
     public static Action? ApplyUpdate { get; set; }
+    /// <summary>The ops console's URL with its key (Web.cs); the menu opens it.</summary>
+    public static string? WebUrl { get; set; }
 
     public static void Start(BoardStore store) => new Thread(() => Pump(store)) { IsBackground = true, Name = "tray" }.Start();
 
@@ -63,6 +65,7 @@ static unsafe partial class Tray
     {
         var m = CreatePopupMenu();
         AppendMenuW(m, 0, 1, "&Open AgentDesk");
+        if (WebUrl is not null) AppendMenuW(m, 0, 4, "Open o&ps console");
         if (ApplyUpdate is not null) AppendMenuW(m, 0, 2, "&Restart to update");
         AppendMenuW(m, 0, 3, "&Quit");
         SetMenuDefaultItem(m, 1, 0);
@@ -73,6 +76,8 @@ static unsafe partial class Tray
         PostMessageW(h, 0, 0, 0); // WM_NULL, so the next right-click opens the menu first time
         DestroyMenu(m);
         if (cmd == 1) Launch(0);
+        try { if (cmd == 4) Process.Start(new ProcessStartInfo(WebUrl!) { UseShellExecute = true }); }
+        catch (Exception e) { Log.Warn($"could not open the ops console: {e.Message}"); }
         if (cmd is 2 or 3) Shell(NIM_DELETE, 0);
         try { if (cmd == 2) ApplyUpdate!(); } catch (Exception e) { Log.Warn($"update failed: {e.Message}"); Add(); return; }
         if (cmd == 3) { Log.Info("core quit from the tray"); Environment.Exit(0); }
@@ -87,6 +92,9 @@ static unsafe partial class Tray
         try { if (exe is null) Log.Warn("AgentDesk.App.exe not found"); else Process.Start(exe, thread > 0 ? $"--thread {thread}" : ""); }
         catch (Exception e) { Log.Warn($"could not open AgentDesk: {e.Message}"); }
     }
+
+    /// <summary>Takes the icon down before a restart, so no dead one lingers.</summary>
+    public static void Hide() { if (hwnd != 0) Shell(NIM_DELETE, 0); }
 
     static void Toast(long thread, string title, string text)
     {

@@ -9,6 +9,11 @@
     <PackageReference Include="Velopack" Version="1.2.158" />
   </ItemGroup>
 
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" /> <!-- the ops console (Host/Web.cs) -->
+    <EmbeddedResource Include="Host/Web.html" LogicalName="AgentDesk.Core.Host.Web.html" />
+  </ItemGroup>
+
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <PublishAot>true</PublishAot>

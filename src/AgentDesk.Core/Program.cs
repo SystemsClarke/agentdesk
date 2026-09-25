@@ -1,6 +1,8 @@
 // AgentDesk.Core: the one per-user process that owns the board. Started by the first agent session's
 // agentdesk.exe (or at login), it serves the board, hooks and waits over a named pipe, and calls Python
 // only where Python is best.
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using AgentDesk.Contracts;
 using AgentDesk.Core;
 using AgentDesk.Core.Board;
@@ -30,6 +32,9 @@ var sessions = new Sessions();
 var identities = new Identities(store, sessions, data);
 _ = prs.Run(TimeSpan.FromSeconds(5));
 identities.Resume();
+var started = DateTimeOffset.UtcNow;
+try { Tray.WebUrl = await Web.Start(data, WebCall); }
+catch (Exception e) { Log.Warn($"ops console not started: {e.Message}"); }
 
 Log.Info($"core starting (pid {Environment.ProcessId})");
 await PipeServer.Run((req, push, gone) => req.Tool switch
@@ -37,6 +42,7 @@ await PipeServer.Run((req, push, gone) => req.Tool switch
     "hook:stop" => identities.AfterTurn(req.Args, hooks.Run("stop", req.Args)), // Phoenix: a handoff restarts the identity after the turn
     ['h', 'o', 'o', 'k', ':', .. var hookEvent] => hooks.Run(hookEvent, req.Args),
     "wait" => hooks.Wait(req.Args.GetInt32(), gone),
+    "ui:update" => Setup.Update(new Args(req.Args), $"pipe (pid {req.Caller.Pid}, {req.Caller.EnvAuthor ?? req.Caller.Harness ?? "no author"})"),
     ['u', 'i', ':', .. var op] => Ui(op, new Args(req.Args), push, gone),
     "pass_the_torch" => identities.Torch(req.Caller, Tools.Dispatch(board, req.Caller, req.Tool, req.Args)),
     _ => Tools.Dispatch(board, req.Caller, req.Tool, req.Args),
@@ -69,5 +75,18 @@ Task<string> Ui(string op, Args a, Func<string, Task> push, CancellationToken go
     "identity_forget" => identities.Forget(a.String("name")),
     "adoptable" => Identities.Adoptable(),
     "adopt" => identities.Adopt(a.String("session_id"), a.String("name")),
+    "log_tail" => Task.FromResult(new JsonObject { ["lines"] = new JsonArray([.. Log.Tail(a.Int("lines", 100)).Select(l => (JsonNode)l)]) }.ToJsonString(Wire.Indented)),
+    "web_url" => Task.FromResult(new JsonObject { ["url"] = Tray.WebUrl }.ToJsonString(Wire.Indented)),
     _ => Task.FromResult(Tools.Error($"unknown request: ui:{op}")),
+};
+
+// The ops console (Host/Web.cs): the requests its page needs, answered by the same objects as the window's.
+Task<string> WebCall(string op, JsonElement args) => op switch
+{
+    "core" => Task.FromResult(new JsonObject { ["pid"] = Environment.ProcessId, ["started"] = started.ToString("yyyy-MM-ddTHH:mm:ssZ"), ["update"] = Setup.State() }.ToJsonString(Wire.Indented)),
+    "update" => Setup.Update(new Args(args), "web"),
+    "open_questions" => board.OpenQuestions(new Caller(null, null, null, "web", 0), false, null),
+    "status" or "worker" or "session_list" or "log_tail" or "identity_list" or "identity_create" or "identity_start" or "identity_stop" or "identity_forget"
+        => Ui(op, new Args(args), _ => Task.CompletedTask, CancellationToken.None),
+    _ => Task.FromResult(Tools.Error($"unknown request: {op}")),
 };

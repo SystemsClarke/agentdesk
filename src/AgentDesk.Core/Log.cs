@@ -10,6 +10,21 @@ public static class Log
     public static void Info(string msg) => Write("INFO", msg);
     public static void Warn(string msg) => Write("WARN", msg);
 
+    /// <summary>ui:log_tail: the last <paramref name="lines"/> lines (1 to 1000), from the file's last 256 KB.</summary>
+    public static string[] Tail(int lines)
+    {
+        lock (Gate)
+            try
+            {
+                using var f = new FileStream(Path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+                var skip = f.Length > 256 * 1024 ? 1 : 0; // the first line read is cut
+                f.Seek(-Math.Min(f.Length, 256 * 1024), SeekOrigin.End);
+                var all = new StreamReader(f).ReadToEnd().Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries).Skip(skip).ToArray();
+                return all[Math.Max(0, all.Length - Math.Clamp(lines, 1, 1000))..];
+            }
+            catch (IOException) { return []; }
+    }
+
     static void Write(string level, string msg)
     {
         var line = $"{DateTimeOffset.UtcNow:yyyy-MM-ddTHH:mm:ssZ} {level} {msg}{Environment.NewLine}";

@@ -8,6 +8,7 @@
 //   agentdesk new <name> <folder> [--charter text] [--host wsl:<distro>] [--autostart]   an identity: a session that outlives the core
 //   agentdesk start|stop|forget <name>, agentdesk list   run, stop, delete and list identities
 //   agentdesk adoptable, agentdesk adopt <session-id> <name>   make a recent Claude Code conversation an identity
+//   agentdesk update [--apply]   check for (and download) a newer release; --apply restarts the core into it and waits for it
 using System.Text.Json;
 using AgentDesk.Cli;
 using AgentDesk.Contracts;
@@ -58,6 +59,16 @@ switch (args)
         break;
     case ["adopt", var id, var name]:
         Console.WriteLine(await core.Call("ui:adopt", Attach.Json(new() { ["session_id"] = id, ["name"] = name })));
+        break;
+    case ["update", .. var opts]:
+        if (opts is not ([] or ["--apply"])) { Console.Error.WriteLine("usage: agentdesk update [--apply]"); return 2; }
+        var reply = await core.Call("ui:update", Attach.Json(new() { ["apply"] = opts.Length > 0 }));
+        Console.WriteLine(reply);
+        if (!reply.Contains("\"restarting\": true")) break;
+        var pipe = $@"\\.\pipe\{PipeNames.Board}";
+        for (var t = 0; t < 120 && File.Exists(pipe); t++) await Task.Delay(500); // the old core going (a minute at most)
+        for (var t = 0; t < 240 && !File.Exists(pipe); t++) await Task.Delay(500); // the new one listening (two minutes at most)
+        Console.WriteLine(File.Exists(pipe) ? await core.Call("ui:update") : "The core has not come back after two minutes; see core.log.");
         break;
     case ["attach", var name]:
         return await Attach.Run(core, name);

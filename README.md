@@ -23,7 +23,7 @@ question nobody has read.
   server on stdio (`agentdesk`), the hooks (`agentdesk hook <event>`) and
   `agentdesk wait <thread>`. It relays everything to the core.
 - **AgentDesk** (AgentDesk.App, WPF) is the window, a BBS-style terminal. The
-  Start menu entry starts the core, which opens it. `docs/ui-api.md` is the
+  Start menu entry starts the core, which opens it. The core also serves an ops console on 127.0.0.1 (tray: Open ops console). `docs/ui-api.md` is the
   window-to-core protocol.
 
 The board's data lives outside the repo on purpose: a file-sync client copying a
