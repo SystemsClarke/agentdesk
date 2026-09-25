@@ -23,6 +23,11 @@ HUMAN_KIND...) followed by db.set_thread_status(..., STATUS_ANSWERED) if the
 thread was still open. Nothing here writes a status directly or takes a
 shortcut around that path.
 
+Commands: a top-level DM from John such as `status`, `agents` or `worker off` runs a
+phone command against the core's pipe (agentdesk/slackcmd.py; `help` lists them).
+Several bots: bots.json next to the credentials lists Slack bots, each with its own
+credential folder and areas; with no bots.json there is one bot with every area.
+
 Run: the AgentDesk app starts this as its own child and restarts it whenever
 the heartbeat goes quiet (App._keep_bridge_alive). A scheduled task for it hung
 silently on this machine, so there deliberately is none. By hand:
@@ -50,20 +55,18 @@ if sys.stdout is None or sys.stderr is None:  # pythonw (the scheduled task): no
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
 
-from agentdesk import db, identity, paths, slackfmt  # noqa: E402
+from agentdesk import db, identity, paths, slackcmd, slackfmt  # noqa: E402
 
 from slack_bolt import App  # noqa: E402
 from slack_bolt.adapter.socket_mode import SocketModeHandler  # noqa: E402
 
 CREDS_DIR = Path(r"C:\Users\palencharj\.claude\slack-notify")
-BOT_TOKEN = (CREDS_DIR / "bot-token.txt").read_text().strip()
-APP_TOKEN = (CREDS_DIR / "app-token.txt").read_text().strip()
 JOHN_DM_CHANNEL = "D0C3KDM3DNX"
 JOHN_USER = "U0C4L06N4KA"  # only his messages in his DM are answers
 STATE_FILE = CREDS_DIR / "bridge_state.json"
 POLL_SECONDS = 15
 
-app = App(token=BOT_TOKEN)
+app, BOT_TOKEN = None, ""  # the board bot's, with JOHN_DM_CHANNEL: set in __main__ from bots.json
 _state_lock = threading.Lock()
 
 
@@ -177,6 +180,9 @@ def poll_loop() -> None:
     while True:
         beat()
         try:
+            if app is None:  # no bot has the board area: heartbeat only, so the app keeps the bridge alive
+                time.sleep(POLL_SECONDS)
+                continue
             with _state_lock:
                 state = load_state()
             conn = db.connect()
@@ -227,7 +233,6 @@ def save_photos(files: list, thread_ts: str) -> list:
     return saved
 
 
-@app.event("message")
 def handle_reply(event: dict, say) -> None:
     if (event.get("channel") != JOHN_DM_CHANNEL or event.get("user") != JOHN_USER or event.get("bot_id")
             or event.get("subtype") not in (None, "file_share")):
@@ -274,6 +279,31 @@ def handle_reply(event: dict, say) -> None:
     say(f"Recorded as your answer to #{tid}. Thanks!", thread_ts=thread_ts)
 
 
+def make_app(bot: dict) -> App:
+    """One Slack bot: its areas' commands (top-level DM messages from John), plus the question relay if it has board."""
+    a = App(token=(bot["creds"] / "bot-token.txt").read_text().strip())
+    cmds = slackcmd.Commands(bot["areas"], JOHN_USER, bot["name"])
+
+    @a.event("message")
+    def on_message(event: dict, say) -> None:
+        if event.get("bot_id") or event.get("subtype") not in (None, "file_share") or event.get("channel_type") != "im":
+            return
+        if not event.get("thread_ts") and (out := cmds.handle(event.get("text") or "", event.get("user"))) is not None:
+            blocks, _ = slackfmt.md_to_slack(out)
+            say(blocks=blocks[:50], text=slackfmt.fallback_text(out, 200))
+        elif "board" in bot["areas"]:
+            handle_reply(event, say)
+    return a
+
+
 if __name__ == "__main__":
+    handlers = []
+    for bot in slackcmd.load_bots(CREDS_DIR / "bots.json", CREDS_DIR, JOHN_DM_CHANNEL):
+        a = make_app(bot)
+        if "board" in bot["areas"]:
+            app, BOT_TOKEN, JOHN_DM_CHANNEL = a, a.client.token, bot["dm"]
+        handlers.append(SocketModeHandler(a, (bot["creds"] / "app-token.txt").read_text().strip()))
     threading.Thread(target=poll_loop, daemon=True).start()
-    SocketModeHandler(app, APP_TOKEN).start()
+    for h in handlers[:-1]:
+        h.connect()  # returns once connected; the last one blocks
+    handlers[-1].start()
