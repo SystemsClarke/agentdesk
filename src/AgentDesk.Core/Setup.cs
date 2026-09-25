@@ -4,13 +4,15 @@
 using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using AgentDesk.Contracts;
+using AgentDesk.Core.Host;
 using Microsoft.Win32;
 using Velopack;
 using Velopack.Sources;
 
 namespace AgentDesk.Core;
 
-static class Setup
+public static class Setup
 {
     const string Repo = "https://github.com/SystemsClarke/agentdesk", RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
     static readonly string Home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
@@ -34,20 +36,74 @@ static class Setup
     /// applies one. Only John runs it (the tray's Restart to update): a restart drops every agent's pipe to the core.</summary>
     public static async Task KeepUpdated(Action<Action> ready)
     {
-        var updates = new UpdateManager(new GithubSource(Repo, Environment.GetEnvironmentVariable("AGENTDESK_GITHUB_TOKEN"), false));
-        if (!updates.IsInstalled) return; // a dev build
-        if (updates.UpdatePendingRestart is { } pending) ready(() => updates.ApplyUpdatesAndRestart(pending));
+        offer = ready;
+        if (!Updates.IsInstalled) return; // a dev build
+        if (Updates.UpdatePendingRestart is { } pending) ready(() => Updates.ApplyUpdatesAndRestart(pending));
         using var timer = new PeriodicTimer(TimeSpan.FromMinutes(30));
         do
-            try
-            {
-                if (await updates.CheckForUpdatesAsync() is not { } next) continue;
-                await updates.DownloadUpdatesAsync(next);
-                ready(() => updates.ApplyUpdatesAndRestart(next.TargetFullRelease));
-            }
+            try { await Check(); }
             catch (Exception e) { Log.Warn($"update check failed: {e.Message}"); }
         while (await timer.WaitForNextTickAsync());
     }
+
+    static UpdateManager? updates;
+    static UpdateManager Updates => updates ??= new(new GithubSource(Repo, Environment.GetEnvironmentVariable("AGENTDESK_GITHUB_TOKEN"), false));
+    static readonly SemaphoreSlim Checking = new(1, 1);
+    static Action<Action> offer = _ => { };
+    static string? latest;
+    static VelopackAsset? staged;
+
+    /// <summary>Checks GitHub now and downloads a newer release, if there is one; Velopack never offers an older one.</summary>
+    static async Task<bool> Check()
+    {
+        await Checking.WaitAsync();
+        try
+        {
+            var next = await Updates.CheckForUpdatesAsync();
+            latest = next?.TargetFullRelease.Version.ToString() ?? Updates.CurrentVersion?.ToString();
+            if (next is null) return false;
+            await Updates.DownloadUpdatesAsync(next);
+            var asset = staged = next.TargetFullRelease;
+            offer(() => Updates.ApplyUpdatesAndRestart(asset));
+            return true;
+        }
+        finally { Checking.Release(); }
+    }
+
+    /// <summary>ui:update: checks and downloads now, and with <paramref name="apply"/> restarts into a ready update after replying.
+    /// A dev build (not installed) only reports that.</summary>
+    public static async Task<string> Update(Args args, string source)
+    {
+        var apply = args.Bool("apply", false);
+        Log.Info($"update{(apply ? " and restart" : "")} requested by {source}");
+        var downloaded = false;
+        try { downloaded = Updates.IsInstalled && await Check(); }
+        catch (Exception e) { Log.Warn($"update check failed: {e.Message}"); return Tools.Error($"update check failed: {e.Message}"); }
+        var state = State();
+        var restart = apply && Pending() is not null;
+        if (restart)
+            _ = Task.Run(async () =>
+            {
+                await Task.Delay(1000); // the reply goes out first
+                Log.Info($"restarting into {Pending()!.Version} for {source}");
+                Tray.Hide();
+                Updates.ApplyUpdatesAndRestart(Pending(), ["--background"]);
+            });
+        state["downloaded"] = downloaded;
+        state["restarting"] = restart;
+        return state.ToJsonString(Wire.Indented);
+    }
+
+    static VelopackAsset? Pending() => Updates.IsInstalled ? staged ?? Updates.UpdatePendingRestart : null;
+
+    /// <summary>What the core runs and what it could restart into; <c>latest</c> is as of the last check (null before one).</summary>
+    public static JsonObject State() => new()
+    {
+        ["installed"] = Updates.IsInstalled,
+        ["current"] = Updates.CurrentVersion?.ToString() ?? typeof(Setup).Assembly.GetName().Version?.ToString(3),
+        ["latest"] = latest,
+        ["pending"] = Pending()?.Version.ToString(),
+    };
 
     static void Register(bool on)
     {

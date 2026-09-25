@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>AgentDesk ops</title>
+<style>
+:root { --bg:#221f22; --panel:#2d2a2e; --line:#403e41; --fg:#fcfcfa; --dim:#939293; --red:#ff6188; --orange:#fc9867; --yellow:#ffd866; --green:#a9dc76; --blue:#78dce8; --purple:#ab9df2; }
+* { box-sizing:border-box; }
+body { margin:0 auto; max-width:60rem; padding:.75rem; overflow-wrap:anywhere; background:var(--bg); color:var(--fg); font:15px/1.4 "Cascadia Mono","Cascadia Code","JetBrains Mono",Consolas,monospace; }
+h1 { font-size:1.2rem; color:var(--yellow); margin:.25rem 0 .75rem; }
+h2 { font-size:1rem; color:var(--blue); margin:0 0 .5rem; }
+section { background:var(--panel); border:1px solid var(--line); border-radius:4px; padding:.75rem; margin-bottom:.75rem; min-width:0; }
+@media (max-width:30rem) { body { padding:.5rem; } section { padding:.5rem; } th, td { padding:.3rem .2rem; } }
+table { width:100%; border-collapse:collapse; }
+th, td { text-align:left; vertical-align:top; padding:.35rem .4rem; border-bottom:1px solid var(--line); overflow-wrap:break-word; }
+th { color:var(--dim); font-weight:normal; } tbody th { color:var(--fg); }
+.wrap { overflow-x:auto; }
+.dim, small { color:var(--dim); }
+.running, .up { color:var(--green); } .queued { color:var(--yellow); } .stopped, .down { color:var(--red); }
+button, input, textarea, select { font:inherit; color:var(--fg); background:var(--bg); border:1px solid var(--line); border-radius:4px; }
+button { min-height:44px; min-width:44px; padding:.4rem .8rem; margin:.15rem .3rem .15rem 0; cursor:pointer; color:var(--yellow); }
+button.danger { color:var(--red); }
+button:focus-visible, input:focus-visible, textarea:focus-visible, a:focus-visible { outline:2px solid var(--yellow); outline-offset:2px; }
+a { color:var(--blue); }
+summary { min-height:44px; padding:.6rem 0; cursor:pointer; color:var(--yellow); }
+label { display:block; margin:.4rem 0 .15rem; color:var(--dim); }
+input[type=text], textarea { width:100%; min-height:44px; padding:.4rem; }
+input[type=checkbox] { width:1.4rem; height:1.4rem; vertical-align:middle; }
+label.check { display:flex; align-items:center; gap:.5rem; color:var(--fg); min-height:44px; }
+pre { margin:0; white-space:pre-wrap; overflow-wrap:anywhere; font-size:.8rem; max-height:24rem; overflow-y:auto; }
+dl { display:grid; grid-template-columns:max-content minmax(0,1fr); gap:.2rem .8rem; margin:0 0 .5rem; } dt { color:var(--dim); } dd { margin:0; }
+#say { position:sticky; top:0; z-index:1; background:var(--bg); color:var(--green); min-height:1.4em; padding:.2rem 0; }
+dialog { background:var(--panel); color:var(--fg); border:1px solid var(--red); border-radius:4px; max-width:24rem; }
+dialog::backdrop { background:#000a; }
+.meter { height:.6rem; background:var(--bg); border:1px solid var(--line); border-radius:3px; overflow:hidden; } .meter span { display:block; height:100%; background:var(--green); }
+</style>
+</head>
+<body>
+<h1>AgentDesk ops console</h1>
+<div id="say" role="status" aria-live="polite"></div>
+
+<section aria-labelledby="h-core"><h2 id="h-core">Core</h2><div id="core"></div>
+  <button type="button" id="check">Check for updates</button> <button type="button" id="apply" class="danger" hidden>Restart to update</button></section>
+
+<section aria-labelledby="h-agents"><h2 id="h-agents">Agents</h2><div id="agents" class="wrap"></div>
+  <details><summary>New agent</summary>
+  <form id="create">
+    <label for="c-name">Name</label><input type="text" id="c-name" name="name" required autocomplete="off">
+    <label for="c-folder">Folder</label><input type="text" id="c-folder" name="folder" required autocomplete="off" placeholder="C:\path\to\repo">
+    <label for="c-charter">Charter (optional)</label><textarea id="c-charter" name="charter" rows="3"></textarea>
+    <label for="c-host">Host (optional: windows, or wsl:&lt;distro&gt;)</label><input type="text" id="c-host" name="host" autocomplete="off">
+    <label class="check"><input type="checkbox" id="c-auto" name="autostart"> Start with the core</label>
+    <button type="submit">Create agent</button>
+  </form></details></section>
+
+<section aria-labelledby="h-sessions"><h2 id="h-sessions">Sessions</h2><div id="sessions" class="wrap"></div></section>
+<section aria-labelledby="h-worker"><h2 id="h-worker">Worker and Slack</h2><div id="worker"></div><button type="button" id="toggle">Start or stop the worker</button></section>
+<section aria-labelledby="h-usage"><h2 id="h-usage">Usage</h2><div id="usage"></div></section>
+<section aria-labelledby="h-prs"><h2 id="h-prs">Merge list</h2><div id="prs" class="wrap"></div></section>
+<section aria-labelledby="h-questions"><h2 id="h-questions">Open questions</h2><div id="questions" class="wrap"></div></section>
+<section aria-labelledby="h-log"><h2 id="h-log">Core log</h2><pre id="log" tabindex="0" aria-label="Last 60 lines of core.log"></pre></section>
+
+<dialog id="confirm" aria-labelledby="confirm-text"><p id="confirm-text"></p>
+  <button type="button" id="yes" class="danger">Yes</button> <button type="button" id="no">Cancel</button></dialog>
+
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]);
+const ago = ts => { if (!ts) return ''; const s = Math.max(0, (Date.now() - Date.parse(ts)) / 1000);
+  return s < 90 ? Math.round(s) + ' s' : s < 5400 ? Math.round(s / 60) + ' min' : s < 172800 ? Math.round(s / 3600) + ' h' : Math.round(s / 86400) + ' d'; };
+const say = t => { $('say').textContent = t; };
+async function api(op, args) {
+  const r = await fetch('/api/' + op, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(args || {}) });
+  if (r.status === 401) { say('The key is missing or wrong: reopen the console from the tray.'); throw new Error('401'); }
+  return r.json();
+}
+const shown = {};
+function show(id, html) { if (shown[id] !== html) { shown[id] = html; $(id).innerHTML = html; } } // unchanged sections keep focus
+const table = (caption, heads, rows, empty) => rows.length === 0 ? `<p class="dim">${empty}</p>` :
+  `<table><caption class="dim" style="text-align:left">${caption}</caption><thead><tr>${heads.map(h => `<th scope="col">${h}</th>`).join('')}</tr></thead><tbody>${rows.join('')}</tbody></table>`;
+
+function confirmThen(text, yes) {
+  $('confirm-text').textContent = text;
+  $('yes').onclick = () => { $('confirm').close(); yes(); };
+  $('no').onclick = () => $('confirm').close();
+  $('confirm').showModal(); $('no').focus();
+}
+async function act(op, args, done) {
+  try { const r = await api(op, args); say(r.error ? `Failed: ${r.error}` : done(r)); } catch (e) { if (e.message !== '401') say(`Failed: ${e.message}`); }
+  refresh();
+}
+
+let states = null;
+function renderCore(c) {
+  const u = c.update;
+  show('core', `<dl><dt>Version</dt><dd>${esc(u.current)}${u.installed ? '' : ' <span class="dim">(dev build, not installed)</span>'}</dd>
+    <dt>Pid</dt><dd>${c.pid}</dd><dt>Uptime</dt><dd>${ago(c.started)}</dd>
+    <dt>Latest</dt><dd>${esc(u.latest ?? 'not checked yet')}</dd><dt>Update</dt><dd>${u.pending ? `${esc(u.pending)} ready to restart into` : 'none pending'}</dd></dl>`);
+  $('apply').hidden = !u.pending;
+}
+function renderAgents(list) {
+  const now = Object.fromEntries(list.map(i => [i.name, i.state]));
+  if (states) for (const [n, s] of Object.entries(now)) if (states[n] && states[n] !== s) say(`${n} is now ${s}.`);
+  states = now;
+  show('agents', table('Identities', ['Agent', 'State', 'Actions'], list.map(i => `<tr><th scope="row">${esc(i.name)}<br><small>${esc(i.host)} ${esc(i.folder)}${i.generation != null ? ` · generation ${esc(i.generation)}` : ''}${i.autostart ? ' · autostart' : ''}</small></th>
+    <td class="${esc(i.state)}">${esc(i.state)}${i.pid ? `<br><small>pid ${i.pid}</small>` : ''}</td>
+    <td>${i.state === 'stopped' ? `<button type="button" data-op="identity_start" data-name="${esc(i.name)}" aria-label="Start ${esc(i.name)}">Start</button>`
+                                : `<button type="button" data-op="identity_stop" data-name="${esc(i.name)}" aria-label="Stop ${esc(i.name)}">Stop</button>`}
+        <button type="button" class="danger" data-op="identity_forget" data-name="${esc(i.name)}" aria-label="Forget ${esc(i.name)}">Forget</button></td></tr>`), 'No agents yet.'));
+}
+function renderSessions(list) {
+  show('sessions', table('Headless sessions', ['Session', 'Started', 'Viewers'], list.map(s => `<tr><th scope="row">${esc(s.name)}<br><small>${esc(s.command)} in ${esc(s.folder)}, pid ${s.pid}</small></th>
+    <td>${ago(s.started)} ago</td><td>${s.viewers}</td></tr>`), 'No sessions running.'));
+}
+function renderStatus(st) {
+  const sl = st.slack, w = st.worker, up = sl && (Date.now() - Date.parse(sl.ts)) / 1000 < 90;
+  const last = (w.events || []).slice(-1)[0];
+  show('worker', `<dl><dt>SlackNet</dt><dd class="${up ? 'up' : 'down'}">${sl ? `${up ? 'up' : 'down'}, heartbeat ${ago(sl.ts)} ago` : 'down, no heartbeat file'}${sl && sl.last_relay ? `<br><small>last relay ${ago(sl.last_relay.ts)} ago, thread ${esc(sl.last_relay.thread_id)}</small>` : ''}</dd>
+    <dt>Worker</dt><dd class="${w.running ? 'up' : 'down'}">${w.running ? 'running' : 'stopped'}${w.held ? `, holding item ${esc(w.held)}` : ''}${last ? `<br><small>${esc(last.kind)} ${ago(last.ts)} ago: ${esc(String(last.body).slice(0, 160))}</small>` : ''}</dd>
+    <dt>Crew</dt><dd>${esc(st.crew?.live ?? 0)} live agent session(s)${st.crew?.note ? `<br><small>${esc(st.crew.note)}</small>` : ''}</dd></dl>`);
+  $('toggle').textContent = w.running ? 'Stop the worker' : 'Start the worker';
+  const pct = (st.usage.lines.join(' ').match(/(\d+)% used/) || [])[1];
+  show('usage', `${pct ? `<div class="meter" role="meter" aria-label="5-hour window used" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}"><span style="width:${pct}%"></span></div>` : ''}
+    <p>${esc(st.usage.summary)}</p>${st.usage.lines.map(l => `<p class="dim">${esc(l)}</p>`).join('')}`);
+  const open = st.prs.filter(p => p.state === 'open');
+  show('prs', table('Pull requests waiting on John', ['Pull request', 'Asked by', 'Waiting'], open.map(p => `<tr><th scope="row"><a href="${esc(p.url)}" target="_blank" rel="noopener">${esc(p.repo)}#${p.number}</a> ${esc(p.title)}${p.last_error ? `<br><small class="down">${esc(p.last_error)}</small>` : ''}</th>
+    <td>${esc(p.requested_by)}</td><td>${ago(p.requested_ts)}</td></tr>`), 'Nothing waiting to merge.'));
+}
+function renderQuestions(list) {
+  show('questions', table('Questions waiting on John', ['Question', 'From', 'Updated'], list.map(q => `<tr><th scope="row">#${q.thread_id} ${esc(q.subject)}</th><td>${esc(q.opened_by)}</td><td>${ago(q.updated_ts)} ago</td></tr>`), 'No open questions.'));
+}
+
+async function refresh() {
+  try {
+    const [c, st, ids, ss, qs, log] = await Promise.all(['core', 'status', 'identity_list', 'session_list', 'open_questions'].map(op => api(op)).concat(api('log_tail', { lines:60 })));
+    renderCore(c); renderStatus(st); renderAgents(ids.identities); renderSessions(ss.sessions); renderQuestions(qs.open_questions);
+    const text = log.lines.join('\n'); if ($('log').textContent !== text) { const end = $('log').scrollTop + $('log').clientHeight >= $('log').scrollHeight - 4; $('log').textContent = text; if (end) $('log').scrollTop = $('log').scrollHeight; }
+  } catch (e) { if (e.message !== '401') say('The core did not answer; retrying.'); }
+}
+
+$('agents').addEventListener('click', e => {
+  const b = e.target.closest('button[data-op]'); if (!b) return;
+  const { op, name } = b.dataset, verb = op.slice(9);
+  const run = () => act(op, { name }, r => verb === 'forget' ? `Forgot ${name}.` : `${name}: ${r.state}.`);
+  if (verb === 'forget') confirmThen(`Forget ${name}? This stops it and deletes its identity; the Claude conversation is kept.`, run); else run();
+});
+$('create').addEventListener('submit', e => {
+  e.preventDefault(); const f = e.target;
+  act('identity_create', { name:f.name.value.trim(), folder:f.folder.value.trim(), charter:f.charter.value.trim() || null, host:f.host.value.trim() || null, autostart:f.autostart.checked },
+      r => { f.reset(); return `Created ${r.name}; press Start to run it.`; });
+});
+$('toggle').onclick = () => act('worker', {}, r => r.stop_requested ? 'Asked the worker to stop after its current item.' : r.started ? 'Worker started.' : 'Worker is already starting.');
+$('check').onclick = () => { say('Checking for updates...'); act('update', {}, r => !r.installed ? `Dev build ${r.current}: not installed, so it does not update.` : r.pending ? `${r.pending} is ready (running ${r.current}).` : `Up to date: ${r.current}.`); };
+$('apply').onclick = () => confirmThen('Restart the core into the update? Every agent\'s connection drops and reconnects.', () => act('update', { apply:true }, r => r.restarting ? `Restarting into ${r.pending}; this page comes back when the core does.` : 'No update ready.'));
+refresh(); setInterval(refresh, 5000);
+</script>
+</body>
+</html>

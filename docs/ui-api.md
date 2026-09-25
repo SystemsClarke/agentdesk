@@ -40,6 +40,9 @@ Every reply is a JSON document. A failure is `{"error": "..."}` (bad or missing 
 | `ui:identity_forget` | `name` | Stops it and deletes the row. The Claude conversation itself is left alone. | `{"forgotten": "..."}` |
 | `ui:adoptable` | none | Claude Code conversations under `~/.claude/projects/*/*.jsonl` (`AGENTDESK_CLAUDE_PROJECTS` overrides the root) written in the last 24 h that someone typed in, newest first. `first_message` has tags such as `<system-reminder>` removed and is cut to 80 characters. | `{"sessions": [{"session_id", "folder", "last_activity", "first_message"}]}` |
 | `ui:adopt` | `session_id`, `name` | Creates an identity in the conversation's own folder (its transcript's `cwd`) with that `claude_session_id`, and starts it. A conversation still open in the Claude desktop app is then written by two processes; `note` says to close it there. | the row, plus `note` |
+| `ui:log_tail` | `lines?` (default 100, at most 1000) | The last lines of `core.log`, read from its last 256 KB. | `{"lines": [...]}` |
+| `ui:web_url` | none | The ops console's URL with its key (below), or `null` if it did not start. | `{"url": "http://127.0.0.1:<port>/?k=<key>"}` |
+| `ui:update` | `apply?` | Checks GitHub Releases now and downloads a newer release (Velopack never offers an older one). With `apply` and an update ready, it replies, then restarts the core into it with `--background`; the window and relays reconnect by themselves. Every request is logged with its source (the pipe caller's pid and author, or `web`). A dev build (not installed) only reports that. `agentdesk update [--apply]` sends it; `--apply` then waits for the new core and prints its versions. Untested live: CI has no installed build. | `{"installed", "current", "latest", "pending", "downloaded", "restarting"}` |
 
 The agents' tools (`list_threads`, `open_questions`, `recent_messages`, `search_messages`, ...) are
 callable too, with the same names and arguments as the MCP server; the list reads are side-effect free.
@@ -78,3 +81,20 @@ identity per 2 minutes; a handoff inside that window just ends the turn.
 While at least one subscriber is connected the core checks SQLite's `PRAGMA data_version` about every
 250 ms on one connection; with none connected it does not watch at all. Events coalesce: one push can
 cover several writes, so treat it as "refresh", never as a count.
+
+## The ops console
+
+The core also serves one web page, for the same work from a browser (or a narrow window): core version, pid, uptime and
+update (Check for updates, Restart to update); agents with Start, Stop, Forget and New agent; sessions; SlackNet and
+the worker, with its start/stop toggle (`ui:worker`); the usage meter; the merge list; open questions; and the core log.
+The tray's **Open ops console** opens it.
+
+![The ops console, sample data](ops-console.png)
+
+- It listens on `http://127.0.0.1:<port>` only: the port in `web.port` in the data folder while it is free, else any
+  free one. There is no other listener.
+- Every request needs the key in `web.key` (32 random bytes, made once, so a bookmark keeps working). `/?k=<key>` sets
+  an HttpOnly SameSite=Strict cookie and redirects the key out of the address bar; anything else without the cookie is 401.
+- A Host header other than `127.0.0.1:<port>`, or a foreign `Origin`, is 400 (DNS rebinding, cross-site posts). No CORS.
+- `POST /api/<op>` with a JSON body runs `core`, `status`, `open_questions`, `session_list`, `log_tail`, `worker`,
+  `update`, and `identity_list|create|start|stop|forget`, through the same objects as the requests above.
