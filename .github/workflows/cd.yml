@@ -1,11 +1,6 @@
-# Every merge to main becomes a signed GitHub Release. Installed copies check the releases every four hours
+# Every merge to main becomes a GitHub Release. Installed copies check the releases every four hours
 # (Setup.KeepUpdated) and offer "Restart to update" in the tray, so nobody installs anything by hand.
-#
-# Signing uses the AgentDesk cert IT allow-listed (thumbprint AE6661701A6D11E50423B66216D26410489953BD).
-# John adds it once as two repository secrets:
-#   AGENTDESK_SIGN_PFX       the exported .pfx, base64-encoded
-#   AGENTDESK_SIGN_PASSWORD  its export password
-# Without them this workflow fails rather than publish an unsigned build that Comodo would quarantine.
+# Public releases are unsigned: build.ps1 signs only where the AgentDesk dev cert is in the cert store.
 name: cd
 on:
   push:
@@ -30,20 +25,11 @@ jobs:
         with:
           dotnet-version: 10.0.x
 
-      - name: Signing cert
-        shell: pwsh
-        env:
-          PFX: ${{ secrets.AGENTDESK_SIGN_PFX }}
-        run: |
-          if (-not $env:PFX) { throw 'The AGENTDESK_SIGN_PFX secret is not set; see the header of cd.yml.' }
-          $path = Join-Path $env:RUNNER_TEMP 'agentdesk.pfx'
-          [IO.File]::WriteAllBytes($path, [Convert]::FromBase64String($env:PFX))
-          "AGENTDESK_SIGN_PFX=$path" >> $env:GITHUB_ENV
-          "VERSION=0.1.$(git rev-list --count HEAD)" >> $env:GITHUB_ENV
-
       - name: Build and test
         shell: pwsh
-        run: ./build.ps1 -Test
+        run: |
+          ./build.ps1 -Test
+          "VERSION=0.1.$(git rev-list --count HEAD)" >> $env:GITHUB_ENV
 
       - name: Previous release (for the delta package)
         shell: pwsh
@@ -52,10 +38,8 @@ jobs:
           dotnet tool restore
           dotnet vpk download github --repoUrl https://github.com/${{ github.repository }} --outputDir releases
 
-      - name: Package and sign
+      - name: Package
         shell: pwsh
-        env:
-          AGENTDESK_SIGN_PASSWORD: ${{ secrets.AGENTDESK_SIGN_PASSWORD }}
         run: ./build.ps1 -Package
 
       - name: Publish the release
@@ -64,8 +48,3 @@ jobs:
           dotnet vpk upload github --repoUrl https://github.com/${{ github.repository }}
           --token ${{ secrets.GITHUB_TOKEN }} --outputDir releases --publish
           --releaseName "AgentDesk ${{ env.VERSION }}" --tag "v${{ env.VERSION }}"
-
-      - name: Remove the cert
-        if: always()
-        shell: pwsh
-        run: Remove-Item (Join-Path $env:RUNNER_TEMP 'agentdesk.pfx') -ErrorAction Ignore
