@@ -39,16 +39,18 @@
                AutomationProperties.LiveSetting="Polite" AutomationProperties.Name="Status" />
     <StackPanel x:Name="Input" DockPanel.Dock="Bottom" Margin="0,4,0,0">
       <DockPanel x:Name="SubjectRow" Margin="0,0,0,6">
-        <TextBlock Style="{StaticResource Prompt}" Text="subj>" Margin="10,0,6,0" VerticalAlignment="Center" />
+        <TextBlock x:Name="SubjectLabel" Style="{StaticResource Prompt}" Text="subj>" Margin="10,0,6,0" VerticalAlignment="Center" />
         <TextBox x:Name="Subject" AutomationProperties.Name="Subject" />
       </DockPanel>
-      <TextBlock Margin="10,0,10,6" Foreground="{DynamicResource fa}"
-                 Text="Ctrl+Enter sends  ·  Ctrl+D dictates: local speech-to-text that runs on this PC (nothing leaves the machine; the first use downloads the model once)" />
-      <DockPanel Margin="0,0,0,6">
-        <TextBlock Style="{StaticResource Prompt}" Text="john>" VerticalAlignment="Top" />
-        <TextBox x:Name="Reply" AcceptsReturn="True" TextWrapping="Wrap" MinLines="3" MaxLines="3" AutomationProperties.Name="Reply as john"
-                 AutomationProperties.HelpText="Ctrl+Enter sends. Escape goes back. Page Up and Page Down scroll the message." />
-      </DockPanel>
+      <StackPanel x:Name="ReplyRows">
+        <TextBlock Margin="10,0,10,6" Foreground="{DynamicResource fa}"
+                   Text="Ctrl+Enter sends  ·  Ctrl+D dictates: local speech-to-text that runs on this PC (nothing leaves the machine; the first use downloads the model once)" />
+        <DockPanel Margin="0,0,0,6">
+          <TextBlock Style="{StaticResource Prompt}" Text="john>" VerticalAlignment="Top" />
+          <TextBox x:Name="Reply" AcceptsReturn="True" TextWrapping="Wrap" MinLines="3" MaxLines="3" AutomationProperties.Name="Reply as john"
+                   AutomationProperties.HelpText="Ctrl+Enter sends. Escape goes back. Page Up and Page Down scroll the message." />
+        </DockPanel>
+      </StackPanel>
     </StackPanel>
     <RichTextBox x:Name="Body" IsReadOnly="True" IsDocumentEnabled="True" IsReadOnlyCaretVisible="False" BorderThickness="0" Padding="0"
                  Background="{DynamicResource bg}" Foreground="{DynamicResource fg}" SelectionBrush="{DynamicResource textsel}"

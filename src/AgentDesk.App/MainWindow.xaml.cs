@@ -5,6 +5,7 @@ using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Windows;
+using System.Windows.Automation;
 using System.Windows.Automation.Peers;
 using System.Windows.Documents;
 using System.Windows.Input;
@@ -88,14 +89,15 @@ public partial class MainWindow : Window
             return;
         clickMap.Clear();
         scrollToEnd = false;
-        var reading = screen is "read" or "compose";
+        var reading = screen is "read" or "compose" or "ask";
         var width = reading ? double.NaN : 10_000;
         if (!Doc.PageWidth.Equals(width)) // setting it, even to the same value, re-lays out the whole document: a flicker
             Doc.PageWidth = width;
         var body = screen switch
         {
             "main" => MainScreen(cols), "list" => ChannelList(cols), "prs" => PrsScreen(cols), "sysop" => SysopScreen(cols),
-            "who" => WhoScreen(cols), "options" => OptionsScreen(cols), "compose" => Compose(cols), _ => Reader(cols),
+            "who" => WhoScreen(cols), "options" => OptionsScreen(cols), "compose" => Compose(cols), "agents" => AgentsScreen(cols),
+            "adopt" => AdoptScreen(cols), "ask" => AskScreen(cols), _ => Reader(cols),
         };
         for (var i = 0; i < body.Count; i++)
         {
@@ -115,7 +117,11 @@ public partial class MainWindow : Window
         PaintLine(TopText, TopLine(cols));
         PaintLine(BarText, BarLine(cols));
         Input.Visibility = reading ? Visibility.Visible : Visibility.Collapsed;
-        SubjectRow.Visibility = screen == "compose" ? Visibility.Visible : Visibility.Collapsed;
+        SubjectRow.Visibility = screen is "compose" or "ask" ? Visibility.Visible : Visibility.Collapsed;
+        ReplyRows.Visibility = screen == "ask" ? Visibility.Collapsed : Visibility.Visible;
+        var label = screen == "ask" && ask is { } a ? a.Fields[Math.Min(answers.Count, a.Fields.Length - 1)].Label : "subj";
+        SubjectLabel.Text = label + ">";
+        AutomationProperties.SetName(Subject, label == "subj" ? "Subject" : label);
         if (scrollToEnd)
             Body.ScrollToEnd();
         else if (!reading && screen != shownScreen) // only on arriving at a screen: a refresh must not jump the view
@@ -203,7 +209,7 @@ public partial class MainWindow : Window
     void OnClick(object sender, MouseButtonEventArgs e)
     {
         Body.Focus();
-        if (screen is "read" or "compose")
+        if (screen is "read" or "compose" or "ask")
             return;
         e.Handled = true;
         if (Body.GetPositionFromPoint(e.GetPosition(Body), true)?.Paragraph is not { } p || !clickMap.TryGetValue(paras.IndexOf(p), out var i))

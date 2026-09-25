@@ -117,3 +117,17 @@ The tray's **Open ops console** opens it.
 - A Host header other than `127.0.0.1:<port>`, or a foreign `Origin`, is 400 (DNS rebinding, cross-site posts). No CORS.
 - `POST /api/<op>` with a JSON body runs `core`, `status`, `open_questions`, `session_list`, `log_tail`, `worker`,
   `update`, and `identity_list|create|start|stop|forget`, through the same objects as the requests above.
+
+## The window's Agents and Adopt screens
+
+**A** on the main menu opens Agents (`ui:identity_list`): **Enter** opens a console running `agentdesk attach <name>` (from
+beside the window, else the install folder), **S** starts or stops (`ui:identity_start|stop`), **F** forgets after a Y/N
+(`ui:identity_forget`), **N** asks for a name, a folder and an optional charter (`ui:identity_create`). **A** there opens
+Adopt (`ui:adoptable`); **Enter** asks for a name and sends `ui:adopt`, and Agents shows the returned `note`. Options shows
+the ops console's address without its key (`ui:web_url`); **Enter** on it, or **C**, opens it.
+
+![Agents, sample data](ui-agents.png)
+![Adopt, sample data](ui-adopt.png)
+
+A core with `AGENTDESK_DATA` set, or `AGENTDESK_NO_TRAY=1`, shows no tray icon and no toasts, so temp and test cores stay
+off the taskbar.
