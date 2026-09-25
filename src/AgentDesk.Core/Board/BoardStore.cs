@@ -80,6 +80,8 @@ public sealed partial class BoardDb : IDisposable
             change TEXT NOT NULL, owner TEXT, started_ts TEXT NOT NULL, measured_ts TEXT, value REAL, verdict TEXT, UNIQUE (goal, n));
         CREATE TABLE IF NOT EXISTS goal_members (identity TEXT PRIMARY KEY COLLATE NOCASE, goal TEXT NOT NULL COLLATE NOCASE, task TEXT NOT NULL,
             created_ts TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS slots (n INTEGER PRIMARY KEY CHECK (n BETWEEN 1 AND 10), channel_id TEXT, channel_name TEXT,
+            persona_name TEXT, persona_icon TEXT, goal TEXT COLLATE NOCASE, updated_ts TEXT NOT NULL);
         """;
 
     const string InsertMessage = "INSERT INTO messages (ts, thread_id, author, author_kind, body, reply_to, meta) VALUES ($ts,$tid,$author,$kind,$body,$replyTo,$meta)";
