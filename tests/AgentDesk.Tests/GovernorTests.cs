@@ -117,8 +117,19 @@ public sealed class GovernorTests(ITestOutputHelper output)
         Assert.Equal(60, g.GetProperty("remaining").GetDouble());
         Assert.InRange(g.GetProperty("reset_in_hours").GetDouble(), 71.9, 72);
         Assert.Equal(1, g.GetProperty("caps").GetProperty("running").GetInt32());
+        Assert.Equal(40, g.GetProperty("series")[0].GetDouble());
         foreach (var key in new[] { "baseline", "spendable", "projected_end_pct", "reason" }) Assert.True(g.TryGetProperty(key, out _), key);
         Assert.StartsWith("governor: ", Status(await board.Heartbeats(data)));
+    }
+
+    [Fact]
+    public void The_series_is_the_last_reading_of_each_hour_over_7_days()
+    {
+        List<UsageSample> samples = [.. Enumerable.Range(0, 8 * 24 * 12).Select(i => new UsageSample(Mon.AddMinutes(5 * i), i / 12 % 100, null, null, null, 0))];
+        var series = Governor.Series(samples, Mon.AddDays(8)).Select(v => v!.GetValue<double>()).ToList();
+        Assert.Equal(7 * 24, series.Count);
+        Assert.Equal(24, series[0]); // hour 24: the first day is older than 7 days
+        Assert.Equal(91, series[^1]); // hour 191, wrapped at 100
     }
 
     static string Status(string heartbeats) => JsonDocument.Parse(heartbeats).RootElement.GetProperty("governor").GetProperty("summary").GetString()!;

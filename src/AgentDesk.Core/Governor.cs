@@ -206,11 +206,16 @@ public static class Governor
                 ["running"] = a.Running, ["new_sessions"] = a.NewSessions },
             ["models"] = new JsonObject { ["step_down"] = a.StepDown, ["lead"] = a.LeadModel, ["member"] = a.MemberModel },
             ["reason"] = a.Reason,
+            ["series"] = Series(samples, now),
             ["summary"] = $"governor: {a.Spendable:0.#}% spendable of {a.Remaining:0.#}% left, resets in {Usage.Span(a.ResetInHours * 3600)}"
                 + $" · up to {a.TotalSessions} sessions ({a.Swarms} swarm{(a.Swarms == 1 ? "" : "s")} x {a.MembersPerSwarm} members), {a.NewSessions} new"
                 + $" · members {a.MemberModel}{(a.StepDown ? " (step down)" : "")}" + (a.FiveHourPct >= 90 ? " · 5h guard" : ""),
         };
     }
+
+    /// <summary>ui:governor's "series", for the window's budget chart: weekly % over the last 7 days, the last reading of each hour, oldest first.</summary>
+    public static JsonArray Series(IEnumerable<UsageSample> samples, DateTimeOffset now) =>
+        [.. samples.Where(x => x.Ts > now.AddDays(-7)).GroupBy(x => x.Ts.ToUnixTimeSeconds() / 3600).Select(h => (JsonNode?)Math.Round(h.Last().WeeklyPct, 2))];
 
     public static Task<string> Ui(BoardStore store, string data)
     {

@@ -26,12 +26,32 @@ public sealed record Identity(string Name, string State, int Generation, string 
 /// <summary>A Claude Code conversation from the last 24 h that someone typed in (ui:adoptable): it can become an identity.</summary>
 public sealed record Adoptable(string SessionId, string Folder, DateTimeOffset LastActivity, string FirstMessage);
 
+/// <summary>A goal as ui:goal_list gives it: LastValue is the newest measured value, Success the line it has to cross.</summary>
+public sealed record GoalRow(string Name, string State, string Objective, string Lead, string? Success, int Experiments, double? LastValue,
+    int Members, int MaxMembers, bool Standing = false, int? ThreadId = null);
+
+/// <summary>One experiment in a goal's log (ui:goal_status): Value and Verdict are null until it is measured.</summary>
+public sealed record Experiment(int N, string Change, string? Owner, double? Value, string? Verdict);
+
+/// <summary>ui:goal_status: the row plus its hypothesis, measure and budget, the log, the measured history and the summary agents get.</summary>
+public sealed record GoalDetail(GoalRow Row, string? Hypothesis, string? Measure, double MaxHours, double CadenceMinutes, DateTimeOffset? Started,
+    IReadOnlyList<Experiment> Experiments, IReadOnlyList<double> History, IReadOnlyList<SwarmMember> Members, string Summary);
+
+/// <summary>A swarm slot (ui:slot_list): one of the 10 Slack channels, and the goal in it, if any.</summary>
+public sealed record Slot(int N, string? Goal, string? Channel, string? Persona);
+
+/// <summary>The usage governor (ui:governor): Remaining is the week's % left, the caps are today's allowance, Series the week's
+/// weekly % by hour. Mode is "advisory" or "enforcing", or null when the core does not say.</summary>
+public sealed record Budget(int Samples, double Remaining, double ResetInHours, double ProjectedEnd, int Sessions, int Swarms, int Members,
+    string Reason, string Summary, IReadOnlyList<double> Series, string? Mode);
+
 /// <summary>Everything the main menu, SysOp, Who's On and Options screens show besides the channel lists.</summary>
 public sealed record BoardStatus(
     IReadOnlyList<PrRow> Prs, IReadOnlyList<Post> Recent, IReadOnlyList<Post> Callers, IReadOnlyDictionary<string, int> Bios,
     Post? JohnLast, int SincePosts, ThreadRow? LastFiled, bool ConciergeOn, int? HeldId, IReadOnlyList<SwarmMember> Swarm,
     DateTimeOffset? SlackTs, int SlackPollS, Post? SlackRelay, IReadOnlyList<string> DisabledSinks,
-    IReadOnlyList<string> UsageLines, string UsageSummary, int LiveSessions = 0, int MaxSessions = 3);
+    IReadOnlyList<string> UsageLines, string UsageSummary, int LiveSessions = 0, int MaxSessions = 3, Budget? Budget = null,
+    IReadOnlyList<GoalRow>? Goals = null);
 
 /// <summary>What the window needs from the board. CoreBoard will map these onto list_threads, ui:thread, open_questions,
 /// ui:reply, ui:close and raise Changed on each board.changed pushed over ui:subscribe.</summary>
@@ -48,6 +68,8 @@ public interface IBoard
     Task<BoardStatus> StatusAsync();
     Task<IReadOnlyList<Identity>> IdentitiesAsync();
     Task<IReadOnlyList<Adoptable>> AdoptableAsync();
+    Task<IReadOnlyList<Slot>> SlotsAsync();
+    Task<GoalDetail?> GoalAsync(string name);
     /// <summary>The ops console's URL with its key, or null if it did not start.</summary>
     Task<string?> WebUrlAsync();
     /// <summary>One of John's actions the core carries out (ui:check_prs, ...); returns its "said" line (ui:adopt's "note") for the flash, if any.</summary>
@@ -237,11 +259,76 @@ public sealed class SampleBoard : IBoard
             held is null ? [] : [new("concierge-w50", "Who's On renders from the shared list screen", held.Id), new("concierge-w50-b", "check the Tk parity notes")],
             DateTimeOffset.Now.AddSeconds(-20), 15, new Post(John, now.AddMinutes(-4), 38, "", "question"), [],
             ["time left: 2h 14m in your 5-hour window, 38% used", "time left: 1d 6h on the week, 82% used, getting close"],
-            "5h 38%, resets in 2h 14m · week 82%, resets in 1d 6h · reported 1m ago", 3, 3));
+            "5h 38%, resets in 2h 14m · week 82%, resets in 1d 6h · reported 1m ago", 3, 3,
+            new(1386, 18, 30, 97.4, 5, 2, 2, "14.2% spendable over 1d 6h: 0.47%/h funds 5 sessions at 1.2%/session-hour",
+                "governor: 14.2% spendable of 18% left, resets in 1d 6h · up to 5 sessions (2 swarms x 2 members), 2 new · members sonnet",
+                WeekSeries(), "advisory"),
+            goals));
+    }
+
+    /// <summary>The week's % by hour: John's days climb, nights are flat, and the reset 138 h ago drops it to zero.</summary>
+    static List<double> WeekSeries()
+    {
+        var (o, v) = (new List<double>(), 71.0);
+        for (var i = 0; i < 168; i++)
+        {
+            v = i == 29 ? 0 : v + ((i + 14) % 24 < 15 ? 0.88 : 0.12);
+            o.Add(Math.Round(Math.Min(v, 100), 1));
+        }
+        return o;
+    }
+
+    readonly List<GoalRow> goals =
+    [
+        new("build-speed", "running", "Get the JAWS compile under 25 minutes", "build-speed-lead", "value < 25", 8, 29.4, 2, 3),
+        new("concierge", "running", "Keep Work to Hire drained", "concierge-lead", "value <= 0", 14, 1, 2, 3, true),
+        new("flaky-tests", "draft", "Find and fix the flakiest ZoomText UI tests", "flaky-tests-lead", "value <= 2", 0, null, 0, 3),
+        new("docs-links", "succeeded", "No dead links in the AgentDesk docs", "docs-links-lead", "pass", 3, 1, 0, 2),
+        new("installer-size", "exhausted", "Shrink the Fusion installer below 180 MB", "installer-size-lead", "value < 180", 9, 196, 0, 3),
+    ];
+
+    public Task<IReadOnlyList<Slot>> SlotsAsync() => Task.FromResult<IReadOnlyList<Slot>>(
+    [
+        new(1, "build-speed", "swarm-build-speed", "Pit Crew"), new(2, "flaky-tests", "swarm-flaky-tests", "Exterminator"),
+        new(3, "docs-links", "swarm-docs-links", "Librarian"), .. Enumerable.Range(4, 7).Select(n => new Slot(n, null, n < 6 ? $"swarm-{n}" : null, null)),
+    ]);
+
+    public Task<GoalDetail?> GoalAsync(string name)
+    {
+        if (goals.Find(g => g.Name == name) is not { } g)
+            return Task.FromResult<GoalDetail?>(null);
+        if (name != "build-speed")
+            return Task.FromResult<GoalDetail?>(new(g, g.State == "draft" ? null : $"{g.Objective}, one small measured change at a time.",
+                g.Standing ? "internal:open_work" : null, 24, g.Standing ? 10 : 30, now.AddHours(-30), [], [],
+                g.Standing ? [new("concierge-w50", "Who's On renders from the shared list screen", 44), new("concierge-w50-b", "check the Tk parity notes")] : [],
+                $"Goal {g.Name} ({g.State}): {g.Objective}"));
+        List<Experiment> log =
+        [
+            new(1, "baseline: no changes", "build-speed-lead", 41, "no gain"),
+            new(2, "restore NuGet from the local feed", "build-speed-nuget", 38.2, "improved"),
+            new(3, "parallel project builds (-m:8)", "build-speed-lead", 38.5, "no gain"),
+            new(4, "shared obj cache on build-07", "build-speed-cache", 33.1, "improved"),
+            new(5, "skip the PDB copy in Release", "build-speed-lead", 31, "improved"),
+            new(6, "warm the cache before the nightly", "build-speed-cache", 29.9, "improved"),
+            new(7, "precompiled headers for the scripting engine", "build-speed-lead", 29.4, "improved"),
+            new(8, "move TEMP to D:", "build-speed-nuget", null, null),
+        ];
+        return Task.FromResult<GoalDetail?>(new(g, "Caching the NuGet restore and the obj folders on the build agents cuts the JAWS compile below 25 minutes.",
+            @"pwsh -File scripts\measure-compile.ps1 -Product JAWS", 24, 30, now.AddHours(-5.2), log, [.. log.Where(e => e.Value is not null).Select(e => e.Value!.Value)],
+            [new("build-speed-cache", "try the shared obj cache on build-08 too"), new("build-speed-nuget", "move TEMP to D: and measure")],
+            """
+            Goal build-speed (running): Get the JAWS compile under 25 minutes.
+            Measure: pwsh -File scripts\measure-compile.ps1 -Product JAWS, done when value < 25. Last 29.4 (experiment 7, improved).
+            Budget: 2 of 3 members, 5h 12m of 24h spent, a wake every 30 min.
+            Next: experiment 8 (move TEMP to D:) is running under build-speed-nuget.
+            """));
     }
 
     public Task<IReadOnlyList<Identity>> IdentitiesAsync() => Task.FromResult<IReadOnlyList<Identity>>(
     [
+        new("build-speed-lead", "running", 2, "windows", @"C:\Users\palencharj\NoOneDrive\FastBuild", "opus"),
+        new("concierge-lead", "running", 4, "windows", @"C:\Users\palencharj\NoOneDrive\AgentDesk", "sonnet"),
+        new("flaky-tests-lead", "running", 1, "windows", @"C:\Users\palencharj\NoOneDrive\ZoomText", "opus"),
         new("app-dev", "running", 3, "windows", @"C:\Users\palencharj\NoOneDrive\AgentDesk", "sonnet"),
         new("board-responder", "stopped", 12, "windows", @"C:\Users\palencharj\NoOneDrive\AgentDesk", "haiku"),
         new("builder", "running", 1, "windows", @"C:\Users\palencharj\NoOneDrive\gocd-agent-docker"),

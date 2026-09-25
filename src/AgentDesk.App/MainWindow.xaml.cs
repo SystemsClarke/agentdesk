@@ -97,7 +97,7 @@ public partial class MainWindow : Window
         {
             "main" => MainScreen(cols), "list" => ChannelList(cols), "prs" => PrsScreen(cols), "sysop" => SysopScreen(cols),
             "who" => WhoScreen(cols), "options" => OptionsScreen(cols), "compose" => Compose(cols), "agents" => AgentsScreen(cols),
-            "adopt" => AdoptScreen(cols), "ask" => AskScreen(cols), _ => Reader(cols),
+            "adopt" => AdoptScreen(cols), "ask" => AskScreen(cols), "goals" => GoalsScreen(cols), "goal" => GoalScreen(cols), _ => Reader(cols),
         };
         for (var i = 0; i < body.Count; i++)
         {
