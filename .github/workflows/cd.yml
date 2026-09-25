@@ -1,4 +1,4 @@
-# Every merge to main becomes a GitHub Release. Installed copies check the releases every four hours
+# Every merge to main becomes a GitHub Release. Installed copies check the releases every 30 minutes
 # (Setup.KeepUpdated) and offer "Restart to update" in the tray, so nobody installs anything by hand.
 # Public releases are unsigned: build.ps1 signs only where the AgentDesk dev cert is in the cert store.
 name: cd

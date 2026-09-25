@@ -30,14 +30,14 @@ static class Setup
         .OnBeforeUninstallFastCallback(_ => Register(false))
         .Run();
 
-    /// <summary>Downloads new GitHub releases now and every four hours, and hands <paramref name="ready"/> the restart that
+    /// <summary>Downloads new GitHub releases now and every 30 minutes (2 of GitHub's 60 unauthenticated calls an hour), and hands <paramref name="ready"/> the restart that
     /// applies one. Only John runs it (the tray's Restart to update): a restart drops every agent's pipe to the core.</summary>
     public static async Task KeepUpdated(Action<Action> ready)
     {
         var updates = new UpdateManager(new GithubSource(Repo, Environment.GetEnvironmentVariable("AGENTDESK_GITHUB_TOKEN"), false));
         if (!updates.IsInstalled) return; // a dev build
         if (updates.UpdatePendingRestart is { } pending) ready(() => updates.ApplyUpdatesAndRestart(pending));
-        using var timer = new PeriodicTimer(TimeSpan.FromHours(4));
+        using var timer = new PeriodicTimer(TimeSpan.FromMinutes(30));
         do
             try
             {
