@@ -17,7 +17,8 @@ using var core = await CoreConnection.Connect(new Caller(
     Environment.GetEnvironmentVariable("AGENTDESK_AUTHOR"),
     Environment.CurrentDirectory,
     Environment.GetEnvironmentVariable("CLAUDECODE") is null ? null : "claude-code",
-    Environment.ProcessId));
+    Environment.ProcessId,
+    Environment.GetEnvironmentVariable("AGENTDESK_IDENTITY")));
 switch (args)
 {
     case ["hook", var hookEvent]:

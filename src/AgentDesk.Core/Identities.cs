@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
@@ -9,10 +10,20 @@ namespace AgentDesk.Core;
 /// <summary>
 /// Agents that outlive the core: an identity is a name, a folder, a charter and one Claude Code conversation, kept in the
 /// board's identities table. Running, it is the headless session of the same name (agentdesk attach &lt;name&gt;). At most
-/// max_sessions run at once and the rest queue; when the core starts it resumes the ones that were running.
+/// max_sessions run at once and the rest queue; when the core starts it resumes the ones that were running. When its session
+/// hands off (pass_the_torch), the end of that turn restarts it: a fresh conversation, the next generation, started from the handoff.
 /// </summary>
 public sealed partial class Identities
 {
+    /// <summary>Prepended to every identity's system prompt; {0} is its name.</summary>
+    const string Chain = """
+        You are one generation of {0}, a long-lived AgentDesk agent. The identity {0} continues past this session.
+        Your successor starts automatically from your handoff, and nothing you did not write down reaches it.
+        When you get the 60% context warning (PHOENIX), finish the step you are on and call pass_the_torch
+        with a standalone handoff: what you own, what is mid-flight, and what is next.
+        Then stop. The system ends this session and starts your successor from that handoff.
+        """;
+    static readonly TimeSpan Cooldown = TimeSpan.FromMinutes(2), Settle = TimeSpan.FromSeconds(1);
     readonly BoardStore store;
     readonly Sessions sessions;
     readonly string data, claude;
@@ -148,6 +159,71 @@ public sealed partial class Identities
         return row.ToJsonString(Wire.Indented);
     }
 
+    /// <summary>pass_the_torch from an identity's own session (its AGENTDESK_IDENTITY and claude session id): marks it
+    /// phoenix-pending with the handoff message, so the end of this turn restarts it (<see cref="AfterTurn"/>).</summary>
+    public async Task<string> Torch(Caller caller, Task<string> call)
+    {
+        var result = await call;
+        if (caller is not { Identity: { } name, SessionId: { } sid } || JsonNode.Parse(result) is not { } r || r["bio_thread_id"] is null) return result;
+        lock (gate)
+        {
+            using var db = store.Open();
+            db.Exec("UPDATE identities SET phoenix_msg=(SELECT MAX(id) FROM messages WHERE thread_id=$t AND author=$a) WHERE name=$n AND claude_session_id=$s AND state='running'",
+                ("t", (long)r["bio_thread_id"]!), ("a", r["name"]!.ToString()), ("n", name), ("s", sid));
+        }
+        return result;
+    }
+
+    /// <summary>The Stop hook. Once the turn really ends (the hook did not block it), a session that handed off is restarted,
+    /// after the hook has answered.</summary>
+    public async Task<string> AfterTurn(JsonElement input, Task<string> hook)
+    {
+        var result = await hook;
+        if (!result.Contains("\"block\"") && input.TryGetProperty("session_id", out var s) && s.GetString() is { Length: > 0 } sid)
+            _ = Task.Run(() => Phoenix(sid)).ContinueWith(t => Log.Warn($"phoenix for session {sid} failed: {t.Exception?.InnerException?.Message}"), TaskContinuationOptions.OnlyOnFaulted);
+        return result;
+    }
+
+    /// <summary>Records the generation in phoenix_chain, ends the session, and launches its successor in the same slot:
+    /// a new conversation whose first prompt is the handoff. At most one per identity per <see cref="Cooldown"/>.</summary>
+    async Task Phoenix(string sid)
+    {
+        string name, handoff;
+        long gen, msg;
+        lock (gate)
+        {
+            using var db = store.Open();
+            if (db.Rows("SELECT i.name, i.generation, i.phoenix_msg, m.body FROM identities i JOIN messages m ON m.id=i.phoenix_msg WHERE i.claude_session_id=$s AND i.state='running'",
+                    ("s", sid)) is not [var row]) return;
+            (name, gen, msg, handoff) = (row["name"]!.ToString(), (long)row["generation"]!, (long)row["phoenix_msg"]!, row["body"]!.ToString());
+            handoff = handoff[(handoff.IndexOf("\n\n") + 2)..]; // after pass_the_torch's "**Handoff recorded** (ts)." line
+            db.Exec("UPDATE identities SET phoenix_msg=NULL WHERE name=$n", ("n", name));
+            var now = DateTimeOffset.Parse(db.NowIso(), CultureInfo.InvariantCulture);
+            if (db.Scalar("SELECT MAX(ts) FROM phoenix_chain WHERE identity=$n", ("n", name)) is string last && now - DateTimeOffset.Parse(last, CultureInfo.InvariantCulture) < Cooldown)
+            {
+                Log.Warn($"identity {name} handed off again within {Cooldown.TotalMinutes} minutes of its last restart: not restarting it");
+                return;
+            }
+            db.Exec("INSERT INTO phoenix_chain (identity, generation, claude_session_id, handoff_msg, ts) VALUES ($n,$g,$s,$m,$ts)",
+                ("n", name), ("g", gen), ("s", sid), ("m", msg), ("ts", db.NowIso()));
+            // Still running but with no pid: its end frees no slot, so nothing queued takes the one its successor fills.
+            db.Exec("UPDATE identities SET pid=NULL, claude_session_id=NULL, generation=$g, updated_ts=$ts WHERE name=$n",
+                ("g", gen + 1), ("ts", db.NowIso()), ("n", name));
+        }
+        await Task.Delay(Settle); // the hook's answer reaches claude before claude goes
+        try { await sessions.Stop(name, restart: true); }
+        catch (ArgumentException) { } // it had just ended
+        lock (gate)
+        {
+            using var db = store.Open();
+            if (Get(db, name) is not { } row || row["state"]?.ToString() != "running") return; // stopped or forgotten meanwhile
+            try { Launch(db, row, $"You are {name}, generation {gen + 1}. Your previous generation handed off with:\n\n{handoff}"); }
+            catch (ArgumentException e) { Log.Warn($"identity {name} did not restart: {e.Message}"); Mark(db, name, "stopped"); Drain(db); return; }
+            db.Reply((long)db.Scalar("SELECT thread_id FROM messages WHERE id=$m", ("m", msg))!, name, BoardDb.Agent,
+                $"generation {gen + 1} started from handoff #{msg}", msg, new JsonObject { ["kind"] = "phoenix" });
+        }
+    }
+
     /// <summary>Launches queued identities, oldest first, while there are free slots. Returns the ones that failed, which are stopped.</summary>
     Dictionary<string, string> Drain(BoardDb db)
     {
@@ -163,16 +239,18 @@ public sealed partial class Identities
         return failed;
     }
 
-    /// <summary>claude --resume its conversation when there is one to resume, else --session-id a new (or never-used) id, plus the charter.</summary>
-    void Launch(BoardDb db, JsonObject row)
+    /// <summary>claude --resume its conversation when there is one to resume, else --session-id a new (or never-used) id, plus the
+    /// chain charter and its own; a successor gets a new conversation with <paramref name="prompt"/> as its first message.</summary>
+    void Launch(BoardDb db, JsonObject row, string? prompt = null)
     {
         var (name, folder, host) = (row["name"]!.ToString(), row["folder"]!.ToString(), row["host"]!.ToString());
         var wsl = host.StartsWith("wsl:");
+        Func<string, string> quote = wsl ? Sh : Win;
         var id = row["claude_session_id"]?.ToString();
-        var resume = id is not null && (wsl || Transcript(id) is not null); // claude writes no transcript until the first message
+        var resume = prompt is null && id is not null && (wsl || Transcript(id) is not null); // claude writes no transcript until the first message
         id ??= Guid.NewGuid().ToString();
-        var args = (resume ? "--resume " : "--session-id ") + id;
-        if (row["charter"]?.ToString() is { Length: > 0 } charter) args += " --append-system-prompt " + (wsl ? Sh(charter) : Win(charter));
+        var charter = string.Format(Chain, name) + (row["charter"]?.ToString() is { Length: > 0 } own ? "\n\n" + own : "");
+        var args = (resume ? "--resume " : "--session-id ") + id + " --append-system-prompt " + quote(charter) + (prompt is null ? "" : " " + quote(prompt));
         var env = new Dictionary<string, string?> { ["AGENTDESK_IDENTITY"] = name, ["AGENTDESK_AUTHOR"] = name };
         int pid;
         if (wsl)
@@ -219,7 +297,7 @@ public sealed partial class Identities
     static JsonObject Need(BoardDb db, string name) => Get(db, name) ?? throw new ArgumentException($"no such identity: {name}");
 
     static void Mark(BoardDb db, string name, string state) =>
-        db.Exec("UPDATE identities SET state=$s, pid=NULL, updated_ts=$ts WHERE name=$n", ("s", state), ("ts", db.NowIso()), ("n", name));
+        db.Exec("UPDATE identities SET state=$s, pid=NULL, phoenix_msg=NULL, updated_ts=$ts WHERE name=$n", ("s", state), ("ts", db.NowIso()), ("n", name));
 
     /// <summary>One argument, quoted for CreateProcess's parser.</summary>
     static string Win(string s) => s.Length > 0 && !s.Any(c => c is ' ' or '\t' or '\n' or '"')

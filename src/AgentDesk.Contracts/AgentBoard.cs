@@ -12,7 +12,8 @@ public sealed record Caller(
     string? EnvAuthor,   // AGENTDESK_AUTHOR (crew roles stamp this)
     string? Cwd,         // the agent's working directory
     string? Harness,     // e.g. "claude-code"
-    int Pid);            // the shim's own pid: lives exactly as long as the agent session
+    int Pid,             // the shim's own pid: lives exactly as long as the agent session
+    string? Identity = null); // AGENTDESK_IDENTITY: set when the core launched this session for an identity
 
 /// <summary>
 /// The agent-facing board: one method per MCP tool, same names and arguments as
