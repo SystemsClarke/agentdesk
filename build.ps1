@@ -31,16 +31,14 @@ if ($Package) {
 
     # The package id is not "AgentDesk": Velopack installs to, and uninstall deletes, %LOCALAPPDATA%\<id>,
     # and %LOCALAPPDATA%\AgentDesk holds the board. Every commit is a new version, so updates always move forward.
-    # vpk signs every exe with the AgentDesk cert, timestamped: from the cert store on John's machine
-    # (build/agentdesk-cert-thumbprint.txt), or from a .pfx in CI (AGENTDESK_SIGN_PFX, AGENTDESK_SIGN_PASSWORD; see cd.yml).
-    $sign = if ($env:AGENTDESK_SIGN_PFX) { "/f `"$env:AGENTDESK_SIGN_PFX`" /p $env:AGENTDESK_SIGN_PASSWORD" }
-            else { '/sha1 ' + (Get-Content build\agentdesk-cert-thumbprint.txt -Raw).Trim() }
+    # Signed with the AgentDesk dev cert when it is in this machine's cert store (John's), unsigned otherwise (CI's public releases).
+    $thumb = (Get-Content build\agentdesk-cert-thumbprint.txt -Raw).Trim()
+    $sign = if (Test-Path Cert:\CurrentUser\My\$thumb) { @('--signParams', "/sha1 $thumb /fd SHA256 /tr http://timestamp.digicert.com /td SHA256") } else { @() }
     dotnet tool restore | Out-Null
     dotnet vpk pack --packId AgentDeskApp --packTitle AgentDesk --packAuthors 'John Palenchar' `
         --packVersion "0.1.$(git rev-list --count HEAD)" --packDir $stage --mainExe AgentDesk.Core.exe `
         --runtime win-x64 --framework net10.0-x64-desktop --icon agentdesk\assets\agentdesk.ico `
-        --shortcuts StartMenuRoot --outputDir releases `
-        --signParams "$sign /fd SHA256 /tr http://timestamp.digicert.com /td SHA256"
+        --shortcuts StartMenuRoot --outputDir releases @sign
     if ($LASTEXITCODE) { exit $LASTEXITCODE }
     Get-AuthenticodeSignature releases\*Setup.exe | Format-Table Status, @{ n = 'Signer'; e = { $_.SignerCertificate.Subject } }, Path -AutoSize
 }
