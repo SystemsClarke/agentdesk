@@ -27,6 +27,12 @@ Every reply is a JSON document. A failure is `{"error": "..."}` (bad or missing 
 | `ui:check_prs` | none | Runs a merge-list check now instead of at the next minute (prs.py). The core checks every open PR through `gh pr view` 5 s after it starts and every minute after; only GitHub saying merged or closed takes a row off, and posts the notice on its thread as `agentdesk`. A failed check leaves the row open with `last_error`. | `{"ok": true}` |
 | `ui:worker` | none | Ctrl+W. A running crew (`worker.state`'s pid alive) is asked to stop: `worker.stop` is written, and the crew reads it between items, so the item it holds finishes. A stopped one is started as `python -m agentdesk.crew` from the Python repo, any leftover stop flag cleared first. A failure is an error naming it. | `{"ok": true, "stop_requested": true}` or `{"ok": true, "started": true\|false}` |
 | `ui:wake` | `thread_id` | Ctrl+R (wake.py): resumes the asking agent's Claude Code session with John's latest reply, through `sessions.run` (the one engine: a session slot and the chosen backend). Only ever sent on John's keypress, never on a timer, and it posts nothing to the board: it records the carry in `deliveries` (`wake`: `resumed`, `stuck` while the session is still open, `failed` with no claude CLI). | `{"ok": true, "said": "woke builder: ..."}`, the line the window flashes |
+| `ui:session_start` | `name`, `folder`, `command?` | Starts a headless session: `command` (default `claude`, found on PATH) in `folder` on a pseudoconsole with no window, 120x30 until someone attaches. `CLAUDE*`, `AGENTDESK_SESSION` and `AGENTDESK_AUTHOR` are dropped from its environment (the core may have inherited another session's) and `AGENTDESK_HEADLESS=<name>` is set. In memory: sessions end with the core. | `{"name": "...", "pid": N}` |
+| `ui:session_list` | none | The running sessions. | `{"sessions": [{"name", "folder", "command", "pid", "started", "viewers"}]}` |
+| `ui:session_stop` | `name` | Kills the session's process tree and waits for it to exit. | `{"stopped": "..."}` |
+| `ui:attach` | `name`, `cols`, `rows` | Makes this connection a viewer until it closes: pushes the last 256 KB of output first, then everything new, then nudges the size one column and back so the program redraws. The size follows the latest attacher; several may attach. | `{"attached": "...", "replayed": true\|false}` |
+| `ui:input` | `name`, `data` | Types `data` (text, sent as UTF-8) into the session. Send keys one request at a time: a connection's requests run concurrently. | `{"ok": true}` |
+| `ui:resize` | `name`, `cols`, `rows` | Resizes the session's pseudoconsole. | `{"ok": true}` |
 
 The agents' tools (`list_threads`, `open_questions`, `recent_messages`, `search_messages`, ...) are
 callable too, with the same names and arguments as the MCP server; the list reads are side-effect free.
@@ -50,6 +56,8 @@ A response with `Id = 0` is an event, raised as `CoreConnection.Pushed` with its
 | Event | When |
 |---|---|
 | `{"event":"board.changed"}` | Anyone, in any process, committed to the board, or the usage meter refreshed. Re-read what is on screen. |
+| `{"event":"session.output","name":"...","data":"<base64>"}` | To viewers of that session (`ui:attach`): its raw VT output, in order. |
+| `{"event":"session.exited","name":"..."}` | To viewers of that session: its process ended. |
 
 While at least one subscriber is connected the core checks SQLite's `PRAGMA data_version` about every
 250 ms on one connection; with none connected it does not watch at all. Events coalesce: one push can
