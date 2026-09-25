@@ -154,9 +154,17 @@ public static unsafe partial class Tray
 
 static partial class Tray // safe, so it can await
 {
+    /// <summary>"#&lt;id&gt; &lt;subject&gt;: &lt;first line&gt;" for an agent's follow-up on a question John answered.</summary>
+    public static string FollowUpText(JsonObject f)
+    {
+        var first = ((string?)f["body"] ?? "").Split('\n').Select(l => l.Trim()).FirstOrDefault(l => l.Length > 0) ?? "";
+        return $"#{f["thread_id"]} {f["subject"]}: {first}";
+    }
+
     static async Task Watch(BoardStore store)
     {
         HashSet<long>? seen = null; // questions open at start are not news (the Python rule)
+        long followed = -1; // the newest message looked at for follow-ups; nothing before the core started is news
         var reminded = DateTime.UtcNow;
         using var timer = new PeriodicTimer(Poll);
         do
@@ -164,12 +172,17 @@ static partial class Tray // safe, so it can await
             {
                 if (seen is null) store.Init(); // a fresh board has no open_questions view yet
                 using var db = store.Open();
+                var top = db.MaxMessageId();
+                var follows = followed < 0 ? [] : db.FollowUps(followed, top);
+                followed = top;
                 var open = db.OpenQuestions(false); // newest first
                 var ids = open.Select(q => (long)q["thread_id"]!).ToHashSet();
                 var now = $"{(open.Count == 0 ? "No" : open.Count)} open question{(open.Count == 1 ? "" : "s")}";
                 if (now != tip) { tip = now; Shell(NIM_MODIFY, NIF_TIP); }
-                List<JsonObject> fresh = seen is null ? [] : open.Where(q => !seen.Contains((long)q["thread_id"]!)).Reverse().ToList();
+                var followedUp = follows.Select(f => (long)f["thread_id"]!).ToHashSet();
+                List<JsonObject> fresh = seen is null ? [] : open.Where(q => !seen.Contains((long)q["thread_id"]!) && !followedUp.Contains((long)q["thread_id"]!)).Reverse().ToList();
                 seen = ids;
+                foreach (var f in follows) Toast((long)f["thread_id"]!, $"{((string)f["mark"]! == "done" ? "Done" : "Follow-up")} from {f["author"]}", FollowUpText(f));
                 foreach (var q in fresh) Toast((long)q["thread_id"]!, $"New question from {q["opened_by"]}", (string)q["subject"]!);
                 if (fresh.Count > 0 || open.Count == 0) reminded = DateTime.UtcNow;
                 else if (DateTime.UtcNow - reminded >= Remind)

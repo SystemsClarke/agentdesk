@@ -345,7 +345,7 @@ public partial class MainWindow
             {
                 var r = rs[i];
                 var (code, ctags) = StateCode(ch, r);
-                var last = q ? Fit(r.LastAuthor == Human ? DeliveryMark(r) : r.LastAuthor is { } la ? "↩ " + Label(la) : "—", 12) : "";
+                var last = q ? Fit(r.LastAuthor == Human ? DeliveryMark(r) : r.FollowUp is { } fu ? "↩ " + fu : r.LastAuthor is { } la ? "↩ " + Label(la) : "—", 12) : "";
                 var by = ch == "work" ? r.Holder is { } h ? Label(h) : "—" : Label(r.OpenedBy);
                 return [S($"  {r.Id,3}  ", "ye"), S(code, ctags), S("  "), S(Fit(r.Subject, subjW), code == "WAIT" ? "fg b" : code is "OPEN" or "HELD" or "live" ? "fg" : "mu"),
                     S(" "), S(Fit(by, 16), Hue(r.OpenedBy)), S(last, last.Contains(" ! ") ? "pk" : last.StartsWith("you") ? "gr" : "cy"),

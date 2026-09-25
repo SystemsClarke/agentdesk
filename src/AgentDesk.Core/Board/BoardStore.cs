@@ -28,6 +28,15 @@ public sealed partial class BoardDb : IDisposable
     /// <summary>"Waiting on John": a live question whose newest non-receipt message is not his.</summary>
     public const string WaitingSql = "(t.channel = 'question' AND t.status IN ('open', 'answered') AND NOT (" + JohnHasLastWord + "))";
 
+    /// <summary>For messages f on threads t: f is the question's opener following up after John's latest reply (not an ack
+    /// or receipt). The #373 problem: an agent's "Done." after John's yes read like any other post.</summary>
+    const string FollowUpWhere = "t.channel = 'question' AND f.author = t.opened_by AND f.author_kind <> 'human'"
+        + " AND COALESCE(CASE WHEN json_valid(f.meta) THEN json_extract(f.meta,'$.kind') END,'') NOT IN ('ack','ack-note','read-receipt')"
+        + " AND f.id > (SELECT MAX(h.id) FROM messages h WHERE h.thread_id = t.id AND h.author_kind = 'human')";
+    /// <summary>'done' when the follow-up starts with the word Done (markdown emphasis aside), else 'follow-up'.</summary>
+    const string FollowUpMark = "CASE WHEN lower(substr(ltrim(f.body,' *_#>'),1,4)) = 'done' AND substr(ltrim(f.body,' *_#>'),5,1) NOT GLOB '[A-Za-z]'"
+        + " THEN 'done' ELSE 'follow-up' END";
+
     const string OpenQuestionsView = "\nCREATE VIEW IF NOT EXISTS open_questions AS\n    SELECT t.id AS thread_id, t.subject, t.opened_by, t.created_ts, t.updated_ts\n    FROM threads t\n    WHERE " + WaitingSql + ";\n";
 
     const string Schema = """
@@ -96,7 +105,8 @@ public sealed partial class BoardDb : IDisposable
         + " CASE WHEN a.message_id IS NOT NULL THEN 'pending' END, '') || '|' || h.ts"
         + " FROM messages h LEFT JOIN acks a ON a.message_id=h.id LEFT JOIN deliveries d ON d.message_id=h.id"
         + " WHERE h.thread_id=t.id AND h.author_kind='human' ORDER BY h.id DESC LIMIT 1) AS delivery,"
-        + " (CASE WHEN " + WaitingSql + " THEN 1 ELSE 0 END) AS waiting"
+        + " (CASE WHEN " + WaitingSql + " THEN 1 ELSE 0 END) AS waiting,"
+        + " (SELECT " + FollowUpMark + " FROM messages f WHERE f.thread_id=t.id AND " + FollowUpWhere + " ORDER BY f.id DESC LIMIT 1) AS follow_up"
         + " FROM threads t LEFT JOIN messages m ON m.thread_id = t.id";
 
     readonly SqliteConnection db;
@@ -417,6 +427,15 @@ public sealed partial class BoardDb : IDisposable
     public List<JsonObject> OpenQuestions(bool includeArchived) => includeArchived
         ? Rows("SELECT id AS thread_id, subject, opened_by, created_ts, updated_ts FROM threads WHERE channel='question' AND status IN ('open', 'archived') ORDER BY updated_ts DESC")
         : Rows("SELECT * FROM open_questions ORDER BY updated_ts DESC");
+
+    /// <summary>The tray's follow-up toasts: every opener's follow-up (above) with an id in (after, upTo], oldest first,
+    /// with its thread's subject and its mark.</summary>
+    public List<JsonObject> FollowUps(long after, long upTo) => Rows(
+        "SELECT f.id AS message_id, f.thread_id, t.subject, f.author, f.body, " + FollowUpMark + " AS mark"
+        + " FROM messages f JOIN threads t ON t.id = f.thread_id WHERE f.id > $after AND f.id <= $upTo AND " + FollowUpWhere + " ORDER BY f.id",
+        ("after", after), ("upTo", upTo));
+
+    public long MaxMessageId() => Scalar("SELECT MAX(id) FROM messages") as long? ?? 0;
 
     public bool TorchDue(string name) => Scalar("SELECT torch_due FROM handoffs WHERE name=$n", ("n", name)) is long due && due != 0;
 

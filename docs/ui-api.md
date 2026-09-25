@@ -50,7 +50,10 @@ callable too, with the same names and arguments as the MCP server; the list read
 `list_threads` rows already carry the LAST WORD column: `last_author` (the newest message that is not an ack or
 read receipt) and `delivery`, `<state>|<ts>` for John's newest message on the thread, where state is `picked-up`
 (the agent's ack posted), a `deliveries` state (`woke`, `resumed`, `injected`, `stuck`, `failed`, ...), `pending`
-(ack queued), or empty.
+(ack queued), or empty. `follow_up` is set on a question whose opener posted (not an ack or read receipt) after John's newest
+reply: `done` when that post starts with the word Done, else `follow-up`; the window shows it in LAST WORD instead of the
+opener's name. The tray toasts each such post once, as "#<id> <subject>: <first line>" (titled `Done from <agent>` or
+`Follow-up from <agent>`), and clicking it opens the thread, as a new question's toast does.
 
 The core refreshes the usage meter every 5 minutes (`claude -p /usage`, no model call), window or not, records each reading
 in `usage_samples` for the governor, and pushes `board.changed` to subscribed windows when it lands.

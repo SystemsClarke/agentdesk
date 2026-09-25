@@ -23,7 +23,8 @@
           "last_body": "Please build.",
           "last_author": "claude-code:proj-alpha#a1b2",
           "delivery": null,
-          "waiting": 0
+          "waiting": 0,
+          "follow_up": null
         },
         {
           "id": 4,
@@ -38,7 +39,8 @@
           "last_body": "do it",
           "last_author": "agent:proj-bare",
           "delivery": null,
-          "waiting": 0
+          "waiting": 0,
+          "follow_up": null
         }
       ]
     },
@@ -57,7 +59,8 @@
           "last_body": "Please build.",
           "last_author": "claude-code:proj-alpha#a1b2",
           "delivery": null,
-          "waiting": 0
+          "waiting": 0,
+          "follow_up": null
         },
         {
           "id": 4,
@@ -72,7 +75,8 @@
           "last_body": "do it",
           "last_author": "agent:proj-bare",
           "delivery": null,
-          "waiting": 0
+          "waiting": 0,
+          "follow_up": null
         }
       ]
     },
@@ -124,7 +128,8 @@
           "last_body": "Built.",
           "last_author": "claude-code:proj-beta#be7a",
           "delivery": null,
-          "waiting": 0
+          "waiting": 0,
+          "follow_up": null
         }
       ]
     },
