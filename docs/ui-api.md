@@ -68,6 +68,9 @@ Tk app without a port; git history has them.
 | `ui:goal_stop` | `name` | John or the lead: `stopped`. Members are forgotten, the lead is stopped, and it is posted on the thread. | the goal row |
 | `ui:goal_list` | none | Every goal, newest activity first. | `{"goals": [{"name", "state", "objective", "lead", "thread_id", "success", "experiments", "last_value", "members", "max_members"}]}` |
 | `ui:goal_status` | `name` | The goal row plus `experiments` (every row), `history` (measured values, oldest first), `members` (`identity`, `task`, `created_ts`) and `summary`, the text agents are woken with. | `{...goal, "experiments": [...], "history": [...], "members": [...], "summary": "..."}` |
+| `ui:slot_list` | none | The 10 swarm slots (board table `slots`), empty ones included, each joined with its goal. | `{"slots": [{"n", "channel_id", "channel_name", "persona_name", "persona_icon", "goal", "updated_ts", "state", "lead", "thread_id", "objective", "last_value", "members"}]}` |
+| `ui:slot_assign` | `n`, `goal?`, `persona?`, `persona_icon?`, `channel_id?`, `channel_name?` | Records what the bridge did for slot `n` (1 to 10). Arguments not given keep their value. The goal must exist and be in no other slot. | the slot, as in `ui:slot_list` |
+| `ui:slot_clear` | `n` | Frees the slot: no goal and no persona. Its channel stays for the next swarm to reuse. | the slot |
 
 **Goals.** The goal tools agents call (`goal_propose`, `experiment_start`, `experiment_done`, `member_spawn`, `member_done`) are
 answered by the core, which checks the caller's identity. `experiment_done` runs `measure_cmd` through `cmd /d /s /c` in the
@@ -79,6 +82,30 @@ session followed by Enter, or, if the lead is not running, it is started with th
 conversation). `member_spawn` (lead only) creates and starts `<goal>-<member>` within `max_members` (past `max_sessions` it
 queues); `member_done` posts the member's summary, forgets it and wakes the lead. A Phoenix successor of a lead or member gets
 the goal's summary after its handoff.
+
+**Swarm slots.** The core only stores the slot mapping. The Slack bridge makes every Slack call (agentdesk/swarm.py, on the bot
+with the `swarms` area; with no bots.json the one bot has every area). John's commands in its DM are:
+- `swarms` lists the slots.
+- `swarm new <name> <folder> <objective>` runs `ui:goal_create` in a free slot. A slot that already has a channel is preferred.
+  The bridge renames that channel to `swarm-<name>`, or creates it if the slot has none (so the 10 channels are made lazily, one
+  per first use). It invites John, records the slot, and posts "Proposing a hypothesis…" as the persona.
+- `swarm approve <slot> [members=N hours=H cadence=M]` runs `ui:goal_approve`.
+- `swarm end <slot>` runs `ui:goal_stop` and `ui:slot_clear`. The channel is kept.
+- `swarm reset <slot>` runs `ui:goal_stop` and `ui:identity_forget` on the lead, archives the channel, creates a fresh one, and
+  runs `ui:goal_create` for `<name>-N` with the same objective and folder.
+
+A message John writes in a slot's channel is typed into the lead as `John (via Slack): <text>`, followed by Enter 300 ms later.
+Every 15 s, each new post on the goal's board thread goes into the channel as the persona. Posts by `agentdesk` (verdicts,
+approvals, endings) and by the lead (proposals) are top level. Member notes go in a thread under that day's "Activity" message.
+Read receipts and John's own posts are skipped. The watermark is kept in `swarm_state.json` in the data folder. Persona posts need
+`chat:write.customize`. Without it, Slack answers `missing_scope`, and the bridge logs that once and posts plainly as the bot,
+prefixed `*<persona>:*`.
+
+What the Slack app needs for this, on top of what it already has (`chat:write`, `im:write`, `im:history`, `users:read`):
+- Bot token scopes: `channels:manage` (conversations.create, rename, archive and invite on public channels),
+  `chat:write.customize` (the persona's name and icon), and `channels:history` (to receive messages in the slot channels).
+- Event subscription: `message.channels` (bot events, delivered over Socket Mode like `message.im`).
+- Reinstall the app to the workspace after adding them. Workspace settings must let the app create and archive channels.
 
 A response with `Id = 0` is an event, raised as `CoreConnection.Pushed` with its JSON text.
 

@@ -28,6 +28,11 @@ phone command against the core's pipe (agentdesk/slackcmd.py; `help` lists them)
 Several bots: bots.json next to the credentials lists Slack bots, each with its own
 credential folder and areas; with no bots.json there is one bot with every area.
 
+Swarm slots: the bot with the `swarms` area runs `swarms` / `swarm new|approve|end|reset`
+(agentdesk/swarm.py), relays John's messages in a slot's channel to that goal's lead, and posts
+each goal's board-thread activity into its channel as the persona. The Slack scopes and events
+it needs: docs/ui-api.md, "Swarm slots".
+
 Run: the AgentDesk core starts this with itself and restarts it whenever it
 exits (src/AgentDesk.Core/Host/Supervisor.cs); settings.json's slack_bridge: false
 turns that off. A scheduled task for it hung
@@ -56,7 +61,7 @@ if sys.stdout is None or sys.stderr is None:  # pythonw (the scheduled task): no
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
 
-from agentdesk import db, identity, paths, slackcmd, slackfmt  # noqa: E402
+from agentdesk import db, identity, paths, slackcmd, slackfmt, swarm  # noqa: E402
 
 from slack_bolt import App  # noqa: E402
 from slack_bolt.adapter.socket_mode import SocketModeHandler  # noqa: E402
@@ -207,6 +212,20 @@ def poll_loop() -> None:
         time.sleep(POLL_SECONDS)
 
 
+swarm_bots: list = []  # agentdesk/swarm.Swarms, one per bot with the swarms area
+
+
+def swarm_loop() -> None:
+    """Relays each swarm goal's new board-thread posts into its slot's channel, as the persona."""
+    while True:
+        for s in swarm_bots:
+            try:
+                s.relay()
+            except Exception as exc:  # a bad pass must not kill future relaying
+                print(f"[slack_bridge] swarm relay error: {exc}", file=sys.stderr)
+        time.sleep(POLL_SECONDS)
+
+
 ATTACHMENTS = paths.DATA_DIR / "attachments"
 
 
@@ -284,9 +303,18 @@ def make_app(bot: dict) -> App:
     """One Slack bot: its areas' commands (top-level DM messages from John), plus the question relay if it has board."""
     a = App(token=(bot["creds"] / "bot-token.txt").read_text().strip())
     cmds = slackcmd.Commands(bot["areas"], JOHN_USER, bot["name"])
+    if "swarms" in bot["areas"]:
+        cmds.swarm = swarm.Swarms(a.client, slackcmd.call, JOHN_USER, paths.DATA_DIR / "swarm_state.json")
+        swarm_bots.append(cmds.swarm)
 
     @a.event("message")
     def on_message(event: dict, say) -> None:
+        if event.get("channel_type") == "channel" and getattr(cmds, "swarm", None):
+            try:
+                cmds.swarm.route(event)  # John in a swarm slot's channel: to the goal's lead
+            except Exception as exc:
+                print(f"[slack_bridge] swarm route error: {exc}", file=sys.stderr)
+            return
         if event.get("bot_id") or event.get("subtype") not in (None, "file_share") or event.get("channel_type") != "im":
             return
         if not event.get("thread_ts") and (out := cmds.handle(event.get("text") or "", event.get("user"))) is not None:
@@ -305,6 +333,7 @@ if __name__ == "__main__":
             app, BOT_TOKEN, JOHN_DM_CHANNEL = a, a.client.token, bot["dm"]
         handlers.append(SocketModeHandler(a, (bot["creds"] / "app-token.txt").read_text().strip()))
     threading.Thread(target=poll_loop, daemon=True).start()
+    threading.Thread(target=swarm_loop, daemon=True).start()
     for h in handlers[:-1]:
         h.connect()  # returns once connected; the last one blocks
     handlers[-1].start()

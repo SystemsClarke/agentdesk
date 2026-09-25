@@ -32,6 +32,7 @@ var prs = new PrChecker(store);
 var sessions = new Sessions();
 var identities = new Identities(store, sessions, data, Environment.GetEnvironmentVariable("AGENTDESK_CLAUDE") ?? "claude"); // a stand-in, for tests
 var goals = new Goals(store, identities, sessions);
+var slots = new Slots(store);
 _ = prs.Run(TimeSpan.FromSeconds(5));
 identities.Resume();
 using var bridge = SlackBridge.For(data, python); // the Slack bridge lives and dies with the core
@@ -89,6 +90,9 @@ Task<string> Ui(string op, Args a, Caller caller, Func<string, Task> push, Cance
     "goal_stop" => goals.Stop(caller, a.String("name")),
     "goal_list" => goals.List(),
     "goal_status" => goals.Status(a.String("name")),
+    "slot_list" => slots.List(),
+    "slot_assign" => slots.Assign(a.Int("n"), a.StringOrNull("goal"), a.StringOrNull("persona"), a.StringOrNull("persona_icon"), a.StringOrNull("channel_id"), a.StringOrNull("channel_name")),
+    "slot_clear" => slots.Clear(a.Int("n")),
     _ => Task.FromResult(Tools.Error($"unknown request: ui:{op}")),
 };
 

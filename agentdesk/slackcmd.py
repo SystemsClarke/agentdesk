@@ -1,6 +1,6 @@
 """Phone commands for the Slack bridge: John types `agents`, `worker off`, `status`... in a bot's DM.
 
-Each command belongs to an area (agents, worker, ops); the bridge can run several Slack bots from
+Each command belongs to an area (agents, worker, ops, swarms); the bridge can run several Slack bots from
 bots.json, each answering only its own areas plus `help`. The `board` area is the question relay and
 `wake`, which live in scripts/slack_bridge.py. Commands reach the core over its pipe (docs/ui-api.md)
 and only John's Slack user may run them.
@@ -19,7 +19,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-AREAS = ("board", "agents", "worker", "ops")
+AREAS = ("board", "agents", "worker", "ops", "swarms")
 _ids = itertools.count(1)
 _pipe: str | None = None
 
@@ -159,6 +159,48 @@ def update(cmd: "Commands", text: str) -> str:
     return _err(r) or "\n".join(f"*{k}* {v}" for k, v in r.items() if not isinstance(v, (dict, list)))
 
 
+NO_SWARMS = "Swarm slots need the Slack bridge's client (this bot has none)."
+SWARM_USAGE = ("Usage: `swarm new <name> <folder> <objective>` · `swarm approve <slot> [members=N hours=H cadence=M]` · "
+               "`swarm end <slot>` · `swarm reset <slot>`")
+_OPTS = {"members": ("max_members", int), "hours": ("max_hours", float), "cadence": ("cadence_minutes", float)}
+
+
+def _guarded(fn, *args) -> str:
+    """A swarm call; a Slack refusal mid-command becomes the reply. OSError (no core) is Commands.handle's to say."""
+    try:
+        return fn(*args)
+    except OSError:
+        raise
+    except Exception as exc:
+        return f"⚠ {type(exc).__name__}: {exc}"
+
+
+def swarms(cmd: "Commands", text: str) -> str:
+    s = getattr(cmd, "swarm", None)  # agentdesk/swarm.Swarms, set by the bridge on the bot with the swarms area
+    return _guarded(s.list) if s else NO_SWARMS
+
+
+def swarm(cmd: "Commands", text: str) -> str:
+    s = getattr(cmd, "swarm", None)
+    if s is None:
+        return NO_SWARMS
+    if m := re.match(r"swarm\s+new\s+(\S+)\s+(\"[^\"]+\"|\S+)\s+(\S.*)", text, re.I | re.S):
+        return _guarded(s.new, m[1], m[2].strip('"'), m[3].strip())
+    m = re.match(r"swarm\s+(approve|end|reset)\s+(\d+)((?:\s+\w+=[\d.]+)*)\s*$", text, re.I)
+    if not m:
+        return SWARM_USAGE
+    verb, n, opts = m[1].lower(), int(m[2]), {}
+    for k, v in (o.split("=") for o in m[3].split()):
+        if verb != "approve" or k.lower() not in _OPTS:
+            return SWARM_USAGE
+        key, conv = _OPTS[k.lower()]
+        try:
+            opts[key] = conv(v)
+        except ValueError:
+            return SWARM_USAGE
+    return _guarded(s.approve, n, opts) if verb == "approve" else _guarded(getattr(s, verb), n)
+
+
 COMMANDS = {  # area -> command word -> (handler, help line)
     "agents": {"agents": (agents, "`agents` list them"),
                "agent": (agent, "`agent new <name> <folder> [charter]` · `agent start|stop|forget <name>`"),
@@ -167,6 +209,8 @@ COMMANDS = {  # area -> command word -> (handler, help line)
     "ops": {"status": (status, "`status` core, worker, agents, questions, usage"),
             "update": (update, "`update` versions · `update apply` update and restart")},
     "board": {},
+    "swarms": {"swarms": (swarms, "`swarms` the 10 swarm slots"),
+               "swarm": (swarm, "`swarm new <name> <folder> <objective>` · `swarm approve|end|reset <slot>`")},
 }
 BOARD_HELP = "Reply *in a question's thread* to answer it; `wake` there resumes the agent."
 
