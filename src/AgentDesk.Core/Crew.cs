@@ -11,6 +11,10 @@ public static class Crew
 
     static bool Pid(JsonNode? n) => n is JsonValue v && v.TryGetValue(out double pid) && AgentBoard.Alive((int)pid);
 
+    /// <summary>How many agent sessions may run at once: settings.json's max_sessions (AGENTDESK_MAX_SESSIONS wins), default 3.</summary>
+    public static int MaxSessions(JsonObject? settings) =>
+        int.TryParse(Environment.GetEnvironmentVariable("AGENTDESK_MAX_SESSIONS") ?? settings?["max_sessions"]?.ToString() ?? "3", out var m) ? Math.Max(1, m) : 3;
+
     public static JsonObject Status(string data, BoardDb db)
     {
         var live = new JsonObject();
@@ -25,7 +29,7 @@ public static class Crew
         }
         var settings = AgentBoard.Load(Path.Combine(data, "settings.json"));
         var provider = settings?["provider"]?.ToString() ?? "claude";
-        var max = int.TryParse(Environment.GetEnvironmentVariable("AGENTDESK_MAX_SESSIONS") ?? settings?["max_sessions"]?.ToString() ?? "3", out var m) ? Math.Max(1, m) : 3;
+        var max = MaxSessions(settings);
         var file = Environment.GetEnvironmentVariable("CLAUDE_PROVIDERS_FILE")
             ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude", "providers.json");
         var cfg = AgentBoard.Load(file);

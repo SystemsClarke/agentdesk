@@ -27,7 +27,14 @@ public sealed class Sessions
         public readonly SemaphoreSlim Out = new(1, 1); // one chunk at a time, so every viewer sees output in order
     }
 
-    public Task<string> Start(string name, string folder, string? command)
+    /// <summary>Raised with a session's name and pid once its process has ended, however it ended.</summary>
+    public event Action<string, int>? Ended;
+
+    public Task<string> Start(string name, string folder, string? command) =>
+        Ok(new JsonObject { ["name"] = name, ["pid"] = Launch(name, folder, command, new Dictionary<string, string?>()) });
+
+    /// <summary>Starts a session with <paramref name="extra"/> laid over its environment, and returns its pid.</summary>
+    public int Launch(string name, string folder, string? command, IReadOnlyDictionary<string, string?> extra)
     {
         if (string.IsNullOrWhiteSpace(name)) throw new ArgumentException("name is required");
         if (!Directory.Exists(folder)) throw new ArgumentException($"no such folder: {folder}");
@@ -40,10 +47,11 @@ public sealed class Sessions
                 .Where(k => k.StartsWith("CLAUDE", StringComparison.OrdinalIgnoreCase) || k is "AGENTDESK_SESSION" or "AGENTDESK_AUTHOR")
                 .ToDictionary(k => k, string? (_) => null);
             env["AGENTDESK_HEADLESS"] = name;
+            foreach (var (k, v) in extra) env[k] = v;
             var s = all[name] = new Session(name, folder, command, Pty.Start(command, folder, env, 120, 30));
             _ = Task.Run(() => Pump(s)); // reads block: never on this thread
             Log.Info($"session {name} started: {command} in {folder} (pid {s.Pty.Pid})");
-            return Ok(new JsonObject { ["name"] = name, ["pid"] = s.Pty.Pid });
+            return s.Pty.Pid;
         }
     }
 
@@ -142,6 +150,7 @@ public sealed class Sessions
         await Task.WhenAll(last.Select(v => Send(v, ended)));
         s.Pty.Dispose();
         Log.Info($"session {s.Name} ended");
+        Ended?.Invoke(s.Name, s.Pty.Pid);
     }
 
     static byte[] Tail(Session s)

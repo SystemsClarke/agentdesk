@@ -5,6 +5,9 @@
 //   agentdesk sessions           list the Claude Code sessions the core hosts headless
 //   agentdesk start <name> <folder> [command...]   start one (command defaults to claude); stop <name> ends it
 //   agentdesk attach <name>      use one from this console, like tmux attach; Ctrl+] detaches
+//   agentdesk new <name> <folder> [--charter text] [--host wsl:<distro>] [--autostart]   an identity: a session that outlives the core
+//   agentdesk start|stop|forget <name>, agentdesk list   run, stop, delete and list identities
+//   agentdesk adoptable, agentdesk adopt <session-id> <name>   make a recent Claude Code conversation an identity
 using System.Text.Json;
 using AgentDesk.Cli;
 using AgentDesk.Contracts;
@@ -35,8 +38,25 @@ switch (args)
         Console.WriteLine(await core.Call("ui:session_start", Attach.Json(new()
             { ["name"] = name, ["folder"] = Path.GetFullPath(folder), ["command"] = command.Length > 0 ? string.Join(' ', command) : null })));
         break;
-    case ["stop", var name]:
-        Console.WriteLine(await core.Call("ui:session_stop", Attach.Json(new() { ["name"] = name })));
+    case [("stop" or "forget" or "start") and var verb, var name]:
+        Console.WriteLine(await core.Call($"ui:identity_{verb}", Attach.Json(new() { ["name"] = name }))); // stop also ends a plain session
+        break;
+    case ["new", var name, var folder, .. var opts]:
+        var host = Opt(opts, "--host");
+        Console.WriteLine(await core.Call("ui:identity_create", Attach.Json(new()
+        {
+            ["name"] = name, ["folder"] = host is null or "windows" ? Path.GetFullPath(folder) : folder, ["charter"] = Opt(opts, "--charter"),
+            ["host"] = host, ["autostart"] = opts.Contains("--autostart"),
+        })));
+        break;
+    case ["list"]:
+        Console.WriteLine(await core.Call("ui:identity_list"));
+        break;
+    case ["adoptable"]:
+        Console.WriteLine(await core.Call("ui:adoptable"));
+        break;
+    case ["adopt", var id, var name]:
+        Console.WriteLine(await core.Call("ui:adopt", Attach.Json(new() { ["session_id"] = id, ["name"] = name })));
         break;
     case ["attach", var name]:
         return await Attach.Run(core, name);
@@ -45,6 +65,8 @@ switch (args)
         break;
 }
 return 0;
+
+static string? Opt(string[] opts, string flag) => Array.IndexOf(opts, flag) is var i and >= 0 && i + 1 < opts.Length ? opts[i + 1] : null;
 
 namespace AgentDesk.Cli
 {
