@@ -36,6 +36,9 @@ public sealed class CoreBoard : IBoard, IDisposable
     static string? Str(JsonElement o, string name) => o.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
     static DateTimeOffset Ts(JsonElement o, string name) => DateTimeOffset.TryParse(Str(o, name), out var t) ? t : default;
     static int Int(JsonElement o, string name) => o.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number ? v.GetInt32() : 0;
+    static double? Num(JsonElement o, string name) => o.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number ? v.GetDouble() : null;
+    static readonly JsonElement None = JsonDocument.Parse("[]").RootElement;
+    static JsonElement.ArrayEnumerator Arr(JsonElement o, string name) => (o.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Array ? v : None).EnumerateArray();
 
     /// <summary>A message's or thread's meta is JSON inside a string.</summary>
     static string? Meta(JsonElement o, string key)
@@ -114,7 +117,42 @@ public sealed class CoreBoard : IBoard, IDisposable
             concierge.GetProperty("on").GetBoolean(), held > 0 ? held : null, [.. swarm],
             slack.ValueKind == JsonValueKind.Object ? Ts(slack, "ts") : null, slack.ValueKind == JsonValueKind.Object && Int(slack, "poll_s") is var poll and > 0 ? poll : 15,
             relay, [], [.. usage.GetProperty("lines").EnumerateArray().Select(l => l.GetString()!)], Str(usage, "summary") ?? "",
-            Int(sessions, "running"), Int(sessions, "max"));
+            Int(sessions, "running"), Int(sessions, "max"), ToBudget(beat.GetProperty("governor")), [.. Arr(beat, "goals").Select(ToGoal)]);
+    }
+
+    static Budget ToBudget(JsonElement g)
+    {
+        var caps = g.TryGetProperty("caps", out var c) ? c : default;
+        int Cap(string name) => caps.ValueKind == JsonValueKind.Object ? Int(caps, name) : 0;
+        var mode = g.TryGetProperty("enforcing", out var e) && e.ValueKind is JsonValueKind.True or JsonValueKind.False ? (e.GetBoolean() ? "enforcing" : "advisory")
+            : g.TryGetProperty("advisory", out var a) && a.ValueKind is JsonValueKind.True or JsonValueKind.False ? (a.GetBoolean() ? "advisory" : "enforcing") : null;
+        return new(Int(g, "samples"), Num(g, "remaining") ?? 0, Num(g, "reset_in_hours") ?? 0, Num(g, "projected_end_pct") ?? 0, Cap("total_sessions"),
+            Cap("swarms"), Cap("members_per_swarm"), Str(g, "reason") ?? "", Str(g, "summary") ?? "", [.. Arr(g, "series").Select(v => v.GetDouble())], mode);
+    }
+
+    static GoalRow ToGoal(JsonElement g) => new(Str(g, "name") ?? "", Str(g, "state") ?? "draft", Str(g, "objective") ?? "", Str(g, "lead") ?? "",
+        Str(g, "success"), Int(g, "experiments"), Num(g, "last_value"), Int(g, "members"), Int(g, "max_members"), Int(g, "standing") != 0,
+        Int(g, "thread_id") is var t and > 0 ? t : null);
+
+    public async Task<IReadOnlyList<Slot>> SlotsAsync() =>
+        [.. Arr(await Call("ui:slot_list"), "slots").Select(s => new Slot(Int(s, "n"), Str(s, "goal"), Str(s, "channel_name"), Str(s, "persona_name")))];
+
+    public async Task<GoalDetail?> GoalAsync(string name)
+    {
+        try
+        {
+            var g = await Call("ui:goal_status", new { name });
+            var log = Arr(g, "experiments").Select(e => new Experiment(Int(e, "n"), Str(e, "change") ?? "", Str(e, "owner"), Num(e, "value"), Str(e, "verdict"))).ToList();
+            return new(ToGoal(g) with { Experiments = log.Count, LastValue = log.LastOrDefault(e => e.Value is not null)?.Value,
+                    Members = Arr(g, "members").Count() }, Str(g, "hypothesis"), Str(g, "measure_cmd"), Num(g, "max_hours") ?? 0, Num(g, "cadence_minutes") ?? 0,
+                Str(g, "started_ts") is null ? null : Ts(g, "started_ts"), log, [.. Arr(g, "history").Select(v => v.GetDouble())],
+                [.. Arr(g, "members").Select(m => new SwarmMember(Str(m, "identity") ?? "", Str(m, "task") ?? "", Int(m, "work_id") is var w and > 0 ? w : null))],
+                Str(g, "summary") ?? "");
+        }
+        catch (InvalidOperationException)
+        {
+            return null; // no such goal
+        }
     }
 
     public async Task<IReadOnlyList<Identity>> IdentitiesAsync() =>

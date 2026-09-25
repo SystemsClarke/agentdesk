@@ -290,6 +290,17 @@ public partial class MainWindow
         return [.. o, S(line[pos..])];
     }
 
+    /// <summary>A sparkline in block characters and its range, at most <paramref name="width"/> wide (evenly sampled, first and last kept).</summary>
+    internal static Seg[] Spark(IReadOnlyList<double> vals, string hue, string unit = "", int width = int.MaxValue)
+    {
+        static string F(double v) => v.ToString("#,0.#", CultureInfo.CurrentCulture);
+        width = Math.Max(2, width);
+        var shown = vals.Count <= width ? vals : [.. Enumerable.Range(0, width).Select(i => vals[(int)((long)i * (vals.Count - 1) / (width - 1))])];
+        var (lo, hi) = (vals.Min(), vals.Max());
+        return [S(string.Concat(shown.Select(v => "▁▂▃▄▅▆▇█"[hi == lo ? 3 : (int)((v - lo) / (hi - lo) * 7)])), hue),
+            S($"  {F(lo)}–{F(hi)}{unit}, last {F(vals[^1])}{unit}", "mu")];
+    }
+
     /// <summary>A ```chart spec (the Tk app's charts.py types) drawn in text: bars and sparklines in block characters.</summary>
     List<Line> Chart(JsonNode spec, int W)
     {
@@ -329,9 +340,7 @@ public partial class MainWindow
                 var labw = series.Max(x => x.Name.Length);
                 foreach (var ((name, vals), k) in series.Select((x, k) => (x, k)).Where(x => x.x.Vals.Count > 0))
                 {
-                    var (lo, hi) = (vals.Min(), vals.Max());
-                    L.Add([.. If(labw > 0, S(name.PadRight(labw) + "  ")), S(string.Concat(vals.Select(v => "▁▂▃▄▅▆▇█"[hi == lo ? 3 : (int)((v - lo) / (hi - lo) * 7)])), Hues[k % 6]),
-                        S($"  {F(lo)}–{F(hi)}{u}, last {F(vals[^1])}{u}", "mu")]);
+                    L.Add([.. If(labw > 0, S(name.PadRight(labw) + "  ")), .. Spark(vals, Hues[k % 6], u)]);
                 }
                 var x = Arr(spec["x"]);
                 if (x.Count > 1)

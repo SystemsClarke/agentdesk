@@ -50,6 +50,8 @@ public partial class MainWindow
     IReadOnlyList<Identity> agents = [];
     IReadOnlyList<Adoptable>? adoptables; // read on the Adopt screen only: it scans ~/.claude/projects
     string? webUrl, adoptNote;
+    IReadOnlyList<Slot> slots = [];
+    (string Name, GoalDetail? Detail)? goal; // the goal open in the reader, and what ui:goal_status said (null: not read yet)
 
     /// <summary>A few one-line questions asked in the subject box, one at a time (New agent, Adopt's name), then Done with the answers.</summary>
     sealed record Ask(string Title, string Banner, string Back, (string Label, string Help, bool Optional)[] Fields, Func<string[], Task> Done);
@@ -135,6 +137,10 @@ public partial class MainWindow
     string SelKey => screen == "list" ? channel : screen;
     int Sel { get => sel.GetValueOrDefault(SelKey); set => sel[SelKey] = value; }
 
+    /// <summary>Every goal, the Concierge among them as a standing goal even before it is first turned on.</summary>
+    IReadOnlyList<GoalRow> Goals => st?.Goals is { } g && g.Any(x => x.Standing && x.Name == "concierge") ? g
+        : [.. st?.Goals ?? [], new GoalRow("concierge", "off", "Keep Work to Hire drained", "concierge-lead", "value <= 0", 0, null, 0, 3, true)];
+
     async Task RefreshAsync()
     {
         foreach (var ch in Channels)
@@ -147,6 +153,9 @@ public partial class MainWindow
         st = await board.StatusAsync();
         agents = await board.IdentitiesAsync();
         webUrl = await board.WebUrlAsync();
+        slots = await board.SlotsAsync();
+        if (screen == "goal" && goal is { } g)
+            goal = (g.Name, await board.GoalAsync(g.Name) ?? GoalDetailOf(g.Name));
         if (screen == "adopt")
             adoptables = await board.AdoptableAsync();
         threads.Clear();
@@ -173,7 +182,7 @@ public partial class MainWindow
         {
             "main" => "Main menu", "list" => Titles[channel], "prs" => "Pull Requests", "sysop" => "SysOp console", "who" => "Who's on",
             "options" => "Options", "compose" => $"New post in {Titles[channel]}", "agents" => "Agents", "adopt" => "Adopt a session",
-            "ask" => ask?.Title ?? "", _ => $"Reading #{readTid}",
+            "goals" => "Goals", "goal" => $"Goal {goal?.Name}", "ask" => ask?.Title ?? "", _ => $"Reading #{readTid}",
         };
         Line left = [S("AgentDesk", "ye b"), S($" · {title}", "mu")];
         var held = HeldRow;
@@ -182,6 +191,8 @@ public partial class MainWindow
             : [S("○ Concierge off", "or"), S(" · Ctrl+W starts it", "fa")];
         Line right = [openQs.Count > 0 ? S($"{openQs.Count} ringing for you", "pk b") : S("nobody's calling", "mu"), S(" · ", "fa"),
             SlackUp ? S("SlackNet ● up", "cy") : S("SlackNet ○ down", "fa")];
+        if (st?.Budget is { Samples: > 0 } b && W - Len(left) - Len(mid) - Len(right) >= 20) // the governor, where it fits
+            right = [S($"week {b.Remaining:0.#}% left", b.Remaining < 10 ? "pk" : "cy"), S(" · ", "fa"), .. right];
         var gap = W - Len(left) - Len(mid) - Len(right);
         return gap < 4 ? Pad([.. left, S("   "), .. right], W) : [.. left, S(Rep(' ', gap / 2)), .. mid, S(Rep(' ', gap - gap / 2)), .. right];
     }
@@ -194,7 +205,7 @@ public partial class MainWindow
         var q = channel == "question";
         return screen switch
         {
-            "main" => [.. K("Q D W J", "message bases"), .. K("P", "PRs"), .. K("S", "SysOp"), .. K("B", "who's on"), .. K("A", "agents"), .. K("O", "options"),
+            "main" => [.. K("Q D W J", "message bases"), .. K("P", "PRs"), .. K("S", "SysOp"), .. K("B", "who's on"), .. K("A", "agents"), .. K("E", "goals"), .. K("O", "options"),
                 .. K("G", "hang up")],
             "list" => [.. K("↑↓", "move"), .. K("↵", "read"), .. K("N", "new post"),
                 .. If(q, [.. K("H", showArchived ? "active" : "archived"), .. K("Ctrl+R", "wake agent")]), .. K("Esc", "main menu")],
@@ -209,6 +220,9 @@ public partial class MainWindow
             "agents" => [.. K("↑↓", "move"), .. K("↵", "attach"), .. K("S", "start/stop"), .. K("N", "new agent"), .. K("F", "forget"),
                 .. K("A", "adopt a session"), .. K("Esc", "menu")],
             "adopt" => [.. K("↑↓", "move"), .. K("↵", "adopt"), .. K("Esc", "agents")],
+            "goals" => [.. K("↑↓", "move"), .. K("↵", "read"), .. K("A", "approve"), .. K("X", "stop"), .. K("N", "new goal"), .. K("L", "attach to lead"),
+                .. K("Esc", "menu")],
+            "goal" => [.. K("A", "approve"), .. K("X", "stop"), .. K("L", "attach to lead"), .. K("↑↓", "scroll"), .. K("Esc", "goals")],
             "ask" => [.. K("↵", "next"), .. K("Esc", "cancel")],
             _ => [],
         };
@@ -218,7 +232,7 @@ public partial class MainWindow
 
     // --- shared pieces -----------------------------------------------------------
 
-    List<Line> Box(string title, IEnumerable<Line> body, int W)
+    static List<Line> Box(string title, IEnumerable<Line> body, int W)
     {
         List<Line> o = [[S("┌─ ", "rule"), S(title, "mu"), S(" " + Rep('─', W - 5 - title.Length) + "┐", "rule")]];
         o.AddRange(body.Select(Line (segs) => [S("│ ", "rule"), .. Pad(Len(segs) > W - 4 ? ClipTo(segs, W - 4) : segs, W - 4), S(" │", "rule")]));
@@ -229,9 +243,12 @@ public partial class MainWindow
     Line Bar(string text, string tag = "barcy") => Pad([S(" " + text, tag + " b")], cols, tag);
 
     /// <summary>The one list renderer behind every selectable screen: header, a scrolled window of rows, the selected one in reverse.</summary>
-    List<Line> Rows(Line banner, string? header, int count, Func<int, Line> row, Line empty, int fixedLines, Func<int, Line?>? before = null)
+    List<Line> Rows(Line banner, string? header, int count, Func<int, Line> row, Line empty, int fixedLines, Func<int, Line?>? before = null,
+        IEnumerable<Line>? head = null)
     {
         List<Line> L = [banner, []];
+        if (head != null)
+            L.AddRange([.. head, []]);
         if (header != null)
             L.AddRange([[S(header, "mu")], [S(Rep('─', cols), "rule")]]);
         if (count == 0)
@@ -296,6 +313,8 @@ public partial class MainWindow
             ("O", "Options", S(Palettes[Theme].Label + (screech ? " · screech on" : ""), "ye")),
             ("A", "Agents", this.agents.Count == 0 ? S("none signed up", "mu")
                 : S($"{this.agents.Count(a => a.State == "running")} running · {this.agents.Count(a => a.State == "queued")} queued", "gr")),
+            ("E", "Goals", Goals.Count(g => g.State == "running") is var on and > 0 ? S($"{on} running", "gr")
+                : S("none running", "mu")),
             ("G", "Hang up", S("to the tray", "mu")),
         ];
         static Line Item((string Key, string Label, Seg Val) it) =>
@@ -312,7 +331,7 @@ public partial class MainWindow
         var phrases = st?.UsageLines ?? [];
         var phrase = phrases.Count > 0 ? phrases[(int)(DateTimeOffset.Now.ToUnixTimeSeconds() / 6 % phrases.Count)] : null;
         L.Add(phrase is null ? [S(" (time left: unlimited, you're the SysOp)", "fa")] : [S(" (" + phrase + ")", phrase.Contains("week") ? "or" : "fa")]);
-        L.Add([S(" Main menu ", "fg"), S("[", "mu"), S("Q,D,W,J,P,S,B,O,A,G", "ye"), S("]", "mu"), S(": "), S(" ", "cur")]);
+        L.Add([S(" Main menu ", "fg"), S("[", "mu"), S("Q,D,W,J,P,S,B,O,A,E,G", "ye"), S("]", "mu"), S(": "), S(" ", "cur")]);
         return L;
     }
 
@@ -433,7 +452,7 @@ public partial class MainWindow
     List<Line> SysopScreen(int W)
     {
         List<Line> L = [Bar("SYSOP CONSOLE  ·  " + (openQs.Count > 0 ? "phone's ringing off the hook" : "waiting for callers"), "bar"), []];
-        void Stat(string k, params Seg[] segs) => L.Add([S(" " + Fit(k, 20), "mu"), .. segs]);
+        void Stat(string k, params Seg[] segs) => L.Add(ClipTo([S(" " + Fit(k, 20), "mu"), .. segs], W + 1));
         var held = HeldRow;
         var swarm = st?.Swarm ?? [];
         if (st?.ConciergeOn == true && held != null)
@@ -459,6 +478,7 @@ public partial class MainWindow
         if (st?.LastFiled is { } f)
             Stat("Filed to the vault", S($"{When(f.UpdatedTs)} · #{f.Id} ", "mu"), S(f.Subject, "fa"));
         Stat("Claude plan", S(st?.UsageSummary ?? "", "mu"));
+        Stat("Usage governor", S(GovLine(st?.Budget), "mu"));
         L.Add([]);
         if (swarm.Count > 0)
         {
@@ -601,6 +621,123 @@ public partial class MainWindow
         return L;
     }
 
+    /// <summary>The governor in one line, for SysOp: the week left, its reset, the forecast, and today's allowance.</summary>
+    internal static string GovLine(Budget? b) => b is not { Samples: > 0 } ? "no usage samples yet: the core reads /usage every 5 minutes"
+        : $"{b.Remaining:0.#}% left · resets in {Span(b.ResetInHours * 3600)} · forecast {b.ProjectedEnd:0.#}% · "
+            + $"{N(b.Sessions, "session")} ({b.Swarms}x{b.Members})" + (b.Mode is { } m ? $" · {m}" : "");
+
+    /// <summary>The Goals screen's budget panel: the week, the forecast and the mode, today's allowance and why, and the week so far.</summary>
+    internal static List<Line> BudgetLines(Budget? b, int W)
+    {
+        if (b is not { Samples: > 0 })
+            return [[S("No usage samples yet. The core reads /usage every 5 minutes; the governor starts from the first reading.", "mu")]];
+        return
+        [
+            [S($"{b.Remaining:0.#}%", b.Remaining < 10 ? "pk b" : "ye b"), S(" of the week left · resets in ", "mu"), S(Span(b.ResetInHours * 3600)),
+                S(" · forecast ", "mu"), S($"{b.ProjectedEnd:0.#}%", b.ProjectedEnd > 100 ? "pk" : "gr"), S(" at the reset", "mu"),
+                .. If(b.Mode != null, S("   "), S($" {b.Mode} ", b.Mode == "enforcing" ? "pk b inv" : "cy inv"))],
+            [S("Today's allowance: ", "mu"), S(N(b.Sessions, "session"), "fg b"), S(" · ", "mu"), S($"{N(b.Swarms, "swarm")} x {N(b.Members, "member")}")],
+            [S(b.Reason, "fa")],
+            .. b.Series.Count > 1 ? [[S("This week  ", "mu"), .. Spark(b.Series, "cy", "%", W - 36)]] : new List<Line>(),
+        ];
+    }
+
+    static string Value(double? v) => v is { } x ? x.ToString("0.##", System.Globalization.CultureInfo.CurrentCulture) : "—";
+    static string LineOf(string? success) => success is null ? "no line yet" : success.StartsWith("value ") ? success[6..] : success;
+    static string GoalState(GoalRow g) => g.Standing && g.State == "running" ? "standing" : g.State;
+    static string StateHue(string state) => state switch { "running" or "standing" => "gr", "draft" => "ye", "succeeded" => "cy", _ => "fa" };
+
+    /// <summary>One goal on the Goals screen: its state, slot, last value against its line, experiments, crew, and lead with its generation.</summary>
+    internal static Line GoalLine(GoalRow g, int? slot, Identity? lead, int leadW) =>
+    [
+        S("  " + Fit(g.Name, 18), Hue(g.Name) + " b"), S(Fit(GoalState(g), 10), StateHue(GoalState(g))), S(Fit(slot is { } n ? $"{n}" : "—", 5), "cy"),
+        S(Fit($"{Value(g.LastValue)} · {LineOf(g.Success)}", 20)), S(Fit($"{g.Experiments}", 5), "mu"), S(Fit($"{g.Members}/{g.MaxMembers}", 7), "mu"),
+        S(Fit(lead is null ? g.Lead : $"{g.Lead} · gen {lead.Generation}", leadW), lead?.State == "running" ? "cy" : "fa"),
+    ];
+
+    static IEnumerable<string> Wrap(string text, int width)
+    {
+        var line = "";
+        foreach (var word in text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries))
+        {
+            if (line.Length > 0 && line.Length + 1 + word.Length > width)
+            {
+                yield return line;
+                line = "";
+            }
+            line = line.Length == 0 ? word : line + " " + word;
+        }
+        yield return line;
+    }
+
+    /// <summary>The goal reader: the goal and its budget, its history as a sparkline, the last 10 experiments, the crew, the summary.</summary>
+    internal static List<Line> GoalReader(GoalDetail d, Identity? lead, int? slot, int W)
+    {
+        var g = d.Row;
+        var head = $"═ Goal {g.Name} ═ {GoalState(g)}{(slot is { } n ? $" in slot {n}" : "")} ";
+        List<Line> L = [[S("╔", "rule"), S(head, "ye b"), S(Rep('═', W - 2 - head.Length) + "╗", "rule")]];
+        void Field(string label, string? text, string tags = "fg")
+        {
+            foreach (var (l, i) in Wrap(text ?? "none yet", W - 16).Select((l, i) => (l, i)))
+                L.Add([S(i == 0 ? "  " + Fit(label, 12) : Rep(' ', 14), "mu"), S(l, text is null ? "fa" : tags)]);
+        }
+        Field("Objective", g.Objective, "fg b");
+        Field("Hypothesis", d.Hypothesis ?? (g.State == "draft" ? "none yet: the lead proposes one, then A approves it" : null));
+        Field("Measure", d.Measure, "cy");
+        Field("Success", g.Success, "ye");
+        var spent = d.Started is { } t ? Span((DateTimeOffset.Now - t).TotalSeconds) : "not started";
+        Field("Budget", g.Standing ? $"{g.Members} of {g.MaxMembers} members · standing: it never ends by its hours · a wake every {d.CadenceMinutes:0.#} min"
+            : $"{g.Members} of {g.MaxMembers} members · {spent} of {d.MaxHours:0.#}h · a wake every {d.CadenceMinutes:0.#} min");
+        L.Add([S("╚" + Rep('═', W - 2) + "╝", "rule")]);
+        L.Add([S("  " + Fit("History", 12), "mu"), .. d.History.Count > 0 ? Spark(d.History, "cy", "", W - 40) : [S("nothing measured yet", "fa")]]);
+        L.Add([]);
+        var changeW = Math.Max(16, W - 50);
+        var log = d.Experiments.TakeLast(10).Select(Line (e) => [S($"#{e.N,-4}", "ye"), S(Fit(e.Change, changeW)), S(" "), S(Fit(e.Owner ?? "—", 20), Hue(e.Owner)),
+            S(Fit(Value(e.Value), 8)), S(Fit(e.Verdict ?? "measuring", 12), e.Verdict switch
+            {
+                null => "ye", "met" => "gr b", "improved" => "gr", "no gain" => "mu", _ => "pk",
+            })]).ToList();
+        L.AddRange(Box(d.Experiments.Count > 10 ? $"Experiments · last 10 of {d.Experiments.Count}" : $"Experiments · {d.Experiments.Count}",
+            log.Count > 0 ? log : [[S("No experiments yet.", "mu")]], W));
+        L.Add([]);
+        L.AddRange(Box($"Members · {g.Members} of {g.MaxMembers}", d.Members.Count > 0 ? d.Members.Select(Line (m) => [S(Fit(m.Identity, 24), "cy"),
+            S(m.WorkId is { } w ? $"#{w,-5} " : "      ", "ye"), S(Fit(m.Task.ReplaceLineEndings(" "), Math.Max(10, W - 38)), "mu")]) : [[S("None running.", "mu")]], W));
+        L.Add([]);
+        L.AddRange(Box("Summary · what its agents are woken with", d.Summary.Length > 0
+            ? d.Summary.Trim().Split('\n').SelectMany(l => Wrap(l.TrimEnd(), W - 4)).Take(12).Select(Line (l) => [S(l, "mu")]) : [[S("(none)", "fa")]], W));
+        L.AddRange([[], [S(" L", "ye"), S(" attaches to ", "mu"), S(g.Lead, "cy"),
+            S(lead is null ? " (not an agent now)" : $" (generation {lead.Generation}, {lead.State})", "mu"), S(": agentdesk attach " + g.Lead, "cy")]]);
+        return L;
+    }
+
+    int? SlotOf(string goal) => slots.FirstOrDefault(s => string.Equals(s.Goal, goal, StringComparison.OrdinalIgnoreCase))?.N;
+    Identity? LeadOf(GoalRow g) => agents.FirstOrDefault(a => string.Equals(a.Name, g.Lead, StringComparison.OrdinalIgnoreCase));
+
+    List<Line> GoalsScreen(int W)
+    {
+        var gs = Goals;
+        var leadW = Math.Max(16, W - 67);
+        var budget = Box("Budget · the usage governor", BudgetLines(st?.Budget, W - 4), W);
+        var L = Rows(Bar("GOALS  ·  the war room  ·  each swarm is a hypothesis, a measure and a line to cross"),
+            "  " + Fit("GOAL", 18) + Fit("STATE", 10) + Fit("SLOT", 5) + Fit("LAST · LINE", 20) + Fit("EXP", 5) + Fit("CREW", 7) + "LEAD", gs.Count,
+            i => GoalLine(gs[i], SlotOf(gs[i].Name), LeadOf(gs[i]), leadW),
+            [S("   No goals yet. ", "mu"), S("N", "ye"), S(" starts one.", "mu")], 12 + budget.Count, head: budget);
+        L.Add([S($" {gs.Count(g => g.State == "running")} running", "gr"), S(" · "), S($"{gs.Count(g => g.State == "draft")} draft", "ye"), S(" · "),
+            S($"{slots.Count(s => s.Goal != null)} of {Math.Max(10, slots.Count)} Slack slots in use", "cy"),
+            .. If(window.Count > window.Visible, S($" · rows {window.Top + 1}–{window.End} of {window.Count}", "fa"))]);
+        L.AddRange([[], [S(" ↵", "ye"), S(" reads a goal. ", "mu"), S("A", "ye"), S(" approves a proposed draft (or starts a stopped one); ", "mu"), S("X", "ye"),
+                S(" stops it.", "mu")],
+            [S(" N", "ye"), S(" starts a goal: its lead proposes a hypothesis, a measure and a line, and waits for your A.", "mu")]]);
+        return L;
+    }
+
+    GoalDetail? GoalDetailOf(string name) => Goals.FirstOrDefault(g => g.Name == name) is { } r
+        ? new(r, null, r.Standing ? "internal:open_work" : null, 0, 10, null, [], [], [], r.State == "off" ? "Off. A (or Ctrl+W) turns the Concierge on." : "")
+        : null;
+
+    List<Line> GoalScreen(int W) => goal is not { } g ? [] : g.Detail is null ? [[S(" Reading the goal's log...", "mu")]]
+        : GoalReader(g.Detail, LeadOf(g.Detail.Row), SlotOf(g.Name), W);
+
     List<Line> AskScreen(int W)
     {
         List<Line> L = [Bar(ask!.Banner), []];
@@ -639,7 +776,7 @@ public partial class MainWindow
             Subject.Focus();
         else if (to != "compose")
             Body.Focus();
-        if (to == "adopt")
+        if (to is "adopt" or "goal")
             _ = RefreshAsync();
     }
 
@@ -651,7 +788,7 @@ public partial class MainWindow
             Reply.Clear();
         if (screen == "agents")
             adoptNote = null;
-        Goto(screen switch { "read" => readBack, "compose" => "list", "ask" => ask!.Back, "adopt" => "agents", _ => "main" });
+        Goto(screen switch { "read" => readBack, "compose" => "list", "ask" => ask!.Back, "adopt" => "agents", "goal" => "goals", _ => "main" });
     }
 
     void AskFor(Ask a, string prefill = "")
@@ -780,6 +917,69 @@ public partial class MainWindow
         Render();
     }
 
+    /// <summary>The goal under the cursor, or the one open in the reader.</summary>
+    GoalRow? SelGoal => screen == "goal" ? goal?.Detail?.Row : Goals.Count > 0 ? Goals[Math.Min(Sel, Goals.Count - 1)] : null;
+
+    /// <summary>A: John approves a proposed goal (ui:goal_approve), or starts a stopped one; the Concierge is turned on as Ctrl+W does.</summary>
+    async void Approve()
+    {
+        if (SelGoal is not { } g)
+            return;
+        try
+        {
+            await (g.Standing ? board.ActAsync("ui:concierge", new { on = true }) : board.ActAsync("ui:goal_approve", new { name = g.Name }));
+            await RefreshAsync();
+            Flash($"{g.Name} is running: until its line, its budget, or X.", "gr");
+        }
+        catch (Exception e) when (e is InvalidOperationException or IOException)
+        {
+            Flash("Not approved: " + e.Message, "pk b");
+        }
+    }
+
+    void StopGoal()
+    {
+        if (SelGoal is not { } g)
+            return;
+        confirm = ($"Stop {g.Name}? Its members are forgotten and its lead stops; the log stays.", async () =>
+        {
+            try
+            {
+                await (g.Standing ? board.ActAsync("ui:concierge", new { on = false }) : board.ActAsync("ui:goal_stop", new { name = g.Name }));
+                await RefreshAsync();
+                Flash($"{g.Name} stopped. A starts it again.", "gr");
+            }
+            catch (Exception e) when (e is InvalidOperationException or IOException)
+            {
+                Flash("Not stopped: " + e.Message, "pk b");
+            }
+        });
+        Render();
+    }
+
+    void NewGoal() => AskFor(new("New goal", "NEW GOAL  ·  start a swarm  ·  its lead proposes a hypothesis, a measure and a line, then you approve", "goals",
+        [("name", "A short name: its lead is <name>-lead, and Slack's swarm slot uses it too.", false),
+         ("folder", "The folder the lead works and measures in, e.g. C:\\Users\\you\\src\\repo.", false),
+         ("objective", "What it should achieve, in a sentence. The lead turns it into a hypothesis.", false)],
+        async a =>
+        {
+            await board.ActAsync("ui:goal_create", new { name = a[0], objective = a[2], folder = a[1] });
+            await RefreshAsync();
+            Sel = Goals.ToList().FindIndex(x => x.Name == a[0]);
+            Flash($"{a[0]} is a draft. Its lead is proposing a hypothesis; A approves it.", "gr");
+        }));
+
+    /// <summary>L: attach to the goal's lead, as Enter on Agents does.</summary>
+    void AttachLead()
+    {
+        if (SelGoal is not { } g)
+            return;
+        if (LeadOf(g) is { } lead)
+            Attach(lead);
+        else
+            Flash($"{g.Lead} isn't an agent now. A starts the goal and its lead.", "ye");
+    }
+
     async void OpenConsole()
     {
         if (await board.WebUrlAsync() is not { } url)
@@ -801,7 +1001,7 @@ public partial class MainWindow
     int ItemCount() => screen switch
     {
         "list" => rows[channel].Count, "prs" => Prs.Count, "who" => Callers.Count, "options" => OptionItems().Count, "agents" => agents.Count,
-        "adopt" => adoptables?.Count ?? 0, _ => 0,
+        "adopt" => adoptables?.Count ?? 0, "goals" => Goals.Count, _ => 0,
     };
 
     void Move(int delta)
@@ -833,6 +1033,11 @@ public partial class MainWindow
             Attach(agents[Sel]);
         else if (screen == "adopt")
             Adopt();
+        else if (screen == "goals" && Goals.Count > 0)
+        {
+            goal = (Goals[Sel].Name, null);
+            Goto("goal");
+        }
     }
 
     void ChangeOption(int delta)
@@ -1074,7 +1279,7 @@ public partial class MainWindow
             GoBack();
         else if (key is Key.Up or Key.Down or Key.PageUp or Key.PageDown)
         {
-            if (s == "read")
+            if (s is "read" or "goal")
                 ((Action)(key switch { Key.Up => Body.LineUp, Key.Down => Body.LineDown, Key.PageUp => Body.PageUp, _ => Body.PageDown }))();
             else
                 Move((key is Key.Up or Key.PageUp ? -1 : 1) * (key is Key.PageUp or Key.PageDown ? Math.Max(5, lines - 7) : 1));
@@ -1139,8 +1344,12 @@ public partial class MainWindow
             OpenConsole();
         else if (s == "agents" && ch is 's' or 'n' or 'f' or 'a')
             ((Action)(ch switch { 's' => StartStop, 'n' => NewAgent, 'f' => Forget, _ => () => Goto("adopt") }))();
+        else if (s is "goals" or "goal" && ch is 'a' or 'x' or 'n' or 'l')
+            ((Action)(ch switch { 'a' => Approve, 'x' => StopGoal, 'n' => NewGoal, _ => AttachLead }))();
         else if (ch == 'a')
             Goto("agents");
+        else if (ch == 'e')
+            Goto("goals");
         else if (ch is 'p' or 's' or 'b' or 'o' or 'm')
             Goto(ch switch { 'p' => "prs", 's' => "sysop", 'b' => "who", 'o' => "options", _ => "main" });
         else if (ch == 't')
