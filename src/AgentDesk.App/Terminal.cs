@@ -520,6 +520,12 @@ public partial class MainWindow
         ];
     }
 
+    /// <summary>The release this window came from (build.ps1 -Package stamps it); a local dev build says so.</summary>
+    static readonly string Version = System.Reflection.Assembly.GetEntryAssembly()?
+        .GetCustomAttributes(typeof(System.Reflection.AssemblyInformationalVersionAttribute), false)
+        .OfType<System.Reflection.AssemblyInformationalVersionAttribute>().FirstOrDefault()?.InformationalVersion.Split('+')[0] is { } v
+        && v != "1.0.0" ? v : "dev build";
+
     List<Line> OptionsScreen(int W)
     {
         var items = OptionItems();
@@ -535,6 +541,7 @@ public partial class MainWindow
             [S(" A fresh start ends that agent's conversation and begins a new one from its handoff note:", "mu")],
             [S(" same name, same memory, clean context. That's Phoenix.", "mu")],
             [],
+            [S(" Version ", "fa"), S(Version, "ye"), S("   ·   updates arrive from GitHub Releases; the tray offers Restart to update", "fa")],
             [S(" Settings live in ", "fa"), S(SettingsPath, "mu")],
             [S(" The screech is synthesized from its parts (dial tone, DTMF, 2100 Hz answer tone,", "fa")],
             [S(" V.21 chirps, training noise). No 56k modems were harmed.", "fa")],

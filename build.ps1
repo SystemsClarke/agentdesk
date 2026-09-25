@@ -24,8 +24,9 @@ if ($Package) {
     # The window (AgentDesk.App, WPF) publishes framework-dependent (the default with -r): ~0.4 MB against ~140 MB
     # self-contained, and --framework below has Setup install the .NET desktop runtime when it is missing.
     # The core stays Native AOT and Velopack's main exe.
+    $version = "0.1.$(git rev-list --count HEAD)" # every commit is a new version; stamped into the exes and the package
     foreach ($p in 'AgentDesk.Core', 'AgentDesk.Cli', 'AgentDesk.App') {
-        dotnet publish "src/$p" -c Release -r win-x64 -o $stage -v q --nologo
+        dotnet publish "src/$p" -c Release -r win-x64 -o $stage -v q --nologo "-p:Version=$version"
         if ($LASTEXITCODE) { exit $LASTEXITCODE }
     }
 
@@ -36,7 +37,7 @@ if ($Package) {
     $sign = if (Test-Path Cert:\CurrentUser\My\$thumb) { @('--signParams', "/sha1 $thumb /fd SHA256 /tr http://timestamp.digicert.com /td SHA256") } else { @() }
     dotnet tool restore | Out-Null
     dotnet vpk pack --packId AgentDeskApp --packTitle AgentDesk --packAuthors 'John Palenchar' `
-        --packVersion "0.1.$(git rev-list --count HEAD)" --packDir $stage --mainExe AgentDesk.Core.exe `
+        --packVersion $version --packDir $stage --mainExe AgentDesk.Core.exe `
         --runtime win-x64 --framework net10.0-x64-desktop --icon agentdesk\assets\agentdesk.ico `
         --shortcuts StartMenuRoot --outputDir releases @sign
     if ($LASTEXITCODE) { exit $LASTEXITCODE }
