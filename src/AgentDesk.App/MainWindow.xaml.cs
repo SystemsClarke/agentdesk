@@ -89,7 +89,9 @@ public partial class MainWindow : Window
         clickMap.Clear();
         scrollToEnd = false;
         var reading = screen is "read" or "compose";
-        Doc.PageWidth = reading ? double.NaN : 10_000;
+        var width = reading ? double.NaN : 10_000;
+        if (!Doc.PageWidth.Equals(width)) // setting it, even to the same value, re-lays out the whole document: a flicker
+            Doc.PageWidth = width;
         var body = screen switch
         {
             "main" => MainScreen(cols), "list" => ChannelList(cols), "prs" => PrsScreen(cols), "sysop" => SysopScreen(cols),
