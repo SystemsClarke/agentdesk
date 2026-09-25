@@ -131,7 +131,8 @@ public sealed class UiTests : IDisposable
         _ = checker.Run(TimeSpan.FromHours(1));
         Assert.Contains("\"ok\": true", checker.Poke());
         string? Row(string url) { using var db = store.Open(); return db.Scalar("SELECT state || '|' || COALESCE(last_error, '') FROM pull_requests WHERE url=$u AND checked_ts IS NOT NULL", ("u", url)) as string; }
-        for (var i = 0; i < 100 && Row(failing) is null; i++) await Task.Delay(50);
+        string? Notice() { using var db = store.Open(); return db.Scalar("SELECT id FROM messages WHERE thread_id=$t AND json_extract(meta, '$.kind')='pr-merged'", ("t", thread))?.ToString(); }
+        for (var i = 0; i < 200 && (Row(failing) is null || Row(merged) is null || Notice() is null); i++) await Task.Delay(50); // the two PRs finish in either order
         Assert.Equal("merged|", Row(merged));
         Assert.Equal("open|gh auth login", Row(failing));
         using (var db = store.Open())
