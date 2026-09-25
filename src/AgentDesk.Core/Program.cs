@@ -32,6 +32,7 @@ var sessions = new Sessions();
 var identities = new Identities(store, sessions, data);
 _ = prs.Run(TimeSpan.FromSeconds(5));
 identities.Resume();
+using var bridge = SlackBridge.For(data, python); // the Slack bridge lives and dies with the core
 var started = DateTimeOffset.UtcNow;
 try { Tray.WebUrl = await Web.Start(data, WebCall); }
 catch (Exception e) { Log.Warn($"ops console not started: {e.Message}"); }
@@ -56,7 +57,7 @@ Task<string> Ui(string op, Args a, Func<string, Task> push, CancellationToken go
     "close" => board.CloseQuestion(a.Int("thread_id")),
     "post" => board.JohnPosts(a.String("channel"), a.String("subject", ""), a.String("body")),
     "unarchive" => board.Unarchive(a.Int("thread_id")),
-    "status" => board.Heartbeats(data),
+    "status" => Status(),
     "check_prs" => Task.FromResult(prs.Poke()),
     "fresh" => board.FreshStart(a.String("name")),
     "worker" => board.ToggleWorker(data, python),
@@ -90,3 +91,10 @@ Task<string> WebCall(string op, JsonElement args) => op switch
         => Ui(op, new Args(args), _ => Task.CompletedTask, CancellationToken.None),
     _ => Task.FromResult(Tools.Error($"unknown request: {op}")),
 };
+
+async Task<string> Status()
+{
+    var s = JsonNode.Parse(await board.Heartbeats(data))!;
+    s["bridge"] = bridge?.Status() ?? new JsonObject { ["enabled"] = false };
+    return s.ToJsonString(Wire.Indented);
+}
