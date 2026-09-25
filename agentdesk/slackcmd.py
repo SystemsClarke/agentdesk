@@ -1,6 +1,6 @@
-"""Phone commands for the Slack bridge: John types `agents`, `worker off`, `status`... in a bot's DM.
+"""Phone commands for the Slack bridge: John types `agents`, `concierge off`, `status`... in a bot's DM.
 
-Each command belongs to an area (agents, worker, ops, swarms); the bridge can run several Slack bots from
+Each command belongs to an area (agents, concierge, ops, swarms); the bridge can run several Slack bots from
 bots.json, each answering only its own areas plus `help`. The `board` area is the question relay and
 `wake`, which live in scripts/slack_bridge.py. Commands reach the core over its pipe (docs/ui-api.md)
 and only John's Slack user may run them.
@@ -19,7 +19,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-AREAS = ("board", "agents", "worker", "ops", "swarms")
+AREAS = ("board", "agents", "concierge", "ops", "swarms")
 _ids = itertools.count(1)
 _pipe: str | None = None
 
@@ -123,15 +123,21 @@ def yes(cmd: "Commands", text: str) -> str:
     return _err(r := cmd.call("ui:identity_forget", {"name": name})) or f"Forgot *{r.get('forgotten', name)}*."
 
 
-def worker(cmd: "Commands", text: str) -> str:
+def _concierge_line(c: dict) -> str:
+    held = f", holding {', '.join('#' + str(h) for h in c.get('held') or [])}" if c.get("held") else ""
+    swarm = f", {len(c['members'])} in its swarm" if c.get("members") else ""
+    return f"Concierge is {'on' if c.get('on') else 'off'}, {c.get('open', 0):g} open item(s) waiting{held}{swarm}."
+
+
+def concierge(cmd: "Commands", text: str) -> str:
     arg = text.split()[1].lower() if len(text.split()) > 1 else ""
-    w = cmd.call("ui:status").get("worker") or {}
-    if arg in ("on", "off") and (arg == "on") != bool(w.get("running")):
-        r = cmd.call("ui:worker")
-        return _err(r) or ("Worker starting." if r.get("started") else
-                           "Worker will stop after its current item." if r.get("stop_requested") else "Worker already starting.")
-    held = f", holding #{w['held']}" if w.get("held") else ""
-    return f"Worker is {'on' if w.get('running') else 'off'}{held}."
+    if arg in ("on", "off"):
+        r = cmd.call("ui:concierge", {"on": arg == "on"})
+    elif arg:
+        return "Usage: `concierge` status · `concierge on|off`"
+    else:
+        r = cmd.call("ui:concierge")
+    return _err(r) or _concierge_line(r)
 
 
 def status(cmd: "Commands", text: str) -> str:
@@ -140,13 +146,13 @@ def status(cmd: "Commands", text: str) -> str:
         return e
     ids = cmd.call("ui:identity_list").get("identities", [])
     qs = cmd.call("list_threads", {"channel": "question", "status": "open", "limit": 200})
-    slack, w, crew = s.get("slack") or {}, s.get("worker") or {}, s.get("crew") or {}
+    slack, c, sessions = s.get("slack") or {}, s.get("concierge") or {}, s.get("sessions") or {}
     count = lambda st: sum(r.get("state") == st for r in ids)
     governor = (s.get("governor") or {}).get("summary", "")  # advisory; an older core has none
     return "\n".join([
         f"*Slack* {'up' if _ago(slack.get('ts')) < 90 else 'down'}",
-        f"*Worker* {'on' if w.get('running') else 'off'}" + (f", holding #{w['held']}" if w.get("held") else ""),
-        f"*Agents* {count('running')} running / cap {crew.get('max', '?')}, {count('queued')} queued",
+        f"*Concierge* {'on' if c.get('on') else 'off'}" + (f", holding {', '.join('#' + str(h) for h in c['held'])}" if c.get("held") else ""),
+        f"*Agents* {count('running')} running / cap {sessions.get('max', '?')}, {count('queued')} queued",
         f"*Open questions* {len(qs.get('threads', []))}",
         f"*Usage* {(s.get('usage') or {}).get('summary', '?')}"]
         + ([f"*Governor* {governor.removeprefix('governor: ')}"] if governor else []))
@@ -205,8 +211,8 @@ COMMANDS = {  # area -> command word -> (handler, help line)
     "agents": {"agents": (agents, "`agents` list them"),
                "agent": (agent, "`agent new <name> <folder> [charter]` · `agent start|stop|forget <name>`"),
                "yes": (yes, None)},
-    "worker": {"worker": (worker, "`worker` status · `worker on|off`")},
-    "ops": {"status": (status, "`status` core, worker, agents, questions, usage"),
+    "concierge": {"concierge": (concierge, "`concierge` status · `concierge on|off`")},
+    "ops": {"status": (status, "`status` core, Concierge, agents, questions, usage"),
             "update": (update, "`update` versions · `update apply` update and restart")},
     "board": {},
     "swarms": {"swarms": (swarms, "`swarms` the 10 swarm slots"),

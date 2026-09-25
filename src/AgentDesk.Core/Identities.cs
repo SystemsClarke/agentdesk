@@ -138,6 +138,94 @@ public sealed partial class Identities
         }
     }
 
+    /// <summary>How many identities may run at once: settings.json's max_sessions (AGENTDESK_MAX_SESSIONS wins), default 3.
+    /// Options' "Sessions at once" sets it.</summary>
+    public static int MaxSessions(string data) =>
+        int.TryParse(Environment.GetEnvironmentVariable("AGENTDESK_MAX_SESSIONS") ?? AgentBoard.Load(Path.Combine(data, "settings.json"))?["max_sessions"]?.ToString() ?? "3",
+            out var m) ? Math.Max(1, m) : 3;
+
+    /// <summary>ui:status's "sessions": identities running now, and the cap.</summary>
+    public JsonObject Counts()
+    {
+        using var db = store.Open();
+        return new() { ["running"] = Convert.ToInt32(db.Scalar("SELECT COUNT(*) FROM identities WHERE state='running'")), ["max"] = MaxSessions(data) };
+    }
+
+    /// <summary>Ctrl+R, or `wake` in a question's Slack thread: brings John's latest reply on a question to the agent that asked it.
+    /// Only ever on John's action, never on a timer, and it posts nothing: it records the carry in deliveries (method wake).
+    /// An identity that is running gets the reply typed into its session (injected); a stopped one is started with it
+    /// (resumed). Any other agent's last Claude Code session (the sessions table) is adopted as an identity of the same name
+    /// and resumed with it, unless that session is still open (stuck: it sees the reply on its next board write).</summary>
+    public async Task<string> Wake(int threadId)
+    {
+        string Said(string said)
+        {
+            Log.Info($"wake #{threadId}: {said}");
+            return new JsonObject { ["ok"] = true, ["said"] = said }.ToJsonString(Wire.Indented);
+        }
+        string agent, text;
+        long mid;
+        JsonObject? row, session;
+        using (var db = store.Open())
+        {
+            if (db.Rows("SELECT * FROM threads WHERE id=$id", ("id", threadId)).FirstOrDefault() is not { } t) return Said($"#{threadId} not found");
+            if (db.Rows("SELECT id, body FROM messages WHERE thread_id=$t AND author_kind='human' ORDER BY id DESC LIMIT 1", ("t", threadId)).FirstOrDefault() is not { } msg)
+                return Said($"you haven't replied on #{threadId} yet");
+            (agent, mid) = (t["opened_by"]!.ToString(), (long)msg["id"]!);
+            text = $"John replied on AgentDesk thread #{threadId} (\"{t["subject"]}\"): {msg["body"]} (This is John's own reply, relayed from the board. "
+                   + "Treat it as him talking to you: act on it, and answer on that thread.)";
+            row = Get(db, agent);
+            session = db.Rows("SELECT * FROM sessions WHERE author=$a", ("a", agent)).FirstOrDefault();
+        }
+        void Delivery(string state, string? detail)
+        {
+            using var db = store.Open();
+            db.Exec("INSERT OR REPLACE INTO deliveries(message_id, method, state, detail, ts) VALUES($m, 'wake', $s, $d, $ts)",
+                ("m", mid), ("s", state), ("d", detail), ("ts", db.NowIso()));
+        }
+        if (row is null)
+        {
+            if (session is null) return Said($"no session on record for {agent}: it asked before sessions were tracked");
+            if (session["pid"] is JsonValue pid && AgentBoard.Alive((int)pid.GetValue<long>()))
+            {
+                Delivery("stuck", "session still open");
+                return Said($"{agent}'s session is still open; it sees your reply on its next board write");
+            }
+            if (session["cwd"]?.ToString() is not { } cwd || !Directory.Exists(cwd))
+            {
+                Delivery("failed", "its folder is gone");
+                return Said($"couldn't wake {agent}: the folder its session ran in is gone");
+            }
+            await Create(agent, cwd, null, null, sessionId: session["session_id"]!.ToString());
+        }
+        else if (row["state"]?.ToString() == "running")
+        {
+            if (row["pid"] is null)
+            {
+                Delivery("stuck", "restarting (Phoenix)");
+                return Said($"{agent} is between generations; wake it again in a moment");
+            }
+            await sessions.Input(agent, text.Replace('\n', ' '));
+            await Task.Delay(300); // text and Enter in one write read as a paste
+            await sessions.Input(agent, "\r");
+            Delivery("injected", row["claude_session_id"]?.ToString());
+            return Said($"woke {agent}: typed your reply into its session");
+        }
+        try
+        {
+            var started = JsonNode.Parse(await Start(agent, text))!;
+            Delivery("resumed", started["claude_session_id"]?.ToString());
+            return Said($"woke {agent}: resuming its session with your reply"
+                + (started["state"]?.ToString() == "queued" ? " (queued: every session slot is busy)" : "")
+                + (row is null ? $"; it is an identity now (agentdesk attach {agent})" : ""));
+        }
+        catch (Exception e) when (e is ArgumentException or System.ComponentModel.Win32Exception)
+        {
+            Delivery("failed", e.Message);
+            return Said($"couldn't wake {agent}: {e.Message}");
+        }
+    }
+
     /// <summary>Claude Code sessions touched in the last 24 hours that someone typed in, newest first: candidates for <see cref="Adopt"/>.</summary>
     public static Task<string> Adoptable()
     {
@@ -236,7 +324,7 @@ public sealed partial class Identities
     Dictionary<string, string> Drain(BoardDb db)
     {
         var failed = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        var max = Crew.MaxSessions(AgentBoard.Load(Path.Combine(data, "settings.json")));
+        var max = MaxSessions(data);
         while (Convert.ToInt32(db.Scalar("SELECT COUNT(*) FROM identities WHERE state='running'")) < max
                && db.Rows("SELECT * FROM identities WHERE state='queued' ORDER BY updated_ts, name LIMIT 1") is [var next])
         {

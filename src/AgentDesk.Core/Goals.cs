@@ -12,7 +12,9 @@ namespace AgentDesk.Core;
 /// Goals (docs/GOAL.md): a hypothesis, a measure the core runs itself, a success line, a budget and an experiment log.
 /// The lead identity (&lt;goal&gt;-lead) proposes the test and John approves it. While it runs, the core wakes the lead every
 /// cadence and after each measure, and the lead spawns member identities (&lt;goal&gt;-&lt;name&gt;) within max_members. The loop
-/// ends when a measure crosses the success line, when the budget's hours are spent, or when John stops it.
+/// ends when a measure crosses the success line, when the budget's hours are spent, or when John stops it. A standing goal (the
+/// Concierge) never ends that way: at its success line it idles, the core re-checks the measure on cadence (every tick for an
+/// internal measure), and the lead is woken only while the measure is off the line.
 /// </summary>
 public sealed partial class Goals
 {
@@ -27,6 +29,22 @@ public sealed partial class Goals
         - The core wakes you with the goal's status every cadence and after every measure. Between wakes, stop.
         """;
     static readonly TimeSpan Settle = TimeSpan.FromSeconds(1);
+
+    /// <summary>Measures the core answers itself from the board, with no shell: measure_cmd <c>internal:&lt;name&gt;</c>.</summary>
+    static readonly Dictionary<string, string> Internal = new(StringComparer.OrdinalIgnoreCase)
+    {
+        // Work to Hire items waiting for a dispatcher: open, and not reserved for a deliberate claim_work (claim=anyone).
+        ["internal:open_work"] = "SELECT COUNT(*) FROM threads WHERE channel='work' AND status='open' "
+            + "AND COALESCE(CASE WHEN json_valid(meta) THEN json_extract(meta, '$.claim') END, 'auto') <> 'anyone'",
+    };
+
+    static bool IsInternal(string? cmd) => cmd is not null && Internal.ContainsKey(cmd.Trim());
+
+    public static double MeasureInternal(BoardDb db, string cmd) => Internal.TryGetValue(cmd.Trim(), out var sql)
+        ? Convert.ToDouble(db.Scalar(sql), CultureInfo.InvariantCulture) : throw new ArgumentException($"no such internal measure: {cmd}");
+
+    /// <summary>The value a standing goal last woke its lead for; cleared when it is back on its success line.</summary>
+    readonly ConcurrentDictionary<string, double> wokeFor = new(StringComparer.OrdinalIgnoreCase);
     readonly BoardStore store;
     readonly Identities ids;
     readonly Sessions sessions;
@@ -73,6 +91,7 @@ public sealed partial class Goals
         if (Str(g, "state") != "draft") throw new ArgumentException($"goal {name} is {Str(g, "state")}: proposals are for drafts");
         ParseLine(success);
         if (string.IsNullOrWhiteSpace(hypothesis) || string.IsNullOrWhiteSpace(measureCmd)) throw new ArgumentException("hypothesis and measure_cmd are required");
+        if (measureCmd.Trim().StartsWith("internal:", StringComparison.OrdinalIgnoreCase)) MeasureInternal(db, measureCmd);
         db.Exec("UPDATE goals SET hypothesis=$h, measure_cmd=$m, success=$s, samples=$k, updated_ts=$ts WHERE name=$n",
             ("h", hypothesis), ("m", measureCmd), ("s", success.Trim()), ("k", Math.Clamp(samples, 1, 9)), ("ts", db.NowIso()), ("n", name));
         db.Reply(Long(g, "thread_id"), Str(g, "lead")!, BoardDb.Agent,
@@ -96,6 +115,45 @@ public sealed partial class Goals
         return Ok(g); // the loop's next tick wakes the lead
     }
 
+    /// <summary>A goal that is on until John turns it off (the Concierge): its test is fixed by the core, not proposed.</summary>
+    public sealed record StandingGoal(string Name, string Objective, string Folder, string Charter, string Model, string Hypothesis,
+        string Measure, string Success, int MaxMembers, double CadenceMinutes);
+
+    /// <summary>John turning a standing goal on is its approval: it is created running (with its lead identity) the first time,
+    /// and started again if it was stopped. Nothing is launched here: the next tick measures, and wakes the lead only if there is work.</summary>
+    public async Task<string> Ensure(Caller c, StandingGoal s)
+    {
+        if (!John(c)) throw new ArgumentException("only John turns a standing goal on");
+        ParseLine(s.Success);
+        var lead = s.Name + "-lead";
+        string? state;
+        bool hasLead;
+        using (var db = store.Open())
+        {
+            state = Get(db, s.Name) is { } g ? Str(g, "state") : null;
+            hasLead = db.Scalar("SELECT 1 FROM identities WHERE name=$n", ("n", lead)) is not null;
+        }
+        if (state is null && !hasLead) await ids.Create(lead, s.Folder, s.Charter, null, model: s.Model);
+        using (var db = store.Open())
+            if (state is null)
+            {
+                var thread = db.StartThread("discussion", $"goal: {s.Name}", Author, BoardDb.Agent,
+                    $"**Goal {s.Name}** (standing, turned on by John): {s.Objective}\n\nLead: {lead}. Measure: `{s.Measure}`, on its line when {s.Success}; "
+                    + "there it idles and the core keeps re-checking, so it never ends by itself.");
+                db.Exec("INSERT INTO goals (name, objective, hypothesis, measure_cmd, measure_folder, success, max_members, cadence_minutes, state, lead, thread_id, "
+                        + "started_ts, created_ts, updated_ts, standing) VALUES ($n,$o,$h,$m,$f,$s,$mm,$c,'running',$l,$t,$ts,$ts,$ts,1)",
+                    ("n", s.Name), ("o", s.Objective), ("h", s.Hypothesis), ("m", s.Measure), ("f", s.Folder), ("s", s.Success), ("mm", s.MaxMembers),
+                    ("c", s.CadenceMinutes), ("l", lead), ("t", thread), ("ts", db.NowIso()));
+            }
+            else if (state != "running")
+            {
+                db.Exec("UPDATE goals SET state='running', standing=1, started_ts=$ts, woke_ts=NULL, updated_ts=$ts WHERE name=$n", ("ts", db.NowIso()), ("n", s.Name));
+                db.Reply(Long(Need(db, s.Name), "thread_id"), Author, BoardDb.Agent, "**Turned on by John.**");
+            }
+        wokeFor.TryRemove(s.Name, out _);
+        return await Status(s.Name);
+    }
+
     public Task<string> Stop(Caller c, string name)
     {
         using var db = store.Open();
@@ -110,7 +168,7 @@ public sealed partial class Goals
         SELECT g.name, g.state, g.objective, g.lead, g.thread_id, g.success,
           (SELECT COUNT(*) FROM experiments e WHERE e.goal=g.name) AS experiments,
           (SELECT value FROM experiments e WHERE e.goal=g.name AND e.measured_ts IS NOT NULL ORDER BY e.n DESC LIMIT 1) AS last_value,
-          (SELECT COUNT(*) FROM goal_members m WHERE m.goal=g.name) AS members, g.max_members
+          (SELECT COUNT(*) FROM goal_members m WHERE m.goal=g.name) AS members, g.max_members, g.standing
         FROM goals g ORDER BY g.updated_ts DESC
         """;
 
@@ -121,7 +179,7 @@ public sealed partial class Goals
         var g = Need(db, name);
         g["experiments"] = new JsonArray([.. db.Rows("SELECT * FROM experiments WHERE goal=$g ORDER BY n", ("g", name))]);
         g["history"] = new JsonArray([.. db.Rows("SELECT value FROM experiments WHERE goal=$g AND value IS NOT NULL ORDER BY n", ("g", name)).Select(r => r["value"]!.DeepClone())]);
-        g["members"] = new JsonArray([.. db.Rows("SELECT identity, task, created_ts FROM goal_members WHERE goal=$g ORDER BY created_ts", ("g", name))]);
+        g["members"] = new JsonArray([.. db.Rows("SELECT identity, task, created_ts, work_id FROM goal_members WHERE goal=$g ORDER BY created_ts", ("g", name))]);
         g["summary"] = Summary(db, name);
         return Ok(g);
     }
@@ -160,7 +218,9 @@ public sealed partial class Goals
             : await Ok(new JsonObject { ["goal"] = goal, ["n"] = n, ["measuring"] = true, ["note"] = "The verdict is posted on the goal thread and the lead is woken with it." });
     }
 
-    public async Task<string> Spawn(Caller c, string goal, string name, string task, string? model)
+    /// <summary>Starts member &lt;goal&gt;-&lt;name&gt;. With <paramref name="workId"/>, the lead's claim on that Work to Hire item is
+    /// handed to the member, which completes it (complete_work) before it retires.</summary>
+    public async Task<string> Spawn(Caller c, string goal, string name, string task, string? model, long? workId = null)
     {
         model = string.IsNullOrWhiteSpace(model) ? "sonnet" : model.ToLowerInvariant();
         if (!Governor.Models.Contains(model)) throw new ArgumentException("model is haiku, sonnet or opus");
@@ -173,20 +233,36 @@ public sealed partial class Goals
             g = Lead(c, Running(db, goal));
             var count = Convert.ToInt32(db.Scalar("SELECT COUNT(*) FROM goal_members WHERE goal=$g", ("g", goal)));
             if (count >= Long(g, "max_members")) throw new ArgumentException($"budget: goal {goal} has {count} of {g["max_members"]} members; wait for one to call member_done");
-            db.Exec("INSERT INTO goal_members (identity, goal, task, created_ts) VALUES ($i,$g,$t,$ts)", ("i", id), ("g", goal), ("t", task), ("ts", db.NowIso()));
+            if (db.Scalar("SELECT 1 FROM goal_members WHERE identity=$i", ("i", id)) is not null) throw new ArgumentException($"{id} is already a member");
+            if (workId is { } w && !db.HandOverTask(w, Str(g, "lead")!, id)) throw new ArgumentException($"work item #{w} is not claimed by {g["lead"]}: claim_work it first");
+            db.Exec("INSERT INTO goal_members (identity, goal, task, created_ts, work_id) VALUES ($i,$g,$t,$ts,$w)",
+                ("i", id), ("g", goal), ("t", task), ("ts", db.NowIso()), ("w", workId));
         }
+        var how = workId is { } item ? $"""
+            Your task is Work to Hire item #{item}, and its claim is yours: read_thread {item} for the whole request. When the work is done,
+            call complete_work thread_id={item} with your report (what you did, what you found, anything left for John); it is posted on the item's thread.
+            Then call member_done with a one-line summary; that retires you. If you cannot finish it, say why in member_done: the item goes back to {g["lead"]}.
+            """ : $"""
+            Call experiment_start {goal}, change before you change anything, and experiment_done with its n once the change is in place:
+            the core runs the measure and posts the verdict on thread #{g["thread_id"]}. Never report a measured value yourself.
+            When the task is done, call member_done with a short summary; that retires you.
+            """;
         try
         {
             await ids.Create(id, Str(g, "measure_folder")!, $"""
                 You are a member of the AgentDesk goal {goal}, dispatched by its lead {g["lead"]}. Objective: {g["objective"]}
                 Hypothesis: {g["hypothesis"]}
                 Your task: {task}
-                Call experiment_start {goal}, change before you change anything, and experiment_done with its n once the change is in place:
-                the core runs the measure and posts the verdict on thread #{g["thread_id"]}. Never report a measured value yourself.
-                When the task is done, call member_done with a short summary; that retires you.
+                {how}
                 """, null, model: model);
         }
-        catch { using var db = store.Open(); db.Exec("DELETE FROM goal_members WHERE identity=$i", ("i", id)); throw; }
+        catch
+        {
+            using var db = store.Open();
+            db.Exec("DELETE FROM goal_members WHERE identity=$i", ("i", id));
+            if (workId is { } w) db.HandOverTask(w, id, Str(g, "lead")!);
+            throw;
+        }
         return await ids.Start(id, $"Your task for goal {goal}: {task}"); // queued past max_sessions, launched when a slot frees
     }
 
@@ -197,8 +273,12 @@ public sealed partial class Goals
         lock (gate)
         {
             using var db = store.Open();
-            goal = db.Scalar("SELECT goal FROM goal_members WHERE identity=$i", ("i", id)) as string ?? throw new ArgumentException($"{id} is not a goal member");
-            db.Reply(Long(Need(db, goal), "thread_id"), id, BoardDb.Agent, $"**Done.** {summary}");
+            var m = db.Rows("SELECT goal, work_id FROM goal_members WHERE identity=$i", ("i", id)).FirstOrDefault() ?? throw new ArgumentException($"{id} is not a goal member");
+            goal = Str(m, "goal")!;
+            var g = Need(db, goal);
+            // A work item it did not complete goes back to the lead, which decides what happens to it.
+            var back = m["work_id"] is { } w && db.HandOverTask((long)w, id, Str(g, "lead")!) ? $"\n\nWork item #{w} was not completed: it is back with {g["lead"]}." : "";
+            db.Reply(Long(g, "thread_id"), id, BoardDb.Agent, $"**Done.** {summary}{back}");
             db.Exec("DELETE FROM goal_members WHERE identity=$i", ("i", id));
         }
         _ = Later(async () => { await ids.Forget(id); await Wake(goal); });
@@ -217,17 +297,47 @@ public sealed partial class Goals
     public async Task Tick()
     {
         var due = new List<string>();
+        var standing = new List<(JsonObject Goal, bool CadenceDue)>();
         using (var db = store.Open())
         {
             var now = Time(db.NowIso());
             foreach (var g in db.Rows("SELECT * FROM goals WHERE state='running'"))
-                if ((now - Time(Str(g, "started_ts")!)).TotalHours >= (double)g["max_hours"]!)
+            {
+                var cadenceDue = Str(g, "woke_ts") is not { } woke || (now - Time(woke)).TotalMinutes >= (double)g["cadence_minutes"]!;
+                if (Standing(g))
+                {
+                    if (cadenceDue || IsInternal(Str(g, "measure_cmd"))) standing.Add((g, cadenceDue)); // an internal measure costs nothing: every tick
+                }
+                else if ((now - Time(Str(g, "started_ts")!)).TotalHours >= (double)g["max_hours"]!)
                     End(db, g, "exhausted", $"budget spent: {g["max_hours"]} h");
-                else if (Str(g, "woke_ts") is not { } woke || (now - Time(woke)).TotalMinutes >= (double)g["cadence_minutes"]!)
+                else if (cadenceDue)
                     due.Add(Str(g, "name")!);
+            }
         }
+        foreach (var (g, cadenceDue) in standing) await Recheck(g, cadenceDue);
         foreach (var name in due) await Wake(name);
     }
+
+    /// <summary>A standing goal's tick: on its line it idles and the lead is not woken; off it, the lead is woken when the
+    /// value changed since its last wake, or at cadence.</summary>
+    async Task Recheck(JsonObject g, bool cadenceDue)
+    {
+        var name = Str(g, "name")!;
+        var line = ParseLine(Str(g, "success")!);
+        var (value, error) = await Sample(Str(g, "measure_cmd")!, Str(g, "measure_folder")!, line.Op == "pass");
+        if (value is { } v && line.Met(v))
+        {
+            wokeFor.TryRemove(name, out _);
+            if (cadenceDue) using (var db = store.Open()) db.Exec("UPDATE goals SET woke_ts=$ts WHERE name=$n", ("ts", db.NowIso()), ("n", name));
+            return;
+        }
+        if (error is not null) Log.Warn($"standing goal {name}: {error}");
+        if (!cadenceDue && value is { } now && wokeFor.TryGetValue(name, out var was) && was == now) return;
+        if (value is { } seen) wokeFor[name] = seen;
+        await Wake(name);
+    }
+
+    static bool Standing(JsonObject g) => g["standing"] is JsonValue v && v.GetValue<long>() != 0;
 
     /// <summary>Types the goal's status into the lead's session and presses Enter, or starts the lead with it as its prompt.</summary>
     public async Task Wake(string name)
@@ -239,8 +349,9 @@ public sealed partial class Goals
             if (Get(db, name) is not { } g || Str(g, "state") != "running") return;
             db.Exec("UPDATE goals SET woke_ts=$ts WHERE name=$n", ("ts", db.NowIso()), ("n", name));
             lead = Str(g, "lead")!;
-            text = $"[AgentDesk goal wake] {Summary(db, name).Replace("\n", " / ")} / Next: decide the next experiment and dispatch it "
-                   + "(member_spawn), or run it yourself (experiment_start, experiment_done). Then stop until the next wake.";
+            text = $"[AgentDesk goal wake] {Summary(db, name).Replace("\n", " / ")} / Next: " + (Standing(g)
+                ? "act on the measure as your charter says (member_spawn for the work). Then stop until the next wake."
+                : "decide the next experiment and dispatch it (member_spawn), or run it yourself (experiment_start, experiment_done). Then stop until the next wake.");
             who = db.Rows("SELECT state, pid FROM identities WHERE name=$n", ("n", lead)).FirstOrDefault();
         }
         try
@@ -267,7 +378,7 @@ public sealed partial class Goals
             string? error = null;
             for (var i = 0; i < Long(g, "samples") && error is null; i++)
             {
-                var (value, err) = await RunOnce(Str(g, "measure_cmd")!, Str(g, "measure_folder")!, line.Op == "pass");
+                var (value, err) = await Sample(Str(g, "measure_cmd")!, Str(g, "measure_folder")!, line.Op == "pass");
                 if (value is { } v) values.Add(v); else error = err;
             }
             using (var db = store.Open())
@@ -282,12 +393,22 @@ public sealed partial class Goals
                 var e = db.Rows("SELECT * FROM experiments WHERE goal=$g AND n=$n", ("g", goal), ("n", n))[0];
                 db.Reply(Long(g, "thread_id"), Author, BoardDb.Agent,
                     $"Experiment #{n} by {e["owner"]} ({e["change"]}): **{value?.ToString(CultureInfo.InvariantCulture) ?? "no value"}**, {verdict}.");
-                if (verdict == "met") End(db, Need(db, goal), "succeeded", $"experiment #{n} measured {value} ({g["success"]})");
+                if (verdict == "met" && Standing(g)) wokeFor.TryRemove(goal, out _); // at its line a standing goal idles
+                else if (verdict == "met") End(db, Need(db, goal), "succeeded", $"experiment #{n} measured {value} ({g["success"]})");
                 else _ = Later(() => Wake(goal));
                 return e.ToJsonString(Wire.Indented);
             }
         }
         finally { one.Release(); }
+    }
+
+    /// <summary>One measurement: an internal measure from the board, else <see cref="RunOnce"/>.</summary>
+    async Task<(double?, string?)> Sample(string cmd, string folder, bool pass)
+    {
+        if (!IsInternal(cmd)) return await RunOnce(cmd, folder, pass);
+        using var db = store.Open();
+        var v = MeasureInternal(db, cmd);
+        return (pass ? (v != 0 ? 1 : 0) : v, null);
     }
 
     /// <summary>measure_cmd through cmd in the goal's folder: the last number on stdout (a non-zero exit is an error), or for
@@ -315,6 +436,11 @@ public sealed partial class Goals
         db.Reply(Long(g, "thread_id"), Author, BoardDb.Agent, $"**Goal {state}**: {note}.\n\n{Summary(db, name)}");
         var members = db.Rows("SELECT identity FROM goal_members WHERE goal=$g", ("g", name)).Select(r => Str(r, "identity")!).ToList();
         db.Exec("DELETE FROM goal_members WHERE goal=$g", ("g", name));
+        // Work to Hire items its lead or members still hold go back on the queue, rather than staying claimed by nobody running.
+        var holders = members.Append(Str(g, "lead")!).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var reopened = db.Rows("SELECT id, meta FROM threads WHERE channel='work' AND status='claimed'")
+            .Where(t => Assignee(t) is { } who && holders.Contains(who)).Select(t => Long(t, "id")).Where(db.ReopenTask).ToList();
+        if (reopened.Count > 0) db.Reply(Long(g, "thread_id"), Author, BoardDb.Agent, $"Back on Work to Hire, open: {string.Join(", ", reopened.Select(i => "#" + i))}.");
         _ = Later(async () =>
         {
             foreach (var m in members) await ids.Forget(m);
@@ -337,10 +463,12 @@ public sealed partial class Goals
         var members = db.Rows("SELECT identity FROM goal_members WHERE goal=$g", ("g", name)).Select(r => Str(r, "identity")).ToList();
         var last = db.Rows("SELECT * FROM (SELECT * FROM experiments WHERE goal=$g ORDER BY n DESC LIMIT 5) ORDER BY n", ("g", name));
         var trend = db.Rows("SELECT value FROM experiments WHERE goal=$g AND value IS NOT NULL ORDER BY n", ("g", name)).Select(r => r["value"]!.ToString());
+        var cmd = Str(g, "measure_cmd");
+        var now = IsInternal(cmd) ? "; now " + MeasureInternal(db, cmd!).ToString(CultureInfo.InvariantCulture) : "";
         return $"""
-            Goal {name} ({g["state"]}): {g["objective"]}
+            Goal {name} ({g["state"]}{(Standing(g) ? ", standing: at its line it idles, and it never ends by itself" : "")}): {g["objective"]}
             Hypothesis: {g["hypothesis"] ?? "(none yet)"}
-            Success: {g["success"] ?? "(none yet)"}, measured by `{g["measure_cmd"]}` in {g["measure_folder"]} ({g["samples"]} run(s), median)
+            Success: {g["success"] ?? "(none yet)"}, measured by `{cmd}` in {g["measure_folder"]} ({g["samples"]} run(s), median{now})
             Budget: {members.Count} of {g["max_members"]} members ({string.Join(", ", members)}), {g["max_hours"]} h; wakes every {g["cadence_minutes"]} min. Thread #{g["thread_id"]}.
             Last experiments: {(last.Count == 0 ? "none" : string.Join("; ", last.Select(e => $"#{e["n"]} by {e["owner"]}, {e["change"]}: {e["value"]?.ToString() ?? "unmeasured"} ({e["verdict"] ?? "open"})")))}
             Metric trend: {(trend.Any() ? string.Join(" -> ", trend) : "no measurements yet")}
@@ -387,6 +515,12 @@ public sealed partial class Goals
     static JsonObject? Get(BoardDb db, string name) => db.Rows("SELECT * FROM goals WHERE name=$n", ("n", name)) is [var g] ? g : null;
     static JsonObject Need(BoardDb db, string name) => Get(db, name) ?? throw new ArgumentException($"no such goal: {name}");
     static string? Str(JsonObject o, string k) => o[k]?.ToString();
+    /// <summary>Who holds a work item (its meta's assignee).</summary>
+    public static string? Assignee(JsonObject thread)
+    {
+        try { return Str(thread, "meta") is { } meta ? JsonNode.Parse(meta)?["assignee"]?.ToString() : null; }
+        catch (System.Text.Json.JsonException) { return null; }
+    }
     static long Long(JsonObject o, string k) => (long)o[k]!;
     static DateTimeOffset Time(string iso) => DateTimeOffset.Parse(iso, CultureInfo.InvariantCulture);
     static Task<string> Ok(JsonObject o) => Task.FromResult(o.ToJsonString(Wire.Indented));

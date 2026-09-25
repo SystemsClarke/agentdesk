@@ -97,7 +97,8 @@ public sealed class CoreBoard : IBoard, IDisposable
             .GroupBy(t => t.Subject[5..].Trim()).ToDictionary(g => g.Key, g => g.First().Id);
         var filed = (await List(new { channel = "question", status = "archived", limit = 1 })).FirstOrDefault();
         var beat = await Call("ui:status");
-        var worker = beat.GetProperty("worker");
+        var concierge = beat.GetProperty("concierge");
+        var sessions = beat.GetProperty("sessions");
         var slack = beat.GetProperty("slack") is { ValueKind: JsonValueKind.Object } s ? s : default;
         var usage = beat.GetProperty("usage");
         var relay =slack.ValueKind == JsonValueKind.Object && slack.TryGetProperty("last_relay", out var r) && r.ValueKind == JsonValueKind.Object
@@ -105,16 +106,15 @@ public sealed class CoreBoard : IBoard, IDisposable
         var prs = beat.GetProperty("prs").EnumerateArray().Select(p => new PrRow(Str(p, "repo") ?? "", Int(p, "number"), Str(p, "title") ?? "",
             Str(p, "url") ?? "", Str(p, "state") ?? "open", Str(p, "requested_by") ?? "", Str(p, "checked_ts") is null ? null : Ts(p, "checked_ts"),
             Str(p, "last_error"), Str(p, "triage"), Int(p, "thread_id") is var t and > 0 ? t : null, Str(p, "source") == "github-scan"));
-        var crew = beat.GetProperty("crew");
-        var roles = crew.GetProperty("roles").EnumerateArray().Select(r => new CrewRole(Str(r, "name") ?? "", Str(r, "running_since") is null ? null : Ts(r, "running_since"),
-            Str(r, "provider") ?? "claude", r.GetProperty("resumed").GetBoolean(), Str(r, "session_id"), Int(r, "items"), r.GetProperty("fresh_due").GetBoolean()));
+        var swarm = concierge.GetProperty("members").EnumerateArray().Select(m => new SwarmMember(Str(m, "identity") ?? "", Str(m, "task") ?? "",
+            Int(m, "work_id") is var w and > 0 ? w : null));
+        var held = concierge.GetProperty("held").EnumerateArray().Select(h => h.GetInt32()).FirstOrDefault();
         return new([.. prs], [.. recent.Take(5)], [.. recent.Where(p => p.Author != "john" && p.Ts > DateTimeOffset.Now.AddDays(-1)).DistinctBy(p => p.Author)],
             bios, john, recent.TakeWhile(p => p.Author != "john").Count(p => p.Kind != "read-receipt"), filed,
-            worker.GetProperty("running").GetBoolean(), Int(worker, "held") is var held and > 0 ? held : null,
-            [.. worker.GetProperty("events").EnumerateArray().Select(e => new WorkEvent(Ts(e, "ts"), Str(e, "kind") ?? "", Str(e, "body") ?? ""))],
+            concierge.GetProperty("on").GetBoolean(), held > 0 ? held : null, [.. swarm],
             slack.ValueKind == JsonValueKind.Object ? Ts(slack, "ts") : null, slack.ValueKind == JsonValueKind.Object && Int(slack, "poll_s") is var poll and > 0 ? poll : 15,
-            relay, [], [.. usage.GetProperty("lines").EnumerateArray().Select(l => l.GetString()!)], Str(usage, "summary") ?? "", [.. roles],
-            Str(crew, "note") ?? "", Int(crew, "live"), [.. crew.GetProperty("backends").EnumerateArray().Select(b => b.GetString()!)]);
+            relay, [], [.. usage.GetProperty("lines").EnumerateArray().Select(l => l.GetString()!)], Str(usage, "summary") ?? "",
+            Int(sessions, "running"), Int(sessions, "max"));
     }
 
     public async Task<IReadOnlyList<Identity>> IdentitiesAsync() =>

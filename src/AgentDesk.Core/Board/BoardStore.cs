@@ -75,11 +75,12 @@ public sealed partial class BoardDb : IDisposable
         CREATE TABLE IF NOT EXISTS goals (name TEXT PRIMARY KEY COLLATE NOCASE, objective TEXT NOT NULL, hypothesis TEXT, measure_cmd TEXT,
             measure_folder TEXT NOT NULL, success TEXT, samples INTEGER NOT NULL DEFAULT 1, max_members INTEGER NOT NULL DEFAULT 3,
             max_hours REAL NOT NULL DEFAULT 24, max_tokens INTEGER, cadence_minutes REAL NOT NULL DEFAULT 30, state TEXT NOT NULL DEFAULT 'draft',
-            lead TEXT NOT NULL, thread_id INTEGER, started_ts TEXT, woke_ts TEXT, created_ts TEXT NOT NULL, updated_ts TEXT NOT NULL);
+            lead TEXT NOT NULL, thread_id INTEGER, started_ts TEXT, woke_ts TEXT, created_ts TEXT NOT NULL, updated_ts TEXT NOT NULL,
+            standing INTEGER NOT NULL DEFAULT 0);
         CREATE TABLE IF NOT EXISTS experiments (id INTEGER PRIMARY KEY AUTOINCREMENT, goal TEXT NOT NULL COLLATE NOCASE, n INTEGER NOT NULL,
             change TEXT NOT NULL, owner TEXT, started_ts TEXT NOT NULL, measured_ts TEXT, value REAL, verdict TEXT, UNIQUE (goal, n));
         CREATE TABLE IF NOT EXISTS goal_members (identity TEXT PRIMARY KEY COLLATE NOCASE, goal TEXT NOT NULL COLLATE NOCASE, task TEXT NOT NULL,
-            created_ts TEXT NOT NULL);
+            created_ts TEXT NOT NULL, work_id INTEGER);
         CREATE TABLE IF NOT EXISTS slots (n INTEGER PRIMARY KEY CHECK (n BETWEEN 1 AND 10), channel_id TEXT, channel_name TEXT,
             persona_name TEXT, persona_icon TEXT, goal TEXT COLLATE NOCASE, updated_ts TEXT NOT NULL);
         """;
@@ -176,6 +177,8 @@ public sealed partial class BoardDb : IDisposable
         if (!ids.Contains("generation")) Exec("ALTER TABLE identities ADD COLUMN generation INTEGER NOT NULL DEFAULT 1");
         if (!ids.Contains("phoenix_msg")) Exec("ALTER TABLE identities ADD COLUMN phoenix_msg INTEGER");
         if (!ids.Contains("model")) Exec("ALTER TABLE identities ADD COLUMN model TEXT NOT NULL DEFAULT 'sonnet'"); // haiku|sonnet|opus
+        if (!Rows("PRAGMA table_info(goals)").Any(r => Str(r["name"]) == "standing")) Exec("ALTER TABLE goals ADD COLUMN standing INTEGER NOT NULL DEFAULT 0");
+        if (!Rows("PRAGMA table_info(goal_members)").Any(r => Str(r["name"]) == "work_id")) Exec("ALTER TABLE goal_members ADD COLUMN work_id INTEGER");
         Exec(Governor.Schema); // the usage governor's samples
     }
 
@@ -268,6 +271,25 @@ public sealed partial class BoardDb : IDisposable
         if (Str(meta["assignee"]) != agent) return false;
         meta["completed_ts"] = ts;
         return MoveWork(id, agent, ts, meta, "claimed", "done");
+    }
+
+    /// <summary>Hands a claimed work item from its assignee <paramref name="from"/> to <paramref name="to"/> (a goal lead to its member).</summary>
+    public bool HandOverTask(long id, string from, string to)
+    {
+        var meta = ThreadMeta(id);
+        if (Str(meta["assignee"]) != from) return false;
+        meta["assignee"] = to;
+        return Exec("UPDATE threads SET updated_ts=$ts, meta=$meta WHERE id=$id AND channel='work' AND status='claimed'",
+            ("ts", NowIso()), ("meta", Py.Dumps(meta)), ("id", id)) == 1;
+    }
+
+    /// <summary>Puts a claimed work item back on the queue, open and unassigned.</summary>
+    public bool ReopenTask(long id)
+    {
+        var meta = ThreadMeta(id);
+        foreach (var k in new[] { "assignee", "claimed_ts" }) meta.Remove(k);
+        return Exec("UPDATE threads SET status='open', updated_ts=$ts, meta=$meta WHERE id=$id AND channel='work' AND status='claimed'",
+            ("ts", NowIso()), ("meta", Py.Dumps(meta)), ("id", id)) == 1;
     }
 
     // ---- acknowledgements of John's replies: the state flip and the ack message share one transaction

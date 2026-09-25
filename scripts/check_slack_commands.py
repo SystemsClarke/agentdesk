@@ -50,9 +50,9 @@ class FakeCore:
 ROW = {"name": "scout", "state": "running", "folder": r"C:\work", "generation": 2}
 core = FakeCore(**{"ui:identity_list": {"identities": [ROW]}, "ui:identity_create": ROW, "ui:identity_start": ROW,
                    "ui:identity_stop": {**ROW, "state": "stopped"}, "ui:identity_forget": {"forgotten": "scout"},
-                   "ui:status": {"slack": None, "worker": {"running": False}, "crew": {"max": 3}, "usage": {"summary": "12% used"},
-                                  "governor": {"summary": "governor: 20% spendable of 88% left"}},
-                   "ui:worker": {"ok": True, "started": True}, "list_threads": {"threads": [{}, {}]}})
+                   "ui:status": {"slack": None, "concierge": {"on": False, "held": []}, "sessions": {"running": 1, "max": 3},
+                                  "usage": {"summary": "12% used"}, "governor": {"summary": "governor: 20% spendable of 88% left"}},
+                   "ui:concierge": {"on": False, "open": 2, "held": [], "members": []}, "list_threads": {"threads": [{}, {}]}})
 every = slackcmd.Commands(list(slackcmd.AREAS), JOHN, "AgentDesk", call=core)
 
 print("authorisation")
@@ -80,14 +80,22 @@ with contextlib.redirect_stderr(io.StringIO()):
     out = every.handle("yes", JOHN)
     check("yes confirms the forget", core.calls == [("ui:identity_forget", {"name": "scout"})] and "Forgot" in out, out)
     check("a second yes has nothing to confirm", every.handle("yes", JOHN) == "Nothing to confirm.")
-    check("worker shows its status", every.handle("worker", JOHN) == "Worker is off.")
     core.calls.clear()
-    check("worker off when already off changes nothing", every.handle("worker off", JOHN) == "Worker is off."
-          and ("ui:worker", {}) not in core.calls)
-    check("worker on starts it", every.handle("worker on", JOHN) == "Worker starting.")
+    out = every.handle("concierge", JOHN)
+    check("concierge shows its status and changes nothing", out == "Concierge is off, 2 open item(s) waiting." and core.calls == [("ui:concierge", {})], out)
+    core.answers["ui:concierge"] = {"on": True, "open": 0, "held": [7], "members": [{"identity": "concierge-w7"}]}
+    out = every.handle("concierge on", JOHN)
+    check("concierge on turns it on", core.calls[-1] == ("ui:concierge", {"on": True})
+          and out == "Concierge is on, 0 open item(s) waiting, holding #7, 1 in its swarm.", out)
+    core.answers["ui:concierge"] = {"on": False, "open": 1, "held": [], "members": []}
+    out = every.handle("concierge off", JOHN)
+    check("concierge off turns it off", core.calls[-1] == ("ui:concierge", {"on": False}) and out.startswith("Concierge is off"), out)
+    check("concierge with a stray word shows usage and calls nothing", "Usage" in every.handle("concierge maybe", JOHN)
+          and core.calls[-1] == ("ui:concierge", {"on": False}))
+    check("worker is no longer a command", every.handle("worker on", JOHN) is None)
     out = every.handle("status", JOHN)
-    check("status has slack, worker, agents/cap, questions, usage",
-          all(s in out for s in ("Slack* down", "Worker* off", "1 running / cap 3", "Open questions* 2", "12% used", "Governor* 20% spendable")), out)
+    check("status has slack, concierge, agents/cap, questions, usage",
+          all(s in out for s in ("Slack* down", "Concierge* off", "1 running / cap 3", "Open questions* 2", "12% used", "Governor* 20% spendable")), out)
     check("update without ui:update says so", "isn't available yet" in every.handle("update", JOHN))
     core.answers["ui:update"] = {"current": "0.1.40", "latest": "0.1.42"}
     out = every.handle("update apply", JOHN)
@@ -96,13 +104,13 @@ with contextlib.redirect_stderr(io.StringIO()):
 
 print("area routing")
 with contextlib.redirect_stderr(io.StringIO()):
-    workerbot = slackcmd.Commands(["worker"], JOHN, "Worker", call=core)
-    check("a worker-only bot ignores agents and status", workerbot.handle("agents", JOHN) is None and workerbot.handle("status", JOHN) is None)
-    check("a worker-only bot answers worker", workerbot.handle("worker", JOHN) is not None)
-    h = workerbot.handle("help", JOHN)
-    check("help lists only that bot's commands", "`worker`" in h and "agents" not in h and "`status`" not in h and "thread" not in h, h)
+    conciergebot = slackcmd.Commands(["concierge"], JOHN, "Concierge", call=core)
+    check("a concierge-only bot ignores agents and status", conciergebot.handle("agents", JOHN) is None and conciergebot.handle("status", JOHN) is None)
+    check("a concierge-only bot answers concierge", conciergebot.handle("concierge", JOHN) is not None)
+    h = conciergebot.handle("help", JOHN)
+    check("help lists only that bot's commands", "`concierge`" in h and "agents" not in h and "`status`" not in h and "thread" not in h, h)
     check("the full bot's help includes the board relay", "thread" in every.handle("help", JOHN))
-    check("help is John-only too", workerbot.handle("help", OTHER) is None)
+    check("help is John-only too", conciergebot.handle("help", OTHER) is None)
 
 print("bots.json")
 tmp = Path(tempfile.mkdtemp(prefix="agentdesk-slackcmd-"))
@@ -110,7 +118,7 @@ bots = slackcmd.load_bots(tmp / "bots.json", tmp, "D_DEFAULT")
 check("no bots.json: one bot, every area, the original credentials",
       len(bots) == 1 and bots[0]["areas"] == list(slackcmd.AREAS) and bots[0]["creds"] == tmp and bots[0]["dm"] == "D_DEFAULT")
 (tmp / "bots.json").write_text(json.dumps([{"name": "AgentDesk", "areas": ["board", "ops"]},
-                                           {"name": "Agents", "areas": ["agents", "worker"], "creds": "agents-bot"}]))
+                                           {"name": "Agents", "areas": ["agents", "concierge"], "creds": "agents-bot"}]))
 bots = slackcmd.load_bots(tmp / "bots.json", tmp, "D_DEFAULT")
 check("two bots parsed; creds relative to the credentials folder",
       [b["name"] for b in bots] == ["AgentDesk", "Agents"] and bots[0]["creds"] == tmp and bots[1]["creds"] == tmp / "agents-bot")

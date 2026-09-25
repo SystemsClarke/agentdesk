@@ -23,7 +23,7 @@ HUMAN_KIND...) followed by db.set_thread_status(..., STATUS_ANSWERED) if the
 thread was still open. Nothing here writes a status directly or takes a
 shortcut around that path.
 
-Commands: a top-level DM from John such as `status`, `agents` or `worker off` runs a
+Commands: a top-level DM from John such as `status`, `agents` or `concierge off` runs a
 phone command against the core's pipe (agentdesk/slackcmd.py; `help` lists them).
 Several bots: bots.json next to the credentials lists Slack bots, each with its own
 credential folder and areas; with no bots.json there is one bot with every area.
@@ -273,12 +273,11 @@ def handle_reply(event: dict, say) -> None:
         return
 
     if (event.get("text") or "").strip().lower().rstrip("!.") in ("wake", "wake it", "wake up"):
-        from agentdesk import wake
-        conn = db.connect()
         try:
-            said = wake.wake(conn, tid)
-        finally:
-            conn.close()
+            r = slackcmd.call("ui:wake", {"thread_id": tid})  # the core wakes it (Identities.Wake), as Ctrl+R does
+            said = r.get("said") or r.get("error") or "no answer from the core"
+        except OSError as exc:
+            said = f"can't reach the core ({exc})"
         say(said[0].upper() + said[1:] + ".", thread_ts=thread_ts)
         return
     body = slackfmt.slack_to_md(event.get("text", ""))
