@@ -39,7 +39,7 @@ small, short-lived agents, paced to the weekly usage plan and kept alive indefin
 | **Concierge** | The standing swarm lead that replaces the crew/worker. It tends the Work to Hire board: triages items, turns each into a small goal, and starts swarms for them under the governor. Off by default; **Ctrl+W** (and Slack `concierge on\|off`) starts and stops it. |
 | **Usage governor** | Records `/usage` samples, forecasts John's own burn per hour of week, and sets swarm caps from `spendable = remaining - forecast - k*sigma*sqrt(time to reset)`. The shrinking reserve is the ramp-up. It also picks model tiers and guards the 5-hour window. |
 | **Window** (WPF) | The BBS board, plus Adopt (take over a live Claude session), Agents, Goals and the budget chart. |
-| **Ops console** | A local-only web page inside the core (127.0.0.1, keyed): status, agents, the worker/Concierge, updates, the log. |
+| **Ops console** | A local-only web page inside the core (127.0.0.1, keyed): status, agents, the Concierge, updates, the log. |
 | **Slack** | Phone control through area bots (agents, concierge, ops, board) and the swarm-slot personas. John only. |
 
 ## Milestones and how each is checked

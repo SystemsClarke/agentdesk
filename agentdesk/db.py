@@ -11,7 +11,7 @@ import json
 import re
 import sqlite3
 from datetime import datetime, timedelta, timezone
-from typing import Any, Iterable, Optional
+from typing import Any, Optional
 
 from . import paths
 
@@ -143,9 +143,9 @@ CREATE TABLE IF NOT EXISTS pull_requests (
 -- for open ones first on every redraw.
 CREATE INDEX IF NOT EXISTS idx_prs_state ON pull_requests(state, id);
 
--- What a background agent is doing while it works. One row per thing the
--- dispatcher watched it do: claimed, reading a file, running a command,
--- editing, finished, failed.
+-- What a background agent was doing while it worked, written by the Python
+-- crew's dispatcher (deleted when the Concierge replaced it; nothing writes
+-- here now). Kept so existing boards keep their rows.
 --
 -- A table rather than a tail of agentdesk.log, which is the other way this
 -- could have been done, and the reasons are worth writing down because the log
@@ -173,8 +173,8 @@ CREATE TABLE IF NOT EXISTS work_events (
 -- whether anything has been appended at all.
 CREATE INDEX IF NOT EXISTS idx_work_events ON work_events(work_id, id);
 
--- Phoenix: the handoff a long-lived identity (a crew role, or an interactive
--- session's `bio: <name>`) leaves for its successor, plus the one flag that
+-- Phoenix: the handoff a long-lived identity (an interactive session's
+-- `bio: <name>`) leaves for its successor, plus the one flag that
 -- tells it (or a watcher acting on its behalf) that a handoff is due.
 --
 -- Keyed on NAME, not on a thread or session id, because the identity this
@@ -184,9 +184,8 @@ CREATE INDEX IF NOT EXISTS idx_work_events ON work_events(work_id, id);
 --
 -- torch_due is the deterministic, zero-token trigger John asked for: a plain
 -- int compared in SQL, never an LLM judging its own degradation. Something
--- outside this app decides WHEN to set it (crew.py's RESET_AFTER for crew
--- roles; a separate scheduled watcher polling session usage for interactive
--- sessions -- see agentdesk/mcp_server.py's pass_the_torch docstring for the
+-- outside this app decides WHEN to set it (a scheduled watcher polling
+-- session usage for interactive sessions -- see agentdesk/mcp_server.py's pass_the_torch docstring for the
 -- boundary). This table only stores the flag and the artifact; it does not
 -- decide either.
 --
@@ -226,18 +225,6 @@ CREATE TABLE IF NOT EXISTS deliveries (
 );
 """
 
-# The work_events kinds, as a shared vocabulary rather than loose strings: the
-# worker writes them and the window colours by them, and a typo in either place
-# would show up as an event that renders in the wrong colour instead of as an
-# error. WORK_STEP is the one that carries the answer to "what is it doing" --
-# one row per tool call the agent made, which is the agent's own account of its
-# work rather than the dispatcher's guess at it.
-WORK_START = "start"      # claimed, and the agent spawned
-WORK_STEP = "step"        # a tool call the agent made
-WORK_OUTPUT = "output"    # a line the agent said
-WORK_DONE = "done"        # finished, and the item is complete
-WORK_ERROR = "error"      # stopped without finishing; body says why
-WORK_EVENT_KINDS = (WORK_START, WORK_STEP, WORK_OUTPUT, WORK_DONE, WORK_ERROR)
 
 # The meta.kind values that mark a message as a RECEIPT rather than a reply.
 # Shared vocabulary, so it lives beside the tables that write it: the window
@@ -445,7 +432,7 @@ def _enforce_question_length(channel: str, author_kind: str, body: str) -> None:
 # other agent -- a question or a finding named FOR someone -- and have that
 # targeting be a distinct, filterable thing rather than prose in the body that
 # only a careful reader notices. Investigated first (posted to thread 111):
-# crew roles poll the board and could plausibly get a true routing nudge, but
+# polling agents could plausibly get a true routing nudge, but
 # ad-hoc Claude Code sessions do not poll anything, and reaching one that is
 # idle would mean depending on Claude Code's own undocumented, key-guarded
 # cross-session daemon (~/.claude/daemon) -- a private harness mechanism this
@@ -584,28 +571,6 @@ def reply(conn, thread_id, author, author_kind, body, reply_to=None, meta=None) 
     return int(cur.lastrowid)
 
 
-def set_opening_body(conn, thread_id, body) -> None:
-    """Rewrite a thread's OPENING message in place. Touches updated_ts.
-
-    A normal reply appends; this is the one place a wiki thread's body is
-    edited rather than replied to, and it exists for exactly one caller:
-    crew.py's Phoenix vault sync, which re-mirrors the SAME crew-role handoff
-    note on every reset. `vault.mirror_thread` only ever reads a thread's
-    opening message (its own docstring: "replies are conversation, not
-    memory"), so the only way to make a second reset UPDATE the note instead
-    of orphaning a new thread with a colliding filename is to update the post
-    the mirror already owns, keyed to the same thread_id it already recorded
-    in the note's marker. Anything wanting a normal appended message should
-    call reply(), not this.
-    """
-    ts = now_iso()
-    conn.execute(
-        "UPDATE messages SET body=? WHERE id ="
-        " (SELECT id FROM messages WHERE thread_id=? ORDER BY id LIMIT 1)",
-        (body, thread_id))
-    conn.execute("UPDATE threads SET updated_ts=? WHERE id=?", (ts, thread_id))
-
-
 def set_thread_status(conn, thread_id, status, meta_updates=None) -> None:
     """Open -> answered when the human replies. That transition is what stops
     the toast repeating.
@@ -662,172 +627,9 @@ def _thread_meta(conn, thread_id) -> dict:
         return {}
 
 
-# --- who a work item is for ----------------------------------------------------
-#
-# Both dispatchers -- worker._pick and crew.coordinator_loop -- poll for OPEN
-# items and claim them within seconds. That IS the design: it is what makes a
-# posted job start by itself, with nobody watching. But it has a consequence
-# nobody chose, and it is the reason John asked for this at all: ANY agent that
-# looks at the queue finds it already drained. An outside agent could always
-# call claim_work -- it simply never saw an open item to call it on. The queue
-# was never closed to other agents; it was emptied before they arrived.
-#
-# So this is a reservation, not a permission, and the distinction is the whole
-# design. `auto` keeps the existing behaviour and stays the default. `anyone`
-# tells both dispatchers to leave the item alone so it waits for an agent to
-# take it deliberately with claim_work.
-#
-# There is deliberately NO way to reserve an item for one NAMED agent. A name
-# is a promise the board cannot keep -- that agent may be gone, or may never
-# look -- and honouring it would need an expiry to avoid stranding the item
-# open for ever. "Some agent must choose this" is a claim the board can keep.
-
-CLAIM_AUTO = "auto"
-CLAIM_ANYONE = "anyone"
-CLAIM_POLICIES = (CLAIM_AUTO, CLAIM_ANYONE)
-
-
-def claim_policy(item) -> str:
-    """How this item may be picked up. Unknown or malformed reads as `auto`.
-
-    Defaulting to auto is the safe direction: an item whose meta failed to
-    parse, or that predates this key, should be picked up and finished by a
-    dispatcher rather than stranded open for ever waiting for a deliberate
-    claim that nobody knows to make.
-    """
-    try:
-        meta = json.loads(item.get("meta") or "{}") or {}
-    except (TypeError, ValueError, AttributeError):
-        return CLAIM_AUTO
-    return CLAIM_ANYONE if meta.get("claim") == CLAIM_ANYONE else CLAIM_AUTO
-
-
-def open_to_dispatcher(item) -> bool:
-    """True if a dispatcher may claim this item.
-
-    The rule lives here, in one function, because it has two callers -- the
-    worker and the crew coordinator -- and a fix applied to one of them is not
-    a fix: the other would still take the item, and the symptom (an agent finds
-    nothing to claim) is identical to the one this exists to remove.
-    """
-    return claim_policy(item) != CLAIM_ANYONE
-
-
-def claim_task(conn, thread_id, agent) -> bool:
-    """Take a work item. True if THIS call took it.
-
-    The check and the write are one statement, so two agents racing for the
-    same task resolve in SQLite rather than in whichever one read first. A
-    False return is not an error: it means somebody else has it.
-    """
-    ts = now_iso()
-    meta = _thread_meta(conn, thread_id)
-    meta.update({"assignee": agent, "claimed_ts": ts})
-    cur = conn.execute(
-        "UPDATE threads SET status=?, updated_ts=?, meta=?"
-        " WHERE id=? AND channel=? AND status=?",
-        (paths.STATUS_CLAIMED, ts, _json(meta), thread_id, "work",
-         paths.STATUS_OPEN),
-    )
-    if cur.rowcount == 1:
-        _touch_presence(conn, agent, paths.AGENT_KIND)
-    return cur.rowcount == 1
-
-
-def complete_task(conn, thread_id, agent) -> bool:
-    """Finish a work item this agent holds. False if it does not hold it.
-
-    Only the assignee may complete, so a task cannot be closed out by an agent
-    that never did the work.
-    """
-    ts = now_iso()
-    meta = _thread_meta(conn, thread_id)
-    if meta.get("assignee") != agent:
-        return False
-    meta["completed_ts"] = ts
-    cur = conn.execute(
-        "UPDATE threads SET status=?, updated_ts=?, meta=?"
-        " WHERE id=? AND channel=? AND status=?",
-        (paths.STATUS_DONE, ts, _json(meta), thread_id, "work",
-         paths.STATUS_CLAIMED),
-    )
-    if cur.rowcount == 1:
-        _touch_presence(conn, agent, paths.AGENT_KIND)
-    return cur.rowcount == 1
-
-
-def release_task(conn, thread_id, agent, note=None) -> bool:
-    """Put a claimed item back on the queue. False if this agent does not hold it.
-
-    This exists because a claim is a lock, and a lock with no release leaks. If
-    the agent that took an item dies, times out, or is killed, the item sits in
-    'claimed' for ever: it is not open, so no other agent will pick it up, and
-    it is not done, so nobody notices it stopped moving. The queue silently
-    loses the work, which is worse than either succeeding or failing loudly.
-
-    The attempt counter is the other half. A release puts the item back in front
-    of every agent, so an item that reliably kills whatever takes it would be
-    retried for ever. Whoever releases increments the count, and the dispatcher
-    uses it to stop picking the item up after a few tries.
-    """
-    ts = now_iso()
-    meta = _thread_meta(conn, thread_id)
-    if meta.get("assignee") != agent:
-        return False
-    meta.pop("assignee", None)
-    meta.pop("claimed_ts", None)
-    meta["attempts"] = int(meta.get("attempts") or 0) + 1
-    meta["last_released_ts"] = ts
-    if note:
-        meta["last_release_note"] = note
-    cur = conn.execute(
-        "UPDATE threads SET status=?, updated_ts=?, meta=?"
-        " WHERE id=? AND channel=? AND status=?",
-        (paths.STATUS_OPEN, ts, _json(meta), thread_id, "work",
-         paths.STATUS_CLAIMED),
-    )
-    return cur.rowcount == 1
-
-
 def list_work(conn, status=None, limit=100) -> list:
     """The work queue, newest first. No status means every state."""
     return list_threads(conn, channel="work", status=status, limit=limit)
-
-
-# --- what a background agent is doing ------------------------------------------
-#
-# The dispatcher appends here as it reads the agent's output stream, and the
-# Work to Hire tab reads here to show progress. Nothing in this section
-# interprets an event: `kind` is the worker's word and `body` is what it saw,
-# and the reading happens in app.py where the reader is.
-
-def add_work_event(conn, work_id, kind, body, ts=None) -> int:
-    """Record one thing the agent did. Returns the new row's id.
-
-    `ts` is settable so a caller replaying a stream can date an event when it
-    happened rather than when it was written, which matters when the writer is
-    a thread that may lag the reader's output.
-    """
-    cur = conn.execute(
-        "INSERT INTO work_events (work_id, ts, kind, body) VALUES (?,?,?,?)",
-        (int(work_id), ts or now_iso(), str(kind), str(body)))
-    return int(cur.lastrowid)
-
-
-def list_work_events(conn, work_id, limit=80) -> list:
-    """One item's events, oldest first, capped to the newest `limit`.
-
-    Oldest-first is the reading order and the caller has no way to reverse it
-    without knowing this. The cap is applied to the NEWEST rows before the
-    reversal -- taking the first `limit` and reversing would show the agent's
-    first eighty steps for ever while it worked, which is the one window that
-    gets less useful as the job goes on.
-    """
-    rows = [dict(r) for r in conn.execute(
-        "SELECT * FROM work_events WHERE work_id=? ORDER BY id DESC LIMIT ?",
-        (int(work_id), int(limit)))]
-    rows.reverse()
-    return rows
 
 
 def work_thread(conn, work_id) -> Optional[dict]:
@@ -1474,7 +1276,7 @@ def open_questions(conn, include_archived=False) -> list:
 
 # --- Phoenix: handoffs and the torch -------------------------------------------
 #
-# `name` is whatever a durable identity calls itself: a crew role ("builder"),
+# `name` is whatever a durable identity calls itself: an identity ("builder"),
 # or the bio name an interactive session posts ("claude-code:FastBuild#6301").
 # There is no author_kind split here the way threads/messages have one -- a
 # handoff belongs to the NAME, and both kinds of agent use the same name space
@@ -1502,33 +1304,6 @@ def pass_the_torch(conn, name: str, body: str, path: Optional[str] = None) -> di
         (name, body, path, ts, name))
     conn.commit()
     return {"name": name, "updated_ts": ts, "path": path}
-
-
-def get_handoff(conn, name: str) -> Optional[dict]:
-    """The latest handoff row for `name`, or None if it has never passed one."""
-    row = conn.execute("SELECT * FROM handoffs WHERE name=?", (name,)).fetchone()
-    return dict(row) if row else None
-
-
-def set_torch_due(conn, name: str, due: bool = True) -> None:
-    """Flag (or clear) that `name` is due for a handoff.
-
-    This is the deterministic trigger's write side, and it is deliberately a
-    plain UPDATE-or-INSERT rather than an MCP tool of its own: John's ask was a
-    RAW DATABASE ENTRY a watcher can set, the same way crew.py's
-    `_set_meta_flag` sets `blocked_noted` directly rather than through a tool.
-    A future watcher (polling `ccd_session_mgmt.get_usage` for an interactive
-    session, or crew.py checking RESET_AFTER) can call this directly against
-    `db.connect()`, exactly like `_set_meta_flag` does today -- no MCP round
-    trip, no LLM judgement, just a row.
-    """
-    ts = now_iso()
-    conn.execute(
-        "INSERT INTO handoffs (name, body, path, updated_ts, updated_by, torch_due)"
-        " VALUES (?, '', NULL, ?, ?, ?)"
-        " ON CONFLICT(name) DO UPDATE SET torch_due=excluded.torch_due",
-        (name, ts, name, 1 if due else 0))
-    conn.commit()
 
 
 def torch_due(conn, name: str) -> bool:
@@ -1597,20 +1372,6 @@ def record_session(conn, author, session_id, cwd, pid, channels) -> None:
     conn.commit()
 
 
-def session_for(conn, author):
-    row = conn.execute("SELECT * FROM sessions WHERE author=?", (author,)).fetchone()
-    return dict(row) if row else None
-
-
-def set_delivery(conn, message_id, method, state, detail=None, only_new=False) -> bool:
-    """Record how a reply was carried. only_new=True claims it (True if THIS call did)."""
-    verb = "INSERT OR IGNORE" if only_new else "INSERT OR REPLACE"
-    cur = conn.execute(f"{verb} INTO deliveries(message_id, method, state, detail, ts) VALUES(?,?,?,?,?)",
-                       (message_id, method, state, detail, now_iso()))
-    conn.commit()
-    return cur.rowcount == 1
-
-
 def undelivered_for_session(conn, session_id) -> list:
     """John's replies owed to any author this session writes as, not yet carried."""
     return [dict(r) for r in conn.execute(
@@ -1643,9 +1404,3 @@ def delivery_status(conn, message_id) -> str:
         return "picked-up"
     return d["state"] if d else ("pending" if a else "")
 
-
-def relay_prompt(thread_id, subject, body) -> str:
-    """John's reply, framed so the receiving session treats it as him speaking."""
-    return (f"John replied on AgentDesk thread #{thread_id} (\"{subject}\"):\n\n{body}\n\n"
-            "(This is John's own reply, relayed from the board. Treat it as him talking to you: "
-            "act on it, and answer on that thread.)")

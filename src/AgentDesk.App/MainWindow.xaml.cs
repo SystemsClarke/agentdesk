@@ -47,7 +47,7 @@ public partial class MainWindow : Window
         ApplyTheme();
         flashTimer.Tick += (_, _) => { flashTimer.Stop(); flash = null; Render(); };
         clock.Tick += (_, _) => { if (screen == "main") Render(); };
-        // Heartbeats (SlackNet, the worker) change without the board changing, so re-read status on a timer, as Tk did.
+        // Heartbeats (SlackNet, the Concierge) change without the board changing, so re-read status on a timer, as Tk did.
         var beats = new DispatcherTimer { Interval = TimeSpan.FromSeconds(30) };
         beats.Tick += async (_, _) => await RefreshAsync();
         beats.Start();

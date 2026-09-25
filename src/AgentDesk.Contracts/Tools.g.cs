@@ -100,7 +100,7 @@ without a second lookup.
 
 OUT OF SCOPE, on purpose: this tool does not spawn or kill a session, and
 it does not decide WHEN a handoff is due -- that is a deterministic,
-zero-token check (an item count for crew roles, a token-usage watcher for
+zero-token check (the core's context warning for identities, a token-usage watcher for
 interactive sessions) living outside this app. This tool only records the
 artifact and clears the flag once you have acted on it.
 """, """
@@ -221,8 +221,8 @@ it, or another agent does) -- that is not an error, the item simply stays
 as it is and the note is not posted.
 
 The name you resolve to must be the one that claimed the item, which is
-why a crew role is stamped with AGENTDESK_AUTHOR rather than deriving its
-name from the session: a role rotates its session, and the item outlives
+why an identity the core runs is stamped with AGENTDESK_AUTHOR rather than deriving its
+name from the session: an identity rotates its session, and the item outlives
 it.
 """, """
 {"type": "object", "properties": {"thread_id": {"type": "integer"}, "note": {"type": "string"}, "author": {"type": "string"}}, "required": ["thread_id", "note"]}
@@ -275,9 +275,11 @@ measured.
 For a running goal's lead: start a member identity <goal>-<name> with one
 small task (model haiku, sonnet or opus; sonnet by default). Refused past the
 goal's max_members; past the machine's session cap it queues. The member
-hands off with pass_the_torch or retires with member_done.
+hands off with pass_the_torch or retires with member_done. work_id (a Work to
+Hire item the lead has claimed) hands that claim to the member, which then
+completes it with complete_work; one it leaves unfinished returns to the lead.
 """, """
-{"type": "object", "properties": {"goal": {"type": "string"}, "name": {"type": "string"}, "task": {"type": "string"}, "model": {"type": "string"}}, "required": ["goal", "name", "task"]}
+{"type": "object", "properties": {"goal": {"type": "string"}, "name": {"type": "string"}, "task": {"type": "string"}, "model": {"type": "string"}, "work_id": {"type": "integer"}}, "required": ["goal", "name", "task"]}
 """),
         new("member_done", """
 For a goal member whose task is finished: posts the summary on the goal

@@ -33,6 +33,7 @@ var sessions = new Sessions();
 var identities = new Identities(store, sessions, data, Environment.GetEnvironmentVariable("AGENTDESK_CLAUDE") ?? "claude"); // a stand-in, for tests
 var goals = new Goals(store, identities, sessions);
 var slots = new Slots(store);
+var concierge = new Concierge(store, goals, python); // its lead works from the AgentDesk checkout, as the crew did
 _ = prs.Run(TimeSpan.FromSeconds(5));
 identities.Resume();
 using var bridge = SlackBridge.For(data, python); // the Slack bridge lives and dies with the core
@@ -65,9 +66,8 @@ Task<string> Ui(string op, Args a, Caller caller, Func<string, Task> push, Cance
     "status" => Status(),
     "governor" => Governor.Ui(store, data),
     "check_prs" => Task.FromResult(prs.Poke()),
-    "fresh" => board.FreshStart(a.String("name")),
-    "worker" => board.ToggleWorker(data, python),
-    "wake" => board.Wake(a.Int("thread_id"), data, python),
+    "concierge" => concierge.Toggle(caller, a.BoolOrNull("on")),
+    "wake" => identities.Wake(a.Int("thread_id")),
     "subscribe" => Task.FromResult(watch.Subscribe(push, gone)),
     "session_start" => sessions.Start(a.String("name"), a.String("folder"), a.StringOrNull("command")),
     "session_list" => sessions.List(),
@@ -102,7 +102,7 @@ Task<string> WebCall(string op, JsonElement args) => op switch
     "core" => Task.FromResult(new JsonObject { ["pid"] = Environment.ProcessId, ["started"] = started.ToString("yyyy-MM-ddTHH:mm:ssZ"), ["update"] = Setup.State() }.ToJsonString(Wire.Indented)),
     "update" => Setup.Update(new Args(args), "web"),
     "open_questions" => board.OpenQuestions(new Caller(null, null, null, "web", 0), false, null),
-    "status" or "worker" or "session_list" or "log_tail" or "identity_list" or "identity_create" or "identity_start" or "identity_stop" or "identity_forget"
+    "status" or "concierge" or "session_list" or "log_tail" or "identity_list" or "identity_create" or "identity_start" or "identity_stop" or "identity_forget"
         => Ui(op, new Args(args), new Caller(null, null, null, "web", 0), _ => Task.CompletedTask, CancellationToken.None),
     _ => Task.FromResult(Tools.Error($"unknown request: {op}")),
 };
@@ -112,6 +112,8 @@ async Task<string> Status()
     var s = JsonNode.Parse(await board.Heartbeats(data))!;
     s["bridge"] = bridge?.Status() ?? new JsonObject { ["enabled"] = false };
     s["goals"] = goals.Summaries();
+    s["concierge"] = concierge.State();
+    s["sessions"] = identities.Counts();
     return s.ToJsonString(Wire.Indented);
 }
 
@@ -121,6 +123,6 @@ Task<string> GoalTool(string tool, Caller c, Args a) => tool switch
     "goal_propose" => goals.Propose(c, a.String("name"), a.String("hypothesis"), a.String("measure_cmd"), a.String("success"), a.Int("samples", 1)),
     "experiment_start" => goals.ExperimentStart(c, a.String("goal"), a.String("change")),
     "experiment_done" => goals.ExperimentDone(c, a.String("goal"), a.Int("n")),
-    "member_spawn" => goals.Spawn(c, a.String("goal"), a.String("name"), a.String("task"), a.StringOrNull("model")),
+    "member_spawn" => goals.Spawn(c, a.String("goal"), a.String("name"), a.String("task"), a.StringOrNull("model"), a.IntOrNull("work_id")),
     _ => goals.MemberDone(c, a.String("summary")),
 };

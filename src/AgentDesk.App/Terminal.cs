@@ -130,7 +130,7 @@ public partial class MainWindow
 
     IReadOnlyList<PrRow> Prs => [.. (st?.Prs ?? []).Where(p => showSettled || p.State == "open")];
     IReadOnlyList<Post> Callers => [.. (st?.Callers ?? []).Where(c => c.Author != Human)];
-    ThreadRow? HeldRow => rows["work"].FirstOrDefault(r => r.Id == st?.HeldId) ?? rows["work"].FirstOrDefault(r => r.Status == "claimed");
+    ThreadRow? HeldRow => rows["work"].FirstOrDefault(r => r.Id == st?.HeldId); // the newest item the Concierge holds
     bool SlackUp => st?.SlackTs is { } t && DateTimeOffset.Now - t < TimeSpan.FromSeconds(90);
     string SelKey => screen == "list" ? channel : screen;
     int Sel { get => sel.GetValueOrDefault(SelKey); set => sel[SelKey] = value; }
@@ -177,9 +177,9 @@ public partial class MainWindow
         };
         Line left = [S("AgentDesk", "ye b"), S($" · {title}", "mu")];
         var held = HeldRow;
-        Line mid = st?.WorkerRunning == true
-            ? [S("● worker online", "gr"), held is null ? S(" · idle", "mu") : S($" · #{held.Id}", "ye"), .. If(held?.Holder != null, S($" · {Label(held?.Holder)}", "mu"))]
-            : [S("○ worker offline", "or"), S(" · Ctrl+W starts it", "fa")];
+        Line mid = st?.ConciergeOn == true
+            ? [S("● Concierge on", "gr"), held is null ? S(" · idle", "mu") : S($" · #{held.Id}", "ye"), .. If(held?.Holder != null, S($" · {Label(held?.Holder)}", "mu"))]
+            : [S("○ Concierge off", "or"), S(" · Ctrl+W starts it", "fa")];
         Line right = [openQs.Count > 0 ? S($"{openQs.Count} ringing for you", "pk b") : S("nobody's calling", "mu"), S(" · ", "fa"),
             SlackUp ? S("SlackNet ● up", "cy") : S("SlackNet ○ down", "fa")];
         var gap = W - Len(left) - Len(mid) - Len(right);
@@ -201,7 +201,7 @@ public partial class MainWindow
             "read" => [.. K("type", "to reply"), .. K("Ctrl+↵", "send"), .. K("Ctrl+D", "dictate"), .. K("PgUp/PgDn", "scroll"),
                 .. K("Alt+N/P", "next/prev"), .. If(q, [.. K("Alt+C", "close"), .. K("Alt+U", "bring back")]), .. K("Esc", "back")],
             "prs" => [.. K("↑↓", "move"), .. K("↵", "open on GitHub"), .. K("C", "check now"), .. K("H", showSettled ? "open only" : "settled"), .. K("Esc", "menu")],
-            "sysop" => [.. K("Ctrl+W", st?.WorkerRunning == true ? "stop worker (after this item)" : "start worker"), .. K("R", "reload code"),
+            "sysop" => [.. K("Ctrl+W", st?.ConciergeOn == true ? "stop the Concierge" : "start the Concierge"), .. K("R", "reload code"),
                 .. K("J", "job board"), .. K("L", "read held item"), .. K("Esc", "menu")],
             "who" => [.. K("↑↓", "pick a caller"), .. K("↵", "read bio"), .. K("P", "page them"), .. K("Esc", "menu")],
             "options" => [.. K("↑↓", "move"), .. K("↵", "change"), .. K("←→", "adjust"), .. K("C", "ops console"), .. K("Esc", "menu")],
@@ -282,7 +282,7 @@ public partial class MainWindow
         L.Add([]);
         var work = rows["work"];
         var held = HeldRow;
-        var sysop = st?.WorkerRunning != true ? S("offline · Ctrl+W starts it", "or") : S(held is null ? "worker idle" : $"worker on #{held.Id}", "gr");
+        var sysop = st?.ConciergeOn != true ? S("Concierge off · Ctrl+W starts it", "or") : S(held is null ? "Concierge idle" : $"Concierge on #{held.Id}", "gr");
         var agents = Callers.Select(c => c.Author).Distinct().Count();
         (string Key, string Label, Seg Val)[] items =
         [
@@ -435,16 +435,14 @@ public partial class MainWindow
         List<Line> L = [Bar("SYSOP CONSOLE  ·  " + (openQs.Count > 0 ? "phone's ringing off the hook" : "waiting for callers"), "bar"), []];
         void Stat(string k, params Seg[] segs) => L.Add([S(" " + Fit(k, 20), "mu"), .. segs]);
         var held = HeldRow;
-        var events = st?.HeldEvents ?? [];
-        if (st?.WorkerRunning == true && held != null)
-        {
-            var started = events.FirstOrDefault(e => e.Kind == "start");
-            Stat("Worker", [S($"● online · on #{held.Id}{(started != null ? $" for {Ago(started.Ts)}" : "")}", "gr"), .. If(held.Holder != null, S($" · {Label(held.Holder)}", "mu"))]);
-        }
-        else if (st?.WorkerRunning == true)
-            Stat("Worker", S("● online · idle, the queue is empty", "gr"));
+        var swarm = st?.Swarm ?? [];
+        if (st?.ConciergeOn == true && held != null)
+            Stat("Concierge", [S($"● on · #{held.Id} for {Ago(held.UpdatedTs)}", "gr"), .. If(held.Holder != null, S($" · {Label(held.Holder)}", "mu")),
+                S($" · {N(swarm.Count, "member")}", "mu")]);
+        else if (st?.ConciergeOn == true)
+            Stat("Concierge", S("● on · idle, the queue is empty", "gr"));
         else
-            Stat("Worker", S("○ offline", "or"), S("  Ctrl+W starts it", "fa"));
+            Stat("Concierge", S("○ off", "or"), S("  Ctrl+W starts it", "fa"));
         if (SlackUp)
             Stat("SlackNet echo", [S("● up", "gr"), S($" · polling every {st!.SlackPollS}s", "mu"),
                 .. If(st.SlackRelay != null, S($" · last relay {When(st.SlackRelay?.Ts)} (#{st.SlackRelay?.ThreadId} to your phone)", "mu"))]);
@@ -462,21 +460,14 @@ public partial class MainWindow
             Stat("Filed to the vault", S($"{When(f.UpdatedTs)} · #{f.Id} ", "mu"), S(f.Subject, "fa"));
         Stat("Claude plan", S(st?.UsageSummary ?? "", "mu"));
         L.Add([]);
-        if (held != null)
+        if (swarm.Count > 0)
         {
-            var hue = new Dictionary<string, string> { ["start"] = "cy", ["step"] = "fg", ["output"] = "mu", ["done"] = "gr", ["error"] = "pk" };
-            var word = new Dictionary<string, string> { ["start"] = "START ", ["step"] = "step  ", ["output"] = "said  ", ["done"] = "DONE  ", ["error"] = "ERROR " };
-            var state = StateCode("work", held).Code.Trim().ToLowerInvariant();
-            var label = events.Count == 0 ? $"{state} · held by {Label(held.Holder)} · no progress reported"
-                : string.Join(" · ", new[] { state, held.Holder != null ? $"held by {Label(held.Holder)}" : "",
-                    $"started {Ago((events.FirstOrDefault(e => e.Kind == "start") ?? events[0]).Ts)} ago", $"last activity {Ago(events[^1].Ts)} ago" }.Where(b => b != ""));
-            List<Line> box = [[S(label, "mu")], .. events.TakeLast(10).Select(Line (e) => [S(Fit(e.Ts.ToLocalTime().ToString("HH:mm:ss"), 9), "fa"),
-                S(word.GetValueOrDefault(e.Kind, "      "), hue.GetValueOrDefault(e.Kind, "mu") + " b"), S(e.Body, hue.GetValueOrDefault(e.Kind, "mu"))])];
-            var title = $"Activity · #{held.Id} {held.Subject}";
-            L.AddRange(Box(title[..Math.Min(title.Length, W - 8)], box, W));
+            List<Line> box = [.. swarm.Select(Line (m) => [S(Fit(Label(m.Identity), 22), "cy"), S(m.WorkId is { } w ? $"#{w,-5} " : "      ", "ye"),
+                S(Fit(m.Task.ReplaceLineEndings(" "), Math.Max(10, W - 38)), "mu")])];
+            L.AddRange(Box($"The Concierge's swarm · {N(swarm.Count, "member")}", box, W));
         }
         else
-            L.AddRange(Box("Activity", [[S("Nothing is being worked right now.", "mu")]], W));
+            L.AddRange(Box("The Concierge's swarm", [[S(st?.ConciergeOn == true ? "No members running: nothing is being worked right now." : "Off. Ctrl+W starts the Concierge.", "mu")]], W));
         L.Add([]);
         var jobs = rows["work"].Where(r => r.Status is "open" or "claimed").Take(8).Select(Line (r) => [S($"#{r.Id,-5}", "ye"),
             S(StateCode("work", r).Code, StateCode("work", r).Tags), S("  "), S(Fit(r.Subject, W - 34)), S(" "), S(Fit(r.Holder ?? "—", 14), "mu")]).ToList();
@@ -521,17 +512,10 @@ public partial class MainWindow
 
     List<(string Label, string Value, string Key)> OptionItems()
     {
-        var crew = st?.Crew ?? [];
-        var provider = Pref("provider", "claude");
         return
         [
             ("Sessions at once", $"{Pref("max_sessions", 3)}   (←/→)  ·  {st?.LiveSessions ?? 0} running now", "max_sessions"),
-            ("Backend", $"{provider}   (←/→, from providers.json)  ·  {st?.BackendNote}", "provider"),
-            ("Crew", (st?.WorkerRunning == true ? "ON" : "off") + "   ↵ toggles (same as Ctrl+W)", "crew"),
-            .. crew.Select(c => ($"  {c.Name}",
-                (c.RunningSince is { } since ? $"● running for {Ago(since)} on {c.Provider}" + (c.Resumed ? " (resumed)" : " (fresh)") : "○ idle")
-                + "  ·  " + (c.SessionId is { } sid ? $"session {sid[..Math.Min(8, sid.Length)]} · {c.Items} items" : "no session yet")
-                + (c.FreshDue ? "  ·  fresh start queued" : "") + "   ↵ fresh start", $"fresh:{c.Name}")),
+            ("Concierge", (st?.ConciergeOn == true ? "ON" : "off") + "   ↵ toggles (same as Ctrl+W)", "concierge"),
             ("Theme", $"{Palettes[Theme].Label}   ({Array.IndexOf(ThemeOrder, Theme) + 1} of {ThemeOrder.Length}, ←/→ to browse, from your VS Code themes)", "theme"),
             ("Modem screech on connect", Pref("screech", false) ? "ON" : "off", "screech"),
             ("Play the screech now", "↵", "play"),
@@ -552,15 +536,13 @@ public partial class MainWindow
         var items = OptionItems();
         var L = Rows(Bar("OPTIONS  ·  the SysOp's control panel", "bar"), null, items.Count,
             i => [S("   " + Fit(items[i].Label, 28), "fg"), S(" " + items[i].Value, items[i].Value == "ON" ? "ye" : "mu")], [], 20);
-        var providers = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude", "providers.json");
         L.AddRange(
         [
             [],
-            [S(" Agent sessions: ", "cy b"), S("every headless Claude run (the crew, Wake) goes through one engine,", "mu")],
-            [S(" which holds a slot per session. Past the cap, new runs wait their turn. The backend is a", "mu")],
-            [S(" profile in ", "mu"), S(providers, "fa"), S("; if it gives no usable answer, the next profile is tried.", "mu")],
-            [S(" A fresh start ends that agent's conversation and begins a new one from its handoff note:", "mu")],
-            [S(" same name, same memory, clean context. That's Phoenix.", "mu")],
+            [S(" Agent sessions: ", "cy b"), S("every agent the core runs (the Concierge and its swarm, goals, Wake) is an", "mu")],
+            [S(" identity holding one slot. Past the cap, new ones queue and start as slots free up.", "mu")],
+            [S(" The Concierge ", "cy b"), S("keeps Work to Hire drained: its lead claims each open item and hands it to a", "mu")],
+            [S(" small swarm, which completes it with a report on its thread. Off until you turn it on.", "mu")],
             [],
             [S(" Version ", "fa"), S(Version, "ye"), S("   ·   updates arrive from GitHub Releases; the tray offers Restart to update", "fa")],
             [S(" Settings live in ", "fa"), S(SettingsPath, "mu")],
@@ -864,15 +846,8 @@ public partial class MainWindow
                 SetPref(key, n);
                 Flash($"Up to {N(n, "agent session")} at once. Takes effect on the next start.", "ye");
                 break;
-            case "provider":
-                var names = st?.Backends ?? ["claude"];
-                var at = Math.Max(0, names.ToList().IndexOf(Pref(key, "claude")));
-                SetPref(key, names[((at + step) % names.Count + names.Count) % names.Count]);
-                Flash($"Agent sessions now start on {Pref(key, "claude")}{(names.Count > 1 ? "" : " (the only profile in providers.json)")}.", "ye");
-                _ = RefreshAsync(); // the backend note is the core's
-                break;
-            case "crew":
-                ToggleWorker();
+            case "concierge":
+                ToggleConcierge();
                 break;
             case "theme":
                 SetTheme(ThemeOrder[(Array.IndexOf(ThemeOrder, Theme) + step + ThemeOrder.Length) % ThemeOrder.Length]);
@@ -895,10 +870,6 @@ public partial class MainWindow
             case "web":
                 OpenConsole();
                 return;
-            default:
-                _ = board.ActAsync("ui:fresh", new { name = key[6..] });
-                Flash($"{key[6..]} starts a fresh session on its next item, seeded from its handoff note.", "ye");
-                break;
         }
         Render();
     }
@@ -938,12 +909,14 @@ public partial class MainWindow
         }
     }
 
-    async void ToggleWorker()
+    /// <summary>Ctrl+W: John turns the Concierge on or off (ui:concierge); turning it on is its approval.</summary>
+    async void ToggleConcierge()
     {
-        Flash(st?.WorkerRunning == true ? "Stop requested. It finishes the item it holds first." : "Starting the worker...", "ye");
+        var on = st?.ConciergeOn != true;
+        Flash(on ? "Turning the Concierge on..." : "Concierge off: its swarm is stopped and the items it held go back on the queue.", "ye");
         try
         {
-            await board.ActAsync("ui:worker");
+            await board.ActAsync("ui:concierge", new { on });
             await Task.Delay(400); // re-read rather than assume: the start may fail
             await RefreshAsync();
         }
@@ -1071,7 +1044,7 @@ public partial class MainWindow
         {
             case Key.OemPlus or Key.Add: Zoom(1); break;
             case Key.OemMinus or Key.Subtract: Zoom(-1); break;
-            case Key.W: ToggleWorker(); break;
+            case Key.W: ToggleConcierge(); break;
             case Key.R: Wake(); break;
             case Key.D: Flash("Dictation lands with the core: local speech-to-text, nothing leaves the machine.", "ye"); break;
             default: return false;

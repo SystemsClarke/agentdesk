@@ -17,10 +17,8 @@ public sealed record PrRow(string Repo, int Number, string Title, string Url, st
 public sealed record Post(string Author, DateTimeOffset Ts, int ThreadId, string Subject, string Channel, bool First = false,
     string? Kind = null, string? Via = null);
 
-public sealed record WorkEvent(DateTimeOffset Ts, string Kind, string Body);
-
-public sealed record CrewRole(string Name, DateTimeOffset? RunningSince = null, string Provider = "claude", bool Resumed = false,
-    string? SessionId = null, int Items = 0, bool FreshDue = false);
+/// <summary>A member of the Concierge's swarm: its identity, its task, and the Work to Hire item it holds, if any.</summary>
+public sealed record SwarmMember(string Identity, string Task, int? WorkId = null);
 
 /// <summary>A long-lived agent (ui:identity_list). State is running, queued or stopped; Generation counts Phoenix restarts from 1.</summary>
 public sealed record Identity(string Name, string State, int Generation, string Host, string Folder, string? Model = null);
@@ -31,10 +29,9 @@ public sealed record Adoptable(string SessionId, string Folder, DateTimeOffset L
 /// <summary>Everything the main menu, SysOp, Who's On and Options screens show besides the channel lists.</summary>
 public sealed record BoardStatus(
     IReadOnlyList<PrRow> Prs, IReadOnlyList<Post> Recent, IReadOnlyList<Post> Callers, IReadOnlyDictionary<string, int> Bios,
-    Post? JohnLast, int SincePosts, ThreadRow? LastFiled, bool WorkerRunning, int? HeldId, IReadOnlyList<WorkEvent> HeldEvents,
+    Post? JohnLast, int SincePosts, ThreadRow? LastFiled, bool ConciergeOn, int? HeldId, IReadOnlyList<SwarmMember> Swarm,
     DateTimeOffset? SlackTs, int SlackPollS, Post? SlackRelay, IReadOnlyList<string> DisabledSinks,
-    IReadOnlyList<string> UsageLines, string UsageSummary, IReadOnlyList<CrewRole> Crew, string BackendNote, int LiveSessions = 0,
-    IReadOnlyList<string>? Backends = null);
+    IReadOnlyList<string> UsageLines, string UsageSummary, int LiveSessions = 0, int MaxSessions = 3);
 
 /// <summary>What the window needs from the board. CoreBoard will map these onto list_threads, ui:thread, open_questions,
 /// ui:reply, ui:close and raise Changed on each board.changed pushed over ui:subscribe.</summary>
@@ -237,13 +234,10 @@ public sealed class SampleBoard : IBoard
             johnLast, all.Count(p => p.Ts > (johnLast?.Ts ?? default) && p.Author != John && p.Kind is null),
             threads.Select(t => t.Thread).FirstOrDefault(r => r.Status == "archived"),
             true, held?.Id,
-            held is null ? [] : [new(now.AddMinutes(-150), "start", "claimed by app-dev"), new(now.AddMinutes(-90), "step", "read terminal.py _who"),
-                new(now.AddMinutes(-20), "output", "Who's On renders from the shared list screen")],
+            held is null ? [] : [new("concierge-w50", "Who's On renders from the shared list screen", held.Id), new("concierge-w50-b", "check the Tk parity notes")],
             DateTimeOffset.Now.AddSeconds(-20), 15, new Post(John, now.AddMinutes(-4), 38, "", "question"), [],
             ["time left: 2h 14m in your 5-hour window, 38% used", "time left: 1d 6h on the week, 82% used, getting close"],
-            "5h 38%, resets in 2h 14m · week 82%, resets in 1d 6h · reported 1m ago",
-            [new("builder"), new("app-dev", now.AddMinutes(-150), Resumed: true, SessionId: "7f3a91c2e4", Items: 4), new("verifier", FreshDue: true)],
-            "the claude CLI on this PC, your subscription", 1, ["claude"]));
+            "5h 38%, resets in 2h 14m · week 82%, resets in 1d 6h · reported 1m ago", 3, 3));
     }
 
     public Task<IReadOnlyList<Identity>> IdentitiesAsync() => Task.FromResult<IReadOnlyList<Identity>>(

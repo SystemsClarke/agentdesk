@@ -37,6 +37,7 @@ public readonly struct Args(JsonElement json)
     public int? IntOrNull(string name) => Has(name, out var v) ? v.GetInt32() : null;
     public double? DoubleOrNull(string name) => Has(name, out var v) ? v.GetDouble() : null;
     public bool Bool(string name, bool fallback) => Has(name, out var v) ? v.GetBoolean() : fallback;
+    public bool? BoolOrNull(string name) => Has(name, out var v) ? v.GetBoolean() : null;
 
     public Dictionary<string, object?>? DictOrNull(string name) =>
         Has(name, out var v) && v.ValueKind == JsonValueKind.Object

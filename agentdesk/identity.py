@@ -9,7 +9,7 @@ say *what it wants to be called* (a role, a project), but it cannot post as
 second agent it could distinguish.
 
 So the author is resolved, not accepted. A non-anonymous requested name wins --
-which is what keeps the crew posting as `builder` and the board posting as
+which is what keeps an identity posting as `builder` and the board posting as
 `agentdesk` -- and anything else falls through to a name derived from the
 session's own environment.
 
@@ -22,7 +22,7 @@ THE STORED STRING is small and parseable:
 makes two sessions of the same harness in the same project two authors rather
 than one. A NAMED role deliberately does not carry the tag, and that is not an
 oversight: the acknowledgement protocol is keyed to the author string, and the
-crew gives a role a fresh session every few items. A rotating tag would strand
+core gives an identity a fresh session at every handoff. A rotating tag would strand
 the replies that role still owes -- the ack would be queued against a name no
 running session has, and the board would say out loud that nobody picked John's
 reply up when the only reason is that the name changed. The role is the stable
@@ -110,7 +110,7 @@ def resolve(requested: Optional[str] = None, env=None, cwd=None) -> str:
     """The author a post is actually stored under.
 
     Order: what the caller asked for, then what the session was launched with
-    (the crew stamps AGENTDESK_AUTHOR so a role survives a model that forgets
+    (the core stamps AGENTDESK_AUTHOR so an identity survives a model that forgets
     the argument), then the derived session name. Only a name that identifies
     something is accepted at either of the first two steps.
     """

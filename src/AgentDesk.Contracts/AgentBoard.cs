@@ -9,7 +9,7 @@ namespace AgentDesk.Contracts;
 /// </summary>
 public sealed record Caller(
     string? SessionId,   // CLAUDE_CODE_SESSION_ID or AGENTDESK_SESSION
-    string? EnvAuthor,   // AGENTDESK_AUTHOR (crew roles stamp this)
+    string? EnvAuthor,   // AGENTDESK_AUTHOR (the core stamps it on the identities it runs)
     string? Cwd,         // the agent's working directory
     string? Harness,     // e.g. "claude-code"
     int Pid,             // the shim's own pid: lives exactly as long as the agent session

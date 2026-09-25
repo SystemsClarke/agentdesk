@@ -73,28 +73,16 @@ public sealed class UiTests : IDisposable
     }
 
     [Fact]
-    public async Task Status_reads_the_slack_and_worker_heartbeats()
+    public async Task Status_reads_the_slack_heartbeat()
     {
         var data = Directory.CreateDirectory(path + ".data").FullName;
         File.WriteAllText(Path.Combine(data, "slack_bridge.state"), """{"ts": "2026-09-24T17:53:04+00:00", "poll_s": 15, "last_relay": {"ts": "2026-09-24T17:50:48+00:00", "thread_id": 3}}""");
-        File.WriteAllText(Path.Combine(data, "worker.state"), $$"""{"pid": {{Environment.ProcessId}}, "item": null}""");
-        long work;
-        using (var db = store.Open())
-        {
-            work = db.StartThread("work", "Do it", "builder", "agent", "please");
-            db.ClaimTask(work, "crew");
-            db.Exec("INSERT INTO work_events (work_id, ts, kind, body) VALUES ($w, '2026-09-24T17:00:00+00:00', 'start', 'claimed')", ("w", work));
-        }
         var doc = JsonDocument.Parse(await board.Heartbeats(data)).RootElement;
-        var w = doc.GetProperty("worker");
-        Assert.True(w.GetProperty("running").GetBoolean());
-        Assert.Equal(work, w.GetProperty("held").GetInt64());
-        Assert.Equal("start", w.GetProperty("events")[0].GetProperty("kind").GetString());
         Assert.Equal(3, doc.GetProperty("slack").GetProperty("last_relay").GetProperty("thread_id").GetInt32());
-        File.Delete(Path.Combine(data, "worker.state"));
+        Assert.False(doc.TryGetProperty("worker", out _)); // the crew worker is gone: the Concierge is in ui:status instead (Program.cs)
+        Assert.False(doc.TryGetProperty("crew", out _));
         File.Delete(Path.Combine(data, "slack_bridge.state"));
         doc = JsonDocument.Parse(await board.Heartbeats(data)).RootElement;
-        Assert.False(doc.GetProperty("worker").GetProperty("running").GetBoolean());
         Assert.Equal(JsonValueKind.Null, doc.GetProperty("slack").ValueKind);
         Directory.Delete(data);
     }
@@ -141,62 +129,6 @@ public sealed class UiTests : IDisposable
         var data = Directory.CreateDirectory(path + ".prs").FullName;
         Assert.Equal(2, JsonDocument.Parse(await board.Heartbeats(data)).RootElement.GetProperty("prs").GetArrayLength());
         Directory.Delete(data);
-    }
-
-    [Fact]
-    public async Task Status_carries_the_crew_and_fresh_queues_a_fresh_start()
-    {
-        var data = Directory.CreateDirectory(path + ".crew").FullName;
-        Directory.CreateDirectory(Path.Combine(data, "live-sessions"));
-        Directory.CreateDirectory(Path.Combine(data, "sessions"));
-        var me = Environment.ProcessId;
-        File.WriteAllText(Path.Combine(data, "live-sessions", $"{me}.json"),
-            $$"""{"ts": 5, "answered": "local", "live": {"builder": {"pid": {{me}}, "started": 1790000000, "provider": "claude", "resume": true}, "gone": {"pid": 0} } }""");
-        File.WriteAllText(Path.Combine(data, "live-sessions", "0.json"), "{}");
-        File.WriteAllText(Path.Combine(data, "sessions", "builder.json"), """{"id": "7f3a91c2e4", "items": 4}""");
-        Environment.SetEnvironmentVariable("CLAUDE_PROVIDERS_FILE", Path.Combine(data, "providers.json"));
-        File.WriteAllText(Path.Combine(data, "providers.json"), """{"order": ["claude", "local"], "profiles": {"claude": {"model": "claude-sonnet-5"}, "local": {"base_url": "http://localhost:11434", "model": "qwen"}}}""");
-        Assert.Contains("\"ok\": true", await board.FreshStart("verifier"));
-        var crew = JsonDocument.Parse(await board.Heartbeats(data)).RootElement.GetProperty("crew");
-        Assert.Equal(1, crew.GetProperty("live").GetInt32());
-        Assert.Equal("Claude subscription, model=claude-sonnet-5 (all ANTHROPIC_* overrides removed)  ·  last run fell back to local", crew.GetProperty("note").GetString());
-        Assert.Equal("claude,local", string.Join(",", crew.GetProperty("backends").EnumerateArray().Select(b => b.GetString())));
-        var (builder, verifier) = (crew.GetProperty("roles")[0], crew.GetProperty("roles")[1]);
-        Assert.Equal("builder|claude|True|7f3a91c2e4|4|False|2026-09-21T14:13:20.0000000+00:00", string.Join("|", builder.GetProperty("name"), builder.GetProperty("provider"),
-            builder.GetProperty("resumed"), builder.GetProperty("session_id"), builder.GetProperty("items"), builder.GetProperty("fresh_due"), builder.GetProperty("running_since")));
-        Assert.True(verifier.GetProperty("fresh_due").GetBoolean());
-        Assert.False(File.Exists(Path.Combine(data, "live-sessions", "0.json"))); // a dead process's file is swept
-        Environment.SetEnvironmentVariable("CLAUDE_PROVIDERS_FILE", null);
-        Directory.Delete(data, true);
-    }
-
-    [Fact]
-    public async Task Worker_asks_a_running_crew_to_stop()
-    {
-        var data = Directory.CreateDirectory(path + ".worker").FullName;
-        File.WriteAllText(Path.Combine(data, "worker.state"), $$"""{"pid": {{Environment.ProcessId}}, "item": null}""");
-        Assert.Contains("\"stop_requested\": true", await board.ToggleWorker(data, "no-python-here")); // never starts one while it runs
-        Assert.True(File.Exists(Path.Combine(data, "worker.stop")));
-        Directory.Delete(data, true);
-    }
-
-    [Fact]
-    public async Task Wake_says_why_it_cannot_and_posts_nothing()
-    {
-        var data = Directory.CreateDirectory(path + ".wake").FullName;
-        async Task<string?> Said(int tid) => JsonDocument.Parse(await board.Wake(tid, data, "no-python-here")).RootElement.GetProperty("said").GetString();
-        Assert.Equal("#999 not found", await Said(999));
-        Assert.Equal($"you haven't replied on #{thread} yet", await Said((int)thread));
-        await board.JohnReplies((int)thread, "dev");
-        Assert.Equal("no session on record for builder: it asked before sessions were tracked", await Said((int)thread));
-        using (var db = store.Open()) db.RecordSession("builder", "sess-1", data, Environment.ProcessId);
-        Assert.Equal("builder's session is still open; it sees your reply on its next board write", await Said((int)thread));
-        using (var db = store.Open())
-        {
-            Assert.Equal("wake|stuck", db.Scalar("SELECT method || '|' || state FROM deliveries"));
-            Assert.Equal(2L, db.Scalar("SELECT COUNT(*) FROM messages")); // the question and John's reply: a wake posts nothing
-        }
-        Directory.Delete(data, true);
     }
 
     [Fact]
