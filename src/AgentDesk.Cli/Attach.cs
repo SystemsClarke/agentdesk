@@ -30,9 +30,19 @@ static partial class Attach
         {
             var ev = JsonDocument.Parse(e).RootElement;
             if (!ev.TryGetProperty("name", out var n) || n.GetString() != name) return;
-            if (ev.GetProperty("event").GetString() == "session.exited") done.TrySetResult($"{name} ended");
+            var kind = ev.GetProperty("event").GetString();
+            if (kind == "session.exited") done.TrySetResult($"{name} ended");
+            else if (kind == "session.restarted") _ = Reattach();
             else if (ev.TryGetProperty("data", out var data)) { stdout.Write(data.GetBytesFromBase64()); stdout.Flush(); }
         };
+        async Task Reattach() // Phoenix: its successor takes the same name a moment later
+        {
+            Console.Error.Write($"\x1b[0m\r\n[agentdesk: {name} restarted from its handoff]\r\n");
+            for (var i = 0; i < 60; i++, await Task.Delay(250))
+                if (!JsonDocument.Parse(await core.Call("ui:attach", Json(new() { ["name"] = name, ["cols"] = Console.WindowWidth, ["rows"] = Console.WindowHeight })))
+                        .RootElement.TryGetProperty("error", out _)) return;
+            done.TrySetResult($"{name} restarted, but its successor never started");
+        }
         var (inCp, outCp) = (Console.InputEncoding, Console.OutputEncoding);
         try
         {

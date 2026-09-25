@@ -34,9 +34,11 @@ identities.Resume();
 Log.Info($"core starting (pid {Environment.ProcessId})");
 await PipeServer.Run((req, push, gone) => req.Tool switch
 {
+    "hook:stop" => identities.AfterTurn(req.Args, hooks.Run("stop", req.Args)), // Phoenix: a handoff restarts the identity after the turn
     ['h', 'o', 'o', 'k', ':', .. var hookEvent] => hooks.Run(hookEvent, req.Args),
     "wait" => hooks.Wait(req.Args.GetInt32(), gone),
     ['u', 'i', ':', .. var op] => Ui(op, new Args(req.Args), push, gone),
+    "pass_the_torch" => identities.Torch(req.Caller, Tools.Dispatch(board, req.Caller, req.Tool, req.Args)),
     _ => Tools.Dispatch(board, req.Caller, req.Tool, req.Args),
 }, CancellationToken.None);
 

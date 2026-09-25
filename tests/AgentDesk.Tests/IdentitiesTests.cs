@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
+using AgentDesk.Contracts;
 using AgentDesk.Core;
 using AgentDesk.Core.Board;
 
@@ -69,7 +70,8 @@ public sealed class IdentitiesTests : IDisposable
         var row = Json(ids.Start("alpha"));
         Assert.Equal("running", row.GetProperty("state").GetString());
         var id = row.GetProperty("claude_session_id").GetString()!;
-        await Sees(s, "alpha", $"author=alpha --session-id {id} --append-system-prompt \"be brief\"");
+        await Sees(s, "alpha", $"author=alpha --session-id {id} --append-system-prompt \"You are one generation of alpha, a long-lived AgentDesk agent.");
+        Assert.EndsWith("that handoff.\n\nbe brief\"", Command(s));
         var pid = row.GetProperty("pid").GetInt32();
         Assert.Contains("\"forgotten\"", await ids.Forget("alpha"));
         Assert.Empty(States(ids));
@@ -105,6 +107,77 @@ public sealed class IdentitiesTests : IDisposable
         Assert.NotEqual(before.GetProperty("pid").GetInt32(), after["keep"].GetProperty("pid").GetInt32());
         Assert.Equal("running", after["auto"].GetProperty("state").GetString());
         await Sees(s2, "keep", $"author=keep --resume {id}");
+    }
+
+    static string Command(Sessions s) => Assert.Single(Json(s.List()).GetProperty("sessions").EnumerateArray()).GetProperty("command").GetString()!;
+
+    static JsonElement Hook(string sid) => JsonDocument.Parse(JsonSerializer.Serialize(new Dictionary<string, string> { ["session_id"] = sid })).RootElement;
+
+    JsonElement Row(Identities ids, string name) => Json(ids.List()).GetProperty("identities").EnumerateArray().Single(r => r.GetProperty("name").GetString() == name);
+
+    [Fact]
+    public async Task A_handoff_restarts_the_identity_from_it_once_the_turn_ends()
+    {
+        var (s, ids) = Core();
+        var board = new AgentBoard(store, null!, "wait {0}");
+        await ids.Create("phx", dir, null, null);
+        var sid = Json(ids.Start("phx")).GetProperty("claude_session_id").GetString()!;
+        var events = new List<string>();
+        await s.Attach("phx", 120, 30, e => { lock (events) events.Add(e); return Task.CompletedTask; }, gone.Token);
+
+        var me = new Caller(sid, "phx", dir, "claude-code", 1, "phx");
+        await ids.Torch(me, board.PassTheTorch(me, "Owns the parser. Next: its tests.", null));
+        Assert.Equal("", await ids.AfterTurn(Hook(sid), Task.FromResult(""))); // the hook answers at once; the restart follows
+        JsonElement row;
+        for (var sw = Stopwatch.StartNew(); (row = Row(ids, "phx")).GetProperty("pid").ValueKind == JsonValueKind.Null || row.GetProperty("generation").GetInt32() != 2; await Task.Delay(50))
+            Assert.True(sw.Elapsed < TimeSpan.FromSeconds(15), "never restarted");
+
+        var next = row.GetProperty("claude_session_id").GetString()!;
+        Assert.NotEqual(sid, next);
+        Assert.Equal("running", row.GetProperty("state").GetString());
+        Assert.StartsWith($"{Claude} --session-id {next} --append-system-prompt ", Command(s));
+        Assert.EndsWith("\"You are phx, generation 2. Your previous generation handed off with:\n\nOwns the parser. Next: its tests.\"", Command(s));
+        lock (events) Assert.Contains(events, e => e.Contains("session.restarted"));
+        using (var db = store.Open())
+        {
+            var chain = Assert.Single(db.Rows("SELECT * FROM phoenix_chain"));
+            var handoff = (long)chain["handoff_msg"]!;
+            Assert.Equal(("phx", 1L, sid), ((string)chain["identity"]!, (long)chain["generation"]!, (string)chain["claude_session_id"]!));
+            Assert.Equal($"generation 2 started from handoff #{handoff}", db.Scalar("SELECT body FROM messages ORDER BY id DESC LIMIT 1"));
+        }
+
+        // The successor hands off straight away: within two minutes of the last restart, nothing happens.
+        var successor = me with { SessionId = next };
+        await ids.Torch(successor, board.PassTheTorch(successor, "Again, already.", null));
+        await ids.AfterTurn(Hook(next), Task.FromResult(""));
+        await Task.Delay(2500);
+        Assert.Equal(next, Row(ids, "phx").GetProperty("claude_session_id").GetString());
+        Assert.Equal(2, Row(ids, "phx").GetProperty("generation").GetInt32());
+        using (var db = store.Open()) Assert.Single(db.Rows("SELECT * FROM phoenix_chain"));
+    }
+
+    [Fact]
+    public async Task A_handoff_from_any_other_session_restarts_nothing()
+    {
+        var (s, ids) = Core();
+        var board = new AgentBoard(store, null!, "wait {0}");
+        await ids.Create("phx", dir, null, null);
+        var before = Json(ids.Start("phx"));
+        var sid = before.GetProperty("claude_session_id").GetString()!;
+        var other = Guid.NewGuid().ToString();
+        foreach (var caller in new[] { new Caller(other, null, dir, "claude-code", 1), new Caller(other, "phx", dir, "claude-code", 1, "phx"), new Caller(sid, "phx", dir, "claude-code", 1) })
+        {
+            await ids.Torch(caller, board.PassTheTorch(caller, "Not mine to hand off.", null));
+            await ids.AfterTurn(Hook(caller.SessionId!), Task.FromResult(""));
+        }
+        await ids.AfterTurn(Hook(sid), Task.FromResult(""));
+        await Task.Delay(2500);
+        var after = Row(ids, "phx");
+        Assert.Equal(JsonValueKind.Null, after.GetProperty("phoenix_msg").ValueKind);
+        Assert.Equal((sid, 1, before.GetProperty("pid").GetInt32()),
+            (after.GetProperty("claude_session_id").GetString(), after.GetProperty("generation").GetInt32(), after.GetProperty("pid").GetInt32()));
+        using var db = store.Open();
+        Assert.Empty(db.Rows("SELECT * FROM phoenix_chain"));
     }
 
     [Fact]

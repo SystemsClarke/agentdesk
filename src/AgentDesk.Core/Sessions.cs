@@ -25,6 +25,8 @@ public sealed class Sessions
         public long Written; // total bytes ever; the ring holds the last min(Written, Keep)
         public readonly List<Func<string, Task>> Viewers = [];
         public readonly SemaphoreSlim Out = new(1, 1); // one chunk at a time, so every viewer sees output in order
+        public readonly TaskCompletionSource Gone = new(TaskCreationOptions.RunContinuationsAsynchronously); // its name is free again
+        public bool Restarting; // viewers are told session.restarted, not session.exited, and reattach to the successor
     }
 
     /// <summary>Raised with a session's name and pid once its process has ended, however it ended.</summary>
@@ -68,11 +70,13 @@ public sealed class Sessions
             });
     }
 
-    public async Task<string> Stop(string name)
+    /// <summary>Ends it and waits until its name is free; <paramref name="restart"/> tells its viewers a successor of the same name follows.</summary>
+    public async Task<string> Stop(string name, bool restart = false)
     {
         var s = Find(name);
+        s.Restarting = restart;
         s.Pty.Kill();
-        await s.Pty.Exited.WaitAsync(TimeSpan.FromSeconds(10));
+        await s.Gone.Task.WaitAsync(TimeSpan.FromSeconds(10));
         return await Ok(new JsonObject { ["stopped"] = name });
     }
 
@@ -146,11 +150,12 @@ public sealed class Sessions
         lock (gate) all.Remove(s.Name);
         Func<string, Task>[] last;
         lock (s) last = [.. s.Viewers];
-        var ended = new JsonObject { ["event"] = "session.exited", ["name"] = s.Name }.ToJsonString();
+        var ended = new JsonObject { ["event"] = s.Restarting ? "session.restarted" : "session.exited", ["name"] = s.Name }.ToJsonString();
         await Task.WhenAll(last.Select(v => Send(v, ended)));
         s.Pty.Dispose();
         Log.Info($"session {s.Name} ended");
-        Ended?.Invoke(s.Name, s.Pty.Pid);
+        try { Ended?.Invoke(s.Name, s.Pty.Pid); }
+        finally { s.Gone.TrySetResult(); }
     }
 
     static byte[] Tail(Session s)

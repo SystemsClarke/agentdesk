@@ -69,7 +69,9 @@ public sealed partial class BoardDb : IDisposable
         CREATE TABLE IF NOT EXISTS deliveries (message_id INTEGER PRIMARY KEY, method TEXT NOT NULL, state TEXT NOT NULL, detail TEXT, ts TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS identities (name TEXT PRIMARY KEY COLLATE NOCASE, folder TEXT NOT NULL, charter TEXT, host TEXT NOT NULL DEFAULT 'windows',
             claude_session_id TEXT, pid INTEGER, state TEXT NOT NULL DEFAULT 'stopped', autostart INTEGER NOT NULL DEFAULT 0,
-            created_ts TEXT NOT NULL, updated_ts TEXT NOT NULL);
+            created_ts TEXT NOT NULL, updated_ts TEXT NOT NULL, generation INTEGER NOT NULL DEFAULT 1, phoenix_msg INTEGER);
+        CREATE TABLE IF NOT EXISTS phoenix_chain (identity TEXT NOT NULL COLLATE NOCASE, generation INTEGER NOT NULL, claude_session_id TEXT,
+            handoff_msg INTEGER, ts TEXT NOT NULL, PRIMARY KEY (identity, generation));
         """;
 
     const string InsertMessage = "INSERT INTO messages (ts, thread_id, author, author_kind, body, reply_to, meta) VALUES ($ts,$tid,$author,$kind,$body,$replyTo,$meta)";
@@ -160,6 +162,9 @@ public sealed partial class BoardDb : IDisposable
         if (!cols.Contains("source")) Exec("ALTER TABLE pull_requests ADD COLUMN source TEXT NOT NULL DEFAULT 'agent-registered'");
         foreach (var col in new[] { "triage", "triage_ts" })
             if (!cols.Contains(col)) Exec($"ALTER TABLE pull_requests ADD COLUMN {col} TEXT");
+        var ids = Rows("PRAGMA table_info(identities)").Select(r => Str(r["name"])).ToHashSet();
+        if (!ids.Contains("generation")) Exec("ALTER TABLE identities ADD COLUMN generation INTEGER NOT NULL DEFAULT 1");
+        if (!ids.Contains("phoenix_msg")) Exec("ALTER TABLE identities ADD COLUMN phoenix_msg INTEGER");
     }
 
     // ---- writes
