@@ -12,6 +12,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\AgentDesk.Contracts\AgentDesk.Contracts.csproj" />
+    <InternalsVisibleTo Include="AgentDesk.Tests" />
   </ItemGroup>
 
 </Project>

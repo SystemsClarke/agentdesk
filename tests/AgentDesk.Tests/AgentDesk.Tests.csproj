@@ -8,6 +8,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <FrameworkReference Include="Microsoft.WindowsDesktop.App.WPF" /> <!-- the window's tests; UseWPF would change the implicit usings -->
     <PackageReference Include="coverlet.collector" Version="6.0.4" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
     <PackageReference Include="xunit" Version="2.9.3" />
@@ -21,6 +22,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\AgentDesk.Core\AgentDesk.Core.csproj" />
     <ProjectReference Include="..\..\src\AgentDesk.Contracts\AgentDesk.Contracts.csproj" />
+    <ProjectReference Include="..\..\src\AgentDesk.App\AgentDesk.App.csproj" />
   </ItemGroup>
 
 </Project>

@@ -117,7 +117,17 @@ public sealed class CoreBoard : IBoard, IDisposable
             Str(crew, "note") ?? "", Int(crew, "live"), [.. crew.GetProperty("backends").EnumerateArray().Select(b => b.GetString()!)]);
     }
 
-    public async Task<string?> ActAsync(string request, object? args = null) => Str(await Call(request, args), "said");
+    public async Task<IReadOnlyList<Identity>> IdentitiesAsync() =>
+        [.. (await Call("ui:identity_list")).GetProperty("identities").EnumerateArray().Select(r => new Identity(Str(r, "name") ?? "",
+            Str(r, "state") ?? "stopped", Math.Max(1, Int(r, "generation")), Str(r, "host") ?? "windows", Str(r, "folder") ?? "", Str(r, "model")))];
+
+    public async Task<IReadOnlyList<Adoptable>> AdoptableAsync() =>
+        [.. (await Call("ui:adoptable")).GetProperty("sessions").EnumerateArray().Select(s => new Adoptable(Str(s, "session_id") ?? "",
+            Str(s, "folder") ?? "", Ts(s, "last_activity"), Str(s, "first_message") ?? ""))];
+
+    public async Task<string?> WebUrlAsync() => Str(await Call("ui:web_url"), "url");
+
+    public async Task<string?> ActAsync(string request, object? args = null) => await Call(request, args) is var r ? Str(r, "said") ?? Str(r, "note") : null;
 
     public void Dispose() => core.Dispose();
 }

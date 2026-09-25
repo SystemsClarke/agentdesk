@@ -22,6 +22,12 @@ public sealed record WorkEvent(DateTimeOffset Ts, string Kind, string Body);
 public sealed record CrewRole(string Name, DateTimeOffset? RunningSince = null, string Provider = "claude", bool Resumed = false,
     string? SessionId = null, int Items = 0, bool FreshDue = false);
 
+/// <summary>A long-lived agent (ui:identity_list). State is running, queued or stopped; Generation counts Phoenix restarts from 1.</summary>
+public sealed record Identity(string Name, string State, int Generation, string Host, string Folder, string? Model = null);
+
+/// <summary>A Claude Code conversation from the last 24 h that someone typed in (ui:adoptable): it can become an identity.</summary>
+public sealed record Adoptable(string SessionId, string Folder, DateTimeOffset LastActivity, string FirstMessage);
+
 /// <summary>Everything the main menu, SysOp, Who's On and Options screens show besides the channel lists.</summary>
 public sealed record BoardStatus(
     IReadOnlyList<PrRow> Prs, IReadOnlyList<Post> Recent, IReadOnlyList<Post> Callers, IReadOnlyDictionary<string, int> Bios,
@@ -43,7 +49,11 @@ public interface IBoard
     Task UnarchiveAsync(int id);
     Task<int> PostAsync(string channel, string subject, string body);
     Task<BoardStatus> StatusAsync();
-    /// <summary>One of John's actions the core carries out (ui:check_prs, ...); returns its "said" line for the flash, if any.</summary>
+    Task<IReadOnlyList<Identity>> IdentitiesAsync();
+    Task<IReadOnlyList<Adoptable>> AdoptableAsync();
+    /// <summary>The ops console's URL with its key, or null if it did not start.</summary>
+    Task<string?> WebUrlAsync();
+    /// <summary>One of John's actions the core carries out (ui:check_prs, ...); returns its "said" line (ui:adopt's "note") for the flash, if any.</summary>
     Task<string?> ActAsync(string request, object? args = null);
 }
 
@@ -235,6 +245,29 @@ public sealed class SampleBoard : IBoard
             [new("builder"), new("app-dev", now.AddMinutes(-150), Resumed: true, SessionId: "7f3a91c2e4", Items: 4), new("verifier", FreshDue: true)],
             "the claude CLI on this PC, your subscription", 1, ["claude"]));
     }
+
+    public Task<IReadOnlyList<Identity>> IdentitiesAsync() => Task.FromResult<IReadOnlyList<Identity>>(
+    [
+        new("app-dev", "running", 3, "windows", @"C:\Users\palencharj\NoOneDrive\AgentDesk", "sonnet"),
+        new("board-responder", "stopped", 12, "windows", @"C:\Users\palencharj\NoOneDrive\AgentDesk", "haiku"),
+        new("builder", "running", 1, "windows", @"C:\Users\palencharj\NoOneDrive\gocd-agent-docker"),
+        new("gocd-ops", "queued", 5, "windows", @"C:\Users\palencharj\NoOneDrive\GoCDTool", "opus"),
+        new("verifier", "running", 2, "wsl:Ubuntu", "/home/john/src/agentdesk", "sonnet"),
+    ]);
+
+    public Task<IReadOnlyList<Adoptable>> AdoptableAsync() => Task.FromResult<IReadOnlyList<Adoptable>>(
+    [
+        new("0f7c2a64-1d9e-4b8a-9c31-6e2f5d8a7b10", @"C:\Users\palencharj\NoOneDrive\AgentDesk", now.AddMinutes(-2),
+            "Implement the first half of milestone 8 of docs/GOAL.md in the AgentDesk repo"),
+        new("5b1e9d03-7a42-4c6f-8e25-3d9a0c4b6f21", @"C:\Users\palencharj\NoOneDrive\GoCDTool", now.AddMinutes(-47),
+            "Why is FS2026_GitTest failing on build-07 since last night?"),
+        new("a93d4e7f-2c18-4f5b-b6a0-81e7c9d2f346", @"C:\Users\palencharj\NoOneDrive\MainClaudeMemory\MainClaude", now.AddHours(-5),
+            "Consolidate the vault notes about signing certs"),
+        new("e2c85b19-6f3a-4d07-9b4e-5a1c8d7f0e92", @"C:\Users\palencharj\NoOneDrive\FastBuild", now.AddHours(-19),
+            "Measure compile time for JAWS with the new cache"),
+    ]);
+
+    public Task<string?> WebUrlAsync() => Task.FromResult<string?>("http://127.0.0.1:47811/?k=sample-key-not-real");
 
     public Task<string?> ActAsync(string request, object? args = null) => Task.FromResult<string?>(null);
 

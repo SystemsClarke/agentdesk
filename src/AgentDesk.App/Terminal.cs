@@ -47,6 +47,14 @@ public partial class MainWindow
     IReadOnlyList<ThreadRow> openQs = [];
     BoardStatus? st;
     int cols = 96, lines = 30;
+    IReadOnlyList<Identity> agents = [];
+    IReadOnlyList<Adoptable>? adoptables; // read on the Adopt screen only: it scans ~/.claude/projects
+    string? webUrl, adoptNote;
+
+    /// <summary>A few one-line questions asked in the subject box, one at a time (New agent, Adopt's name), then Done with the answers.</summary>
+    sealed record Ask(string Title, string Banner, string Back, (string Label, string Help, bool Optional)[] Fields, Func<string[], Task> Done);
+    Ask? ask;
+    readonly List<string> answers = [];
 
     // --- text helpers ------------------------------------------------------------
 
@@ -137,6 +145,10 @@ public partial class MainWindow
         }
         openQs = await board.OpenQuestionsAsync();
         st = await board.StatusAsync();
+        agents = await board.IdentitiesAsync();
+        webUrl = await board.WebUrlAsync();
+        if (screen == "adopt")
+            adoptables = await board.AdoptableAsync();
         threads.Clear();
         Title = "AgentDesk" + (openQs.Count > 0 ? $" - {openQs.Count} open question{(openQs.Count == 1 ? "" : "s")}" : "");
         Render();
@@ -160,7 +172,8 @@ public partial class MainWindow
         var title = screen switch
         {
             "main" => "Main menu", "list" => Titles[channel], "prs" => "Pull Requests", "sysop" => "SysOp console", "who" => "Who's on",
-            "options" => "Options", "compose" => $"New post in {Titles[channel]}", _ => $"Reading #{readTid}",
+            "options" => "Options", "compose" => $"New post in {Titles[channel]}", "agents" => "Agents", "adopt" => "Adopt a session",
+            "ask" => ask?.Title ?? "", _ => $"Reading #{readTid}",
         };
         Line left = [S("AgentDesk", "ye b"), S($" · {title}", "mu")];
         var held = HeldRow;
@@ -181,7 +194,8 @@ public partial class MainWindow
         var q = channel == "question";
         return screen switch
         {
-            "main" => [.. K("Q D W J", "message bases"), .. K("P", "PRs"), .. K("S", "SysOp"), .. K("B", "who's on"), .. K("O", "options"), .. K("G", "hang up")],
+            "main" => [.. K("Q D W J", "message bases"), .. K("P", "PRs"), .. K("S", "SysOp"), .. K("B", "who's on"), .. K("A", "agents"), .. K("O", "options"),
+                .. K("G", "hang up")],
             "list" => [.. K("↑↓", "move"), .. K("↵", "read"), .. K("N", "new post"),
                 .. If(q, [.. K("H", showArchived ? "active" : "archived"), .. K("Ctrl+R", "wake agent")]), .. K("Esc", "main menu")],
             "read" => [.. K("type", "to reply"), .. K("Ctrl+↵", "send"), .. K("Ctrl+D", "dictate"), .. K("PgUp/PgDn", "scroll"),
@@ -190,8 +204,12 @@ public partial class MainWindow
             "sysop" => [.. K("Ctrl+W", st?.WorkerRunning == true ? "stop worker (after this item)" : "start worker"), .. K("R", "reload code"),
                 .. K("J", "job board"), .. K("L", "read held item"), .. K("Esc", "menu")],
             "who" => [.. K("↑↓", "pick a caller"), .. K("↵", "read bio"), .. K("P", "page them"), .. K("Esc", "menu")],
-            "options" => [.. K("↑↓", "move"), .. K("↵", "change"), .. K("←→", "adjust"), .. K("Esc", "menu")],
+            "options" => [.. K("↑↓", "move"), .. K("↵", "change"), .. K("←→", "adjust"), .. K("C", "ops console"), .. K("Esc", "menu")],
             "compose" => [.. K("↵", "subject → body"), .. K("Ctrl+↵", "post"), .. K("Ctrl+D", "dictate"), .. K("Esc", "cancel")],
+            "agents" => [.. K("↑↓", "move"), .. K("↵", "attach"), .. K("S", "start/stop"), .. K("N", "new agent"), .. K("F", "forget"),
+                .. K("A", "adopt a session"), .. K("Esc", "menu")],
+            "adopt" => [.. K("↑↓", "move"), .. K("↵", "adopt"), .. K("Esc", "agents")],
+            "ask" => [.. K("↵", "next"), .. K("Esc", "cancel")],
             _ => [],
         };
     }
@@ -276,6 +294,8 @@ public partial class MainWindow
             ("S", "SysOp console", sysop),
             ("B", "Who's on", S($"{N(agents, "agent")} today", "pu")),
             ("O", "Options", S(Palettes[Theme].Label + (screech ? " · screech on" : ""), "ye")),
+            ("A", "Agents", this.agents.Count == 0 ? S("none signed up", "mu")
+                : S($"{this.agents.Count(a => a.State == "running")} running · {this.agents.Count(a => a.State == "queued")} queued", "gr")),
             ("G", "Hang up", S("to the tray", "mu")),
         ];
         static Line Item((string Key, string Label, Seg Val) it) =>
@@ -292,7 +312,7 @@ public partial class MainWindow
         var phrases = st?.UsageLines ?? [];
         var phrase = phrases.Count > 0 ? phrases[(int)(DateTimeOffset.Now.ToUnixTimeSeconds() / 6 % phrases.Count)] : null;
         L.Add(phrase is null ? [S(" (time left: unlimited, you're the SysOp)", "fa")] : [S(" (" + phrase + ")", phrase.Contains("week") ? "or" : "fa")]);
-        L.Add([S(" Main menu ", "fg"), S("[", "mu"), S("Q,D,W,J,P,S,B,O,G", "ye"), S("]", "mu"), S(": "), S(" ", "cur")]);
+        L.Add([S(" Main menu ", "fg"), S("[", "mu"), S("Q,D,W,J,P,S,B,O,A,G", "ye"), S("]", "mu"), S(": "), S(" ", "cur")]);
         return L;
     }
 
@@ -517,6 +537,7 @@ public partial class MainWindow
             ("Play the screech now", "↵", "play"),
             ("Font size", $"{Pref("font_size", 11)} pt   (←/→ or Ctrl +/-)", "font"),
             ("Dictation pre-roll", (Pref("preroll", true) ? "ON" : "off") + "   keeps the last 2 s in RAM while a box has focus, so Ctrl+D catches what you just said", "preroll"),
+            ("Ops console", webUrl is null ? "not running (the core log says why)" : $"{Unkeyed(webUrl)}   (key hidden)  ·  ↵ or C opens it in the browser", "web"),
         ];
     }
 
@@ -549,6 +570,68 @@ public partial class MainWindow
         return L;
     }
 
+    /// <summary>The ops console's address without its key, safe to show on screen.</summary>
+    internal static string Unkeyed(string url) => url.Split('?')[0];
+
+    internal static Line AgentRow(Identity a, int folderW) =>
+    [
+        S("  " + Fit(a.Name, 20), Hue(a.Name) + " b"),
+        S(Fit(a.State, 9), a.State switch { "running" => "gr", "queued" => "ye", _ => "fa" }),
+        S(Fit($"{a.Generation}", 5), "mu"), S(Fit(a.Host, 13), "cy"), S(Fit(a.Model ?? "—", 8), "mu"), S(Fit(a.Folder, folderW), "fa"),
+    ];
+
+    static readonly string Home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+
+    /// <summary>A folder with the home folder as ~, so the part that tells them apart fits.</summary>
+    internal static string Tilde(string folder) => folder.StartsWith(Home + "\\", StringComparison.OrdinalIgnoreCase) ? "~" + folder[Home.Length..] : folder;
+
+    internal static Line AdoptRow(Adoptable a, int folderW, int msgW) =>
+        [S("  " + Fit(Tilde(a.Folder), folderW), "cy"), S(" " + Fit(When(a.LastActivity), 11), "fa"), S(Fit(a.FirstMessage, msgW))];
+
+    List<Line> AgentsScreen(int W)
+    {
+        var folderW = Math.Max(20, W - 57);
+        var L = Rows(Bar("AGENTS  ·  the switchboard  ·  long-lived agents, one line each, and Phoenix keeps them going"),
+            "  " + Fit("NAME", 20) + Fit("STATE", 9) + Fit("GEN", 5) + Fit("HOST", 13) + Fit("MODEL", 8) + "FOLDER", agents.Count,
+            i => AgentRow(agents[i], folderW),
+            [S("   No agents yet. ", "mu"), S("N", "ye"), S(" signs one up; ", "mu"), S("A", "ye"), S(" adopts a live Claude session.", "mu")], adoptNote is null ? 11 : 15);
+        L.Add([S($" {agents.Count(a => a.State == "running")} running", "gr"), S(" · "), S($"{agents.Count(a => a.State == "queued")} queued", "ye"), S(" · "),
+            S($"{agents.Count(a => a.State == "stopped")} stopped", "fa"), S($" · at most {Pref("max_sessions", 3)} at once (Options)", "mu"),
+            .. If(window.Count > window.Visible, S($" · rows {window.Top + 1}–{window.End} of {window.Count}", "fa"))]);
+        L.AddRange([[], [S(" ↵", "ye"), S(" opens a console attached to it (", "mu"), S("agentdesk attach <name>", "cy"), S("). Ctrl+] detaches; it keeps running.", "mu")],
+            [S(" A", "ye"), S(" adopts a Claude Code conversation from the desktop app, so it runs here instead.", "mu")]]);
+        if (adoptNote != null)
+            L.AddRange([[], .. Box("Adopted", [[S(adoptNote, "ye")]], W)]);
+        return L;
+    }
+
+    List<Line> AdoptScreen(int W)
+    {
+        var rs = adoptables ?? [];
+        var (folderW, msgW) = (Math.Min(44, W / 3), Math.Max(20, W - Math.Min(44, W / 3) - 15));
+        var L = Rows(Bar("ADOPT  ·  take over a live Claude session  ·  same conversation, now AgentDesk runs it"),
+            "  " + Fit("FOLDER", folderW) + " " + Fit("LAST", 11) + "FIRST MESSAGE", rs.Count, i => AdoptRow(rs[i], folderW, msgW),
+            [S(adoptables is null ? "   Looking through ~/.claude/projects..." : "   No Claude Code conversations in the last 24 hours that anyone typed in.", "mu")], 9);
+        L.Add([S($" {N(rs.Count, "conversation")} from the last 24 hours, newest first", "mu"),
+            .. If(window.Count > window.Visible, S($" · rows {window.Top + 1}–{window.End} of {window.Count}", "fa"))]);
+        L.AddRange([[], [S(" ↵", "ye"), S(" asks for a name, then starts it here as an agent in its own folder, resuming the conversation.", "mu")],
+            [S(" Then close it in the Claude desktop app: two programs writing one conversation will garble it.", "fa")]]);
+        return L;
+    }
+
+    List<Line> AskScreen(int W)
+    {
+        List<Line> L = [Bar(ask!.Banner), []];
+        for (var i = 0; i < ask.Fields.Length; i++)
+        {
+            var (label, help, _) = ask.Fields[i];
+            L.Add(i < answers.Count ? [S("   " + Fit(label, 10), "mu"), answers[i].Length > 0 ? S(answers[i], "fg b") : S("(none)", "fa")]
+                : i == answers.Count ? [S(" ▶ " + Fit(label, 10), "ye b"), S(help, "fg")] : [S("   " + Fit(label, 10), "fa"), S(help, "fa")]);
+        }
+        L.AddRange([[], [S(" Type in the box below and press ", "mu"), S("Enter", "ye"), S(" for the next one. ", "mu"), S("Esc", "ye"), S(" cancels.", "mu")]]);
+        return L;
+    }
+
     List<Line> Compose(int W) =>
     [
         Bar($"NEW POST  ·  {Titles[channel]}"), [],
@@ -570,18 +653,160 @@ public partial class MainWindow
             Reply.Focus();
             Reply.CaretIndex = Reply.Text.Length;
         }
+        else if (to == "ask")
+            Subject.Focus();
         else if (to != "compose")
             Body.Focus();
+        if (to == "adopt")
+            _ = RefreshAsync();
     }
 
     void GoBack()
     {
-        if (screen == "compose")
-        {
+        if (screen is "compose" or "ask")
             Subject.Clear();
+        if (screen == "compose")
             Reply.Clear();
+        if (screen == "agents")
+            adoptNote = null;
+        Goto(screen switch { "read" => readBack, "compose" => "list", "ask" => ask!.Back, "adopt" => "agents", _ => "main" });
+    }
+
+    void AskFor(Ask a, string prefill = "")
+    {
+        (ask, adoptNote) = (a, null);
+        answers.Clear();
+        Goto("ask");
+        Subject.Text = prefill;
+        Subject.CaretIndex = prefill.Length;
+    }
+
+    /// <summary>Enter in the box: take this answer, then ask the next one, or go back and hand them all to Done.</summary>
+    async Task AskNext()
+    {
+        var (a, text) = (ask!, Subject.Text.Trim());
+        var field = a.Fields[answers.Count];
+        if (text.Length == 0 && !field.Optional)
+        {
+            Flash($"It needs a {field.Label}. Esc cancels.", "ye");
+            return;
         }
-        Goto(screen == "read" ? readBack : screen == "compose" ? "list" : "main");
+        answers.Add(text);
+        Subject.Clear();
+        if (answers.Count < a.Fields.Length)
+        {
+            Render();
+            return;
+        }
+        var got = answers.ToArray();
+        GoBack();
+        try
+        {
+            await a.Done(got);
+        }
+        catch (Exception e) when (e is InvalidOperationException or IOException)
+        {
+            Flash("Not done: " + e.Message, "pk b");
+        }
+    }
+
+    void NewAgent() => AskFor(new("New agent", "NEW AGENT  ·  sign up a long-lived agent  ·  it keeps one Claude conversation and hands off at 60%", "agents",
+        [("name", "What to call it: agentdesk attach <name> and its board posts use this.", false),
+         ("folder", "The folder it works in, e.g. C:\\Users\\you\\src\\repo.", false),
+         ("charter", "Optional: what it is for, appended to its system prompt. Enter skips it.", true)],
+        async a =>
+        {
+            await board.ActAsync("ui:identity_create", new { name = a[0], folder = a[1], charter = a[2].Length > 0 ? a[2] : null });
+            await RefreshAsync();
+            Sel = agents.ToList().FindIndex(x => x.Name == a[0]);
+            Flash($"{a[0]} is signed up. S starts it.", "gr");
+        }));
+
+    void Adopt()
+    {
+        if (adoptables is not { Count: > 0 } rs)
+            return;
+        var s = rs[Sel];
+        AskFor(new("Adopt a session", $"ADOPT  ·  {s.Folder}  ·  {When(s.LastActivity)}", "adopt",
+            [("name", "What to call it from now on: agentdesk attach <name> and its board posts use this.", false)],
+            async a =>
+            {
+                var note = await board.ActAsync("ui:adopt", new { session_id = s.SessionId, name = a[0] });
+                Goto("agents");
+                adoptNote = note ?? "If this conversation is still open in the Claude desktop app, close it there.";
+                await RefreshAsync();
+                Sel = agents.ToList().FindIndex(x => x.Name == a[0]);
+                Flash($"{a[0]} adopted. Close that conversation in the Claude desktop app.", "gr");
+            }), Path.GetFileName(s.Folder.TrimEnd('\\', '/')).ToLowerInvariant());
+    }
+
+    /// <summary>Enter on Agents: a new console running agentdesk attach, beside this window or from the install folder.</summary>
+    void Attach(Identity a)
+    {
+        if (a.State != "running")
+        {
+            Flash(a.State == "queued" ? $"{a.Name} is waiting for a free slot." : $"{a.Name} isn't running. S starts it.", "ye");
+            return;
+        }
+        var exe = new[] { AppContext.BaseDirectory, Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "AgentDeskApp", "current") }
+            .Select(d => Path.Combine(d, "agentdesk.exe")).FirstOrDefault(File.Exists);
+        if (exe is null)
+        {
+            Flash("agentdesk.exe isn't beside this window or in the install folder.", "pk b");
+            return;
+        }
+        Process.Start(new ProcessStartInfo(exe, $"attach \"{a.Name}\"") { UseShellExecute = true });
+        Flash($"Attached to {a.Name} in a new console. Ctrl+] detaches; it keeps running.", "cy");
+    }
+
+    async void StartStop()
+    {
+        if (agents.Count == 0)
+            return;
+        var a = agents[Sel];
+        var stop = a.State != "stopped";
+        Flash(stop ? $"Stopping {a.Name}..." : $"Starting {a.Name}...", "ye");
+        try
+        {
+            await board.ActAsync(stop ? "ui:identity_stop" : "ui:identity_start", new { name = a.Name });
+            await RefreshAsync();
+            var now = agents.FirstOrDefault(x => x.Name == a.Name)?.State;
+            Flash(now switch
+            {
+                "running" => $"{a.Name} is running. ↵ attaches.",
+                "queued" => $"{a.Name} is queued: {Pref("max_sessions", 3)} already running. It starts when one stops.",
+                _ => $"{a.Name} stopped. Its conversation is kept; S resumes it.",
+            }, now == "running" ? "gr" : "ye");
+        }
+        catch (Exception e) when (e is InvalidOperationException or IOException)
+        {
+            Flash("Not done: " + e.Message, "pk b");
+        }
+    }
+
+    void Forget()
+    {
+        if (agents.Count == 0)
+            return;
+        var name = agents[Sel].Name;
+        confirm = ($"Forget {name}? It stops and leaves the list; its Claude conversation stays on disk.", async () =>
+        {
+            await board.ActAsync("ui:identity_forget", new { name });
+            await RefreshAsync();
+            Flash($"{name} forgotten.", "gr");
+        });
+        Render();
+    }
+
+    async void OpenConsole()
+    {
+        if (await board.WebUrlAsync() is not { } url)
+        {
+            Flash("The ops console isn't running. The core log says why.", "pk b");
+            return;
+        }
+        Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
+        Flash("Opened the ops console in your browser.", "cy");
     }
 
     void OpenThread(int tid, string back = "list")
@@ -593,7 +818,8 @@ public partial class MainWindow
 
     int ItemCount() => screen switch
     {
-        "list" => rows[channel].Count, "prs" => Prs.Count, "who" => Callers.Count, "options" => OptionItems().Count, _ => 0,
+        "list" => rows[channel].Count, "prs" => Prs.Count, "who" => Callers.Count, "options" => OptionItems().Count, "agents" => agents.Count,
+        "adopt" => adoptables?.Count ?? 0, _ => 0,
     };
 
     void Move(int delta)
@@ -621,6 +847,10 @@ public partial class MainWindow
         }
         else if (screen == "options")
             ChangeOption(0);
+        else if (screen == "agents" && agents.Count > 0)
+            Attach(agents[Sel]);
+        else if (screen == "adopt")
+            Adopt();
     }
 
     void ChangeOption(int delta)
@@ -662,6 +892,9 @@ public partial class MainWindow
                 Flash(Pref("preroll", true) ? "Pre-roll on: the mic keeps a 2-second rolling buffer while you're in a box."
                     : "Pre-roll off: the mic only opens when you press Ctrl+D.", "ye");
                 break;
+            case "web":
+                OpenConsole();
+                return;
             default:
                 _ = board.ActAsync("ui:fresh", new { name = key[6..] });
                 Flash($"{key[6..]} starts a fresh session on its next item, seeded from its handoff note.", "ye");
@@ -805,7 +1038,7 @@ public partial class MainWindow
     bool BoxKey(Key key, bool ctrl, bool alt)
     {
         if (ctrl && key == Key.Enter)
-            _ = SendAsync();
+            _ = screen == "ask" ? AskNext() : SendAsync();
         else if (ctrl)
             return CtrlKey(key);
         else if (key == Key.Escape)
@@ -814,7 +1047,10 @@ public partial class MainWindow
         {
             if (key != Key.Enter)
                 return false;
-            Reply.Focus();
+            if (screen == "ask")
+                _ = AskNext();
+            else
+                Reply.Focus();
         }
         else if (key is Key.PageUp or Key.PageDown)
             (key == Key.PageUp ? (Action)Body.PageUp : Body.PageDown)();
@@ -926,6 +1162,12 @@ public partial class MainWindow
             OpenThread(held.Id, "sysop");
         else if (s == "who" && ch == 'p')
             Page();
+        else if (s == "options" && ch == 'c')
+            OpenConsole();
+        else if (s == "agents" && ch is 's' or 'n' or 'f' or 'a')
+            ((Action)(ch switch { 's' => StartStop, 'n' => NewAgent, 'f' => Forget, _ => () => Goto("adopt") }))();
+        else if (ch == 'a')
+            Goto("agents");
         else if (ch is 'p' or 's' or 'b' or 'o' or 'm')
             Goto(ch switch { 'p' => "prs", 's' => "sysop", 'b' => "who", 'o' => "options", _ => "main" });
         else if (ch == 't')

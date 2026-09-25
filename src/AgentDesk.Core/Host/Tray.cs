@@ -11,7 +11,7 @@ namespace AgentDesk.Core.Host;
 /// the core stays AOT-clean. A hidden window rather than a message-only one: only a top-level window hears
 /// TaskbarCreated, which is how the icon comes back after Explorer restarts.
 /// </summary>
-static unsafe partial class Tray
+public static unsafe partial class Tray
 {
     const uint WM_CONTEXTMENU = 0x7B, WM_LBUTTONDBLCLK = 0x203, Callback = 0x8001, NIN_KEYSELECT = 0x401, NIN_BALLOONUSERCLICK = 0x405;
     const uint NIM_ADD = 0, NIM_MODIFY = 1, NIM_DELETE = 2, NIM_SETVERSION = 4, NIF_MESSAGE = 1, NIF_ICON = 2, NIF_TIP = 4, NIF_INFO = 0x10;
@@ -26,7 +26,17 @@ static unsafe partial class Tray
     /// <summary>The ops console's URL with its key (Web.cs); the menu opens it.</summary>
     public static string? WebUrl { get; set; }
 
-    public static void Start(BoardStore store) => new Thread(() => Pump(store)) { IsBackground = true, Name = "tray" }.Start();
+    /// <summary>A test or temp core (AGENTDESK_DATA set, or AGENTDESK_NO_TRAY=1) shows no icon and no toasts: they cluttered
+    /// John's taskbar, and quitting one by mistake looked like quitting the real one.</summary>
+    public static bool Hidden(Func<string, string?> env) => env("AGENTDESK_DATA") is { Length: > 0 } || env("AGENTDESK_NO_TRAY") == "1";
+
+    public static void Start(BoardStore store)
+    {
+        if (Hidden(Environment.GetEnvironmentVariable))
+            Log.Info("tray: none on a temp core (AGENTDESK_DATA or AGENTDESK_NO_TRAY)");
+        else
+            new Thread(() => Pump(store)) { IsBackground = true, Name = "tray" }.Start();
+    }
 
     static void Pump(BoardStore store)
     {
