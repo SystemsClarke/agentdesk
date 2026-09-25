@@ -32,7 +32,7 @@ if ($Package) {
     # The package id is not "AgentDesk": Velopack installs to, and uninstall deletes, %LOCALAPPDATA%\<id>,
     # and %LOCALAPPDATA%\AgentDesk holds the board. Every commit is a new version, so updates always move forward.
     # Signed with the AgentDesk dev cert when it is in this machine's cert store (John's), unsigned otherwise (CI's public releases).
-    $thumb = (Get-Content build\agentdesk-cert-thumbprint.txt -Raw).Trim()
+    $thumb = 'AE6661701A6D11E50423B66216D26410489953BD' # "AgentDesk (self-signed, palencharj)"; public, identifies the cert only
     $sign = if (Test-Path Cert:\CurrentUser\My\$thumb) { @('--signParams', "/sha1 $thumb /fd SHA256 /tr http://timestamp.digicert.com /td SHA256") } else { @() }
     dotnet tool restore | Out-Null
     dotnet vpk pack --packId AgentDeskApp --packTitle AgentDesk --packAuthors 'John Palenchar' `
