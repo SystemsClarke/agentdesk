@@ -9,7 +9,7 @@ namespace AgentDesk.Tests;
 public sealed class SessionsTests : IDisposable
 {
     const string Shell = "cmd /d /q /k"; // stays up, reads keys, draws no banner
-    readonly Sessions sessions = new();
+    readonly Sessions sessions = new(viewerQueue: 8);
     readonly string name = $"t{Guid.NewGuid():N}"[..9];
     readonly CancellationTokenSource gone = new();
 
@@ -90,5 +90,30 @@ public sealed class SessionsTests : IDisposable
         await v.Exited.Task.WaitAsync(TimeSpan.FromSeconds(10));
         Assert.Throws<ArgumentException>(() => Process.GetProcessById(pid));
         Assert.DoesNotContain(name, await sessions.List());
+    }
+
+    [Fact]
+    public async Task A_stalled_viewer_is_dropped_without_slowing_the_others()
+    {
+        await sessions.Start(name, Path.GetTempPath(), Shell);
+        var stalled = new List<string>();
+        var stuck = new TaskCompletionSource();
+        Assert.Contains("\"attached\"", await sessions.Attach(name, 100, 30, e => { lock (stalled) stalled.Add(e); return stuck.Task; }, gone.Token));
+        var v = await Attach();
+        await sessions.Input(name, "for /l %i in (1,1,2000) do @echo line-%i\r");
+        await v.Sees("line-2000"); // the reader kept going, and so did the healthy viewer
+
+        Assert.Contains("\"viewers\": 1", await sessions.List());
+        stuck.SetResult(); // it wakes up: what it had queued, then the overflow, then nothing
+        for (var sw = Stopwatch.StartNew(); sw.Elapsed < TimeSpan.FromSeconds(10); await Task.Delay(50))
+            lock (stalled) if (stalled.Count > 0 && stalled[^1].Contains("session.overflow")) break;
+        lock (stalled)
+        {
+            Assert.Contains("session.overflow", stalled[^1]);
+            Assert.InRange(stalled.Count, 2, 10); // at most 8 queued plus the overflow
+        }
+
+        var again = await Attach(); // reattaching gets the ring
+        Assert.Contains("line-2000", again.First);
     }
 }

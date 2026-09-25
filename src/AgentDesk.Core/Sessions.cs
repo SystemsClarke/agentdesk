@@ -1,4 +1,5 @@
 using System.Text;
+using System.Threading.Channels;
 using System.Text.Json.Nodes;
 using AgentDesk.Contracts;
 using AgentDesk.Core.Host;
@@ -8,9 +9,11 @@ namespace AgentDesk.Core;
 /// <summary>
 /// Named Claude Code sessions the core hosts on pseudoconsoles, with no window: John attaches from any terminal
 /// (agentdesk attach), like tmux. Each keeps its last 256 KB of output, replayed to whoever attaches. In memory:
-/// the sessions end with the core.
+/// the sessions end with the core. Each viewer has its own bounded queue, so a stalled one never slows the others or
+/// the reader: one that falls <paramref name="viewerQueue"/> chunks behind is dropped with {"event":"session.overflow"},
+/// and reattaching gets the ring again.
 /// </summary>
-public sealed class Sessions
+public sealed class Sessions(int viewerQueue = 256)
 {
     const int Keep = 256 * 1024;
     readonly Dictionary<string, Session> all = new(StringComparer.OrdinalIgnoreCase);
@@ -23,10 +26,16 @@ public sealed class Sessions
         public readonly DateTimeOffset Started = DateTimeOffset.UtcNow;
         public readonly byte[] Ring = new byte[Keep];
         public long Written; // total bytes ever; the ring holds the last min(Written, Keep)
-        public readonly List<Func<string, Task>> Viewers = [];
-        public readonly SemaphoreSlim Out = new(1, 1); // one chunk at a time, so every viewer sees output in order
+        public readonly List<Viewer> Viewers = []; // guarded by lock (this), with Ring and Written, so every viewer sees output in order
         public readonly TaskCompletionSource Gone = new(TaskCreationOptions.RunContinuationsAsynchronously); // its name is free again
         public bool Restarting; // viewers are told session.restarted, not session.exited, and reattach to the successor
+    }
+
+    /// <summary>One attached connection: its pushes, in order, from its own queue.</summary>
+    sealed class Viewer
+    {
+        public required Func<string, Task> Push;
+        public required Channel<string> Queue;
     }
 
     /// <summary>Raised with a session's name and pid once its process has ended, however it ended.</summary>
@@ -85,16 +94,15 @@ public sealed class Sessions
     public async Task<string> Attach(string name, int cols, int rows, Func<string, Task> push, CancellationToken gone)
     {
         var s = Find(name);
-        await s.Out.WaitAsync(gone);
-        try
+        var v = new Viewer { Push = push, Queue = Channel.CreateBounded<string>(new BoundedChannelOptions(viewerQueue + 1) { SingleWriter = false }) };
+        lock (s)
         {
-            byte[] replay;
-            lock (s) replay = Tail(s);
-            if (replay.Length > 0) await push(Output(s.Name, replay, replay.Length));
-            lock (s) s.Viewers.Add(push);
+            var replay = Tail(s);
+            if (replay.Length > 0) v.Queue.Writer.TryWrite(Output(s.Name, replay, replay.Length));
+            s.Viewers.Add(v);
         }
-        finally { s.Out.Release(); }
-        gone.Register(() => { lock (s) s.Viewers.Remove(push); });
+        _ = Drain(v, gone);
+        gone.Register(() => { lock (s) s.Viewers.Remove(v); v.Queue.Writer.TryComplete(); });
         s.Pty.Resize(cols + 1, rows);
         await Task.Delay(100); // two sizes in one breath can read as no change
         s.Pty.Resize(cols, rows);
@@ -129,33 +137,51 @@ public sealed class Sessions
             int n;
             while ((n = await s.Pty.Output.ReadAsync(buf)) > 0)
             {
-                await s.Out.WaitAsync();
-                try
+                var e = Output(s.Name, buf, n);
+                lock (s)
                 {
-                    Func<string, Task>[] now;
-                    lock (s)
-                    {
-                        for (var i = 0; i < n; i++) s.Ring[(s.Written + i) % Keep] = buf[i];
-                        s.Written += n;
-                        now = [.. s.Viewers];
-                    }
-                    var e = Output(s.Name, buf, n);
-                    await Task.WhenAll(now.Select(v => Send(v, e)));
+                    for (var i = 0; i < n; i++) s.Ring[(s.Written + i) % Keep] = buf[i];
+                    s.Written += n;
+                    foreach (var v in s.Viewers.ToArray()) Enqueue(s, v, e);
                 }
-                finally { s.Out.Release(); }
             }
         }
         catch (Exception e) when (e is IOException or ObjectDisposedException) { } // the pseudoconsole closed
         await s.Pty.Exited;
         lock (gate) all.Remove(s.Name);
-        Func<string, Task>[] last;
-        lock (s) last = [.. s.Viewers];
         var ended = new JsonObject { ["event"] = s.Restarting ? "session.restarted" : "session.exited", ["name"] = s.Name }.ToJsonString();
-        await Task.WhenAll(last.Select(v => Send(v, ended)));
+        lock (s)
+            foreach (var v in s.Viewers)
+            {
+                v.Queue.Writer.TryWrite(ended); // the spare slot: a full queue still gets its ending
+                v.Queue.Writer.TryComplete();
+            }
         s.Pty.Dispose();
         Log.Info($"session {s.Name} ended");
         try { Ended?.Invoke(s.Name, s.Pty.Pid); }
         finally { s.Gone.TrySetResult(); }
+    }
+
+    /// <summary>Queues one push for a viewer, under lock (s). A viewer whose queue is full is dropped: it is told
+    /// session.overflow after what it already has, in the spare slot, and gets nothing more.</summary>
+    void Enqueue(Session s, Viewer v, string e)
+    {
+        if (v.Queue.Reader.Count < viewerQueue && v.Queue.Writer.TryWrite(e)) return;
+        s.Viewers.Remove(v);
+        v.Queue.Writer.TryWrite(new JsonObject { ["event"] = "session.overflow", ["name"] = s.Name }.ToJsonString());
+        v.Queue.Writer.TryComplete();
+        Log.Warn($"session {s.Name}: a viewer fell {viewerQueue} chunks behind and was dropped");
+    }
+
+    /// <summary>Sends a viewer its queue, one push at a time, until the queue ends or the connection goes.</summary>
+    static async Task Drain(Viewer v, CancellationToken gone)
+    {
+        try
+        {
+            await foreach (var e in v.Queue.Reader.ReadAllAsync(gone))
+                if (!await Send(v.Push, e)) return;
+        }
+        catch (OperationCanceledException) { } // the connection closed
     }
 
     static byte[] Tail(Session s)
@@ -169,10 +195,10 @@ public sealed class Sessions
     static string Output(string name, byte[] data, int n) =>
         new JsonObject { ["event"] = "session.output", ["name"] = name, ["data"] = Convert.ToBase64String(data, 0, n) }.ToJsonString();
 
-    static async Task Send(Func<string, Task> push, string e)
+    static async Task<bool> Send(Func<string, Task> push, string e)
     {
-        try { await push(e); }
-        catch (Exception x) when (x is IOException or ObjectDisposedException) { } // that viewer just left
+        try { await push(e); return true; }
+        catch (Exception x) when (x is IOException or ObjectDisposedException or OperationCanceledException) { return false; } // that viewer just left
     }
 
     static Task<string> Ok(JsonObject o) => Task.FromResult(o.ToJsonString(Wire.Indented));
