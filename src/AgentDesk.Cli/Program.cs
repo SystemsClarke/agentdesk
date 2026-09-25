@@ -9,6 +9,8 @@
 //   agentdesk start|stop|forget <name>, agentdesk list   run, stop, delete and list identities
 //   agentdesk adoptable, agentdesk adopt <session-id> <name>   make a recent Claude Code conversation an identity
 //   agentdesk update [--apply]   check for (and download) a newer release; --apply restarts the core into it and waits for it
+//   agentdesk goal new <name> <folder> <objective...>   a goal: its lead proposes a hypothesis, a measure and a success line
+//   agentdesk goal approve <name> [--members N] [--hours H] [--cadence M], goal stop|status <name>, goal list
 using System.Text.Json;
 using AgentDesk.Cli;
 using AgentDesk.Contracts;
@@ -32,6 +34,23 @@ switch (args)
         break;
     case ["wait", var thread]:
         Console.WriteLine(await core.Call("wait", JsonSerializer.SerializeToElement(int.Parse(thread), CliJson.Default.Int32)));
+        break;
+    case ["goal", "new", var name, var folder, .. var objective] when objective.Length > 0:
+        Console.WriteLine(await core.Call("ui:goal_create", Attach.Json(new() { ["name"] = name, ["folder"] = Path.GetFullPath(folder), ["objective"] = string.Join(' ', objective) })));
+        break;
+    case ["goal", "approve", var name, .. var opts]:
+        Console.WriteLine(await core.Call("ui:goal_approve", Attach.Json(new()
+        {
+            ["name"] = name, ["max_members"] = Opt(opts, "--members") is { } m ? int.Parse(m) : null,
+            ["max_hours"] = Opt(opts, "--hours") is { } h ? double.Parse(h, System.Globalization.CultureInfo.InvariantCulture) : null,
+            ["cadence_minutes"] = Opt(opts, "--cadence") is { } c ? double.Parse(c, System.Globalization.CultureInfo.InvariantCulture) : null,
+        })));
+        break;
+    case ["goal", ("stop" or "status") and var verb, var name]:
+        Console.WriteLine(await core.Call($"ui:goal_{verb}", Attach.Json(new() { ["name"] = name })));
+        break;
+    case ["goal", "list"]:
+        Console.WriteLine(await core.Call("ui:goal_list"));
         break;
     case ["sessions"]:
         Console.WriteLine(await core.Call("ui:session_list"));

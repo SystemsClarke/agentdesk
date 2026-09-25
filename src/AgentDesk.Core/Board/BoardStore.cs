@@ -72,6 +72,14 @@ public sealed partial class BoardDb : IDisposable
             created_ts TEXT NOT NULL, updated_ts TEXT NOT NULL, generation INTEGER NOT NULL DEFAULT 1, phoenix_msg INTEGER);
         CREATE TABLE IF NOT EXISTS phoenix_chain (identity TEXT NOT NULL COLLATE NOCASE, generation INTEGER NOT NULL, claude_session_id TEXT,
             handoff_msg INTEGER, ts TEXT NOT NULL, PRIMARY KEY (identity, generation));
+        CREATE TABLE IF NOT EXISTS goals (name TEXT PRIMARY KEY COLLATE NOCASE, objective TEXT NOT NULL, hypothesis TEXT, measure_cmd TEXT,
+            measure_folder TEXT NOT NULL, success TEXT, samples INTEGER NOT NULL DEFAULT 1, max_members INTEGER NOT NULL DEFAULT 3,
+            max_hours REAL NOT NULL DEFAULT 24, max_tokens INTEGER, cadence_minutes REAL NOT NULL DEFAULT 30, state TEXT NOT NULL DEFAULT 'draft',
+            lead TEXT NOT NULL, thread_id INTEGER, started_ts TEXT, woke_ts TEXT, created_ts TEXT NOT NULL, updated_ts TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS experiments (id INTEGER PRIMARY KEY AUTOINCREMENT, goal TEXT NOT NULL COLLATE NOCASE, n INTEGER NOT NULL,
+            change TEXT NOT NULL, owner TEXT, started_ts TEXT NOT NULL, measured_ts TEXT, value REAL, verdict TEXT, UNIQUE (goal, n));
+        CREATE TABLE IF NOT EXISTS goal_members (identity TEXT PRIMARY KEY COLLATE NOCASE, goal TEXT NOT NULL COLLATE NOCASE, task TEXT NOT NULL,
+            created_ts TEXT NOT NULL);
         """;
 
     const string InsertMessage = "INSERT INTO messages (ts, thread_id, author, author_kind, body, reply_to, meta) VALUES ($ts,$tid,$author,$kind,$body,$replyTo,$meta)";
