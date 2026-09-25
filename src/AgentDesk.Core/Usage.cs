@@ -24,11 +24,11 @@ public static partial class Usage
         return t.Days > 0 ? $"{t.Days}d {t.Hours}h" : t.Hours > 0 ? $"{t.Hours}h {t.Minutes:00}m" : $"{t.Minutes}m";
     }
 
-    static DateTimeOffset? Ts(JsonNode? v) => v is not JsonValue j ? null
+    internal static DateTimeOffset? Ts(JsonNode? v) => v is not JsonValue j ? null
         : j.TryGetValue(out double n) ? DateTimeOffset.FromUnixTimeMilliseconds((long)(n > 1e11 ? n : n * 1000))
         : DateTimeOffset.TryParse(j.ToString(), Inv, DateTimeStyles.AssumeUniversal, out var t) ? t : null;
 
-    static bool Num(JsonNode? n, out double v) { v = 0; return n is JsonValue j && double.TryParse(j.ToString(), NumberStyles.Float, Inv, out v); }
+    internal static bool Num(JsonNode? n, out double v) { v = 0; return n is JsonValue j && double.TryParse(j.ToString(), NumberStyles.Float, Inv, out v); }
 
     /// <summary>What the window shows: "lines" rotate on the main menu prompt, "summary" is SysOp's Claude plan row.</summary>
     public static JsonObject Report(string file, DateTimeOffset now)
@@ -68,16 +68,22 @@ public static partial class Usage
         .SelectMany(d => new[] { Path.Combine(d, "claude.exe"), Path.Combine(d, "claude.cmd") })
         .Append(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".local", "bin", "claude.exe")).FirstOrDefault(File.Exists);
 
-    /// <summary>Every 5 minutes while a window is subscribed (the Tk app refreshed only while it was open), then tells it.</summary>
-    public static async Task KeepFresh(string file, BoardWatch watch)
+    /// <summary>Every 5 minutes, window or not, because the governor samples every reading (<paramref name="sampled"/>);
+    /// a subscribed window is told when it lands.</summary>
+    public static async Task KeepFresh(string file, BoardWatch watch, Action? sampled = null)
     {
         var last = DateTime.MinValue;
         while (true)
         {
             await Task.Delay(TimeSpan.FromSeconds(5));
-            if (!watch.Watched || DateTime.UtcNow - last < TimeSpan.FromMinutes(5)) continue;
+            if (DateTime.UtcNow - last < TimeSpan.FromMinutes(5)) continue;
             last = DateTime.UtcNow;
-            try { if (await Task.Run(() => Refresh(file))) await watch.Notify(); }
+            try
+            {
+                var fresh = await Task.Run(() => Refresh(file));
+                sampled?.Invoke(); // the status-line feeder may have written a reading even when this one failed
+                if (fresh) await watch.Notify();
+            }
             catch (Exception e) { Log.Warn($"usage refresh failed: {e}"); }
         }
     }

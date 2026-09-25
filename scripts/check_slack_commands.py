@@ -47,7 +47,8 @@ class FakeCore:
 ROW = {"name": "scout", "state": "running", "folder": r"C:\work", "generation": 2}
 core = FakeCore(**{"ui:identity_list": {"identities": [ROW]}, "ui:identity_create": ROW, "ui:identity_start": ROW,
                    "ui:identity_stop": {**ROW, "state": "stopped"}, "ui:identity_forget": {"forgotten": "scout"},
-                   "ui:status": {"slack": None, "worker": {"running": False}, "crew": {"max": 3}, "usage": {"summary": "12% used"}},
+                   "ui:status": {"slack": None, "worker": {"running": False}, "crew": {"max": 3}, "usage": {"summary": "12% used"},
+                                  "governor": {"summary": "governor: 20% spendable of 88% left"}},
                    "ui:worker": {"ok": True, "started": True}, "list_threads": {"threads": [{}, {}]}})
 every = slackcmd.Commands(list(slackcmd.AREAS), JOHN, "AgentDesk", call=core)
 
@@ -83,7 +84,7 @@ with contextlib.redirect_stderr(io.StringIO()):
     check("worker on starts it", every.handle("worker on", JOHN) == "Worker starting.")
     out = every.handle("status", JOHN)
     check("status has slack, worker, agents/cap, questions, usage",
-          all(s in out for s in ("Slack* down", "Worker* off", "1 running / cap 3", "Open questions* 2", "12% used")), out)
+          all(s in out for s in ("Slack* down", "Worker* off", "1 running / cap 3", "Open questions* 2", "12% used", "Governor* 20% spendable")), out)
     check("update without ui:update says so", "isn't available yet" in every.handle("update", JOHN))
     core.answers["ui:update"] = {"current": "0.1.40", "latest": "0.1.42"}
     out = every.handle("update apply", JOHN)

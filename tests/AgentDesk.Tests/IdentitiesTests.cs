@@ -65,12 +65,13 @@ public sealed class IdentitiesTests : IDisposable
     public async Task Create_start_list_forget()
     {
         var (s, ids) = Core();
-        await ids.Create("alpha", dir, "be brief", null);
+        await Assert.ThrowsAsync<ArgumentException>(() => ids.Create("alpha", dir, null, null, model: "gpt"));
+        await ids.Create("alpha", dir, "be brief", null, model: "Opus");
         Assert.Equal("stopped", States(ids)["alpha"]);
         var row = Json(ids.Start("alpha"));
         Assert.Equal("running", row.GetProperty("state").GetString());
         var id = row.GetProperty("claude_session_id").GetString()!;
-        await Sees(s, "alpha", $"author=alpha --session-id {id} --append-system-prompt \"You are one generation of alpha, a long-lived AgentDesk agent.");
+        await Sees(s, "alpha", $"author=alpha --session-id {id} --model opus --append-system-prompt \"You are one generation of alpha, a long-lived AgentDesk agent.");
         Assert.EndsWith("that handoff.\n\nbe brief\"", Command(s));
         var pid = row.GetProperty("pid").GetInt32();
         Assert.Contains("\"forgotten\"", await ids.Forget("alpha"));
@@ -135,7 +136,7 @@ public sealed class IdentitiesTests : IDisposable
         var next = row.GetProperty("claude_session_id").GetString()!;
         Assert.NotEqual(sid, next);
         Assert.Equal("running", row.GetProperty("state").GetString());
-        Assert.StartsWith($"{Claude} --session-id {next} --append-system-prompt ", Command(s));
+        Assert.StartsWith($"{Claude} --session-id {next} --model sonnet --append-system-prompt ", Command(s));
         Assert.EndsWith("\"You are phx, generation 2. Your previous generation handed off with:\n\nOwns the parser. Next: its tests.\"", Command(s));
         lock (events) Assert.Contains(events, e => e.Contains("session.restarted"));
         using (var db = store.Open())

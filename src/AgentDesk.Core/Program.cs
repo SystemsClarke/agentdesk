@@ -26,7 +26,8 @@ var board = new AgentBoard(store, new PythonPlugins(python), $"\"{Path.Combine(A
 var hooks = new Hooks(store);
 var watch = new BoardWatch(store);
 Tray.Start(store);
-_ = Usage.KeepFresh(Path.Combine(data, "claude_usage.json"), watch);
+var feed = Path.Combine(data, "claude_usage.json");
+_ = Usage.KeepFresh(feed, watch, () => Governor.Record(store, feed));
 var prs = new PrChecker(store);
 var sessions = new Sessions();
 var identities = new Identities(store, sessions, data);
@@ -58,6 +59,7 @@ Task<string> Ui(string op, Args a, Func<string, Task> push, CancellationToken go
     "post" => board.JohnPosts(a.String("channel"), a.String("subject", ""), a.String("body")),
     "unarchive" => board.Unarchive(a.Int("thread_id")),
     "status" => Status(),
+    "governor" => Governor.Ui(store, data),
     "check_prs" => Task.FromResult(prs.Poke()),
     "fresh" => board.FreshStart(a.String("name")),
     "worker" => board.ToggleWorker(data, python),
@@ -69,7 +71,7 @@ Task<string> Ui(string op, Args a, Func<string, Task> push, CancellationToken go
     "attach" => sessions.Attach(a.String("name"), a.Int("cols", 120), a.Int("rows", 30), push, gone),
     "input" => sessions.Input(a.String("name"), a.String("data")),
     "resize" => sessions.Resize(a.String("name"), a.Int("cols"), a.Int("rows")),
-    "identity_create" => identities.Create(a.String("name"), a.String("folder"), a.StringOrNull("charter"), a.StringOrNull("host"), a.Bool("autostart", false)),
+    "identity_create" => identities.Create(a.String("name"), a.String("folder"), a.StringOrNull("charter"), a.StringOrNull("host"), a.Bool("autostart", false), model: a.StringOrNull("model")),
     "identity_list" => identities.List(),
     "identity_start" => identities.Start(a.String("name")),
     "identity_stop" => identities.Stop(a.String("name")),

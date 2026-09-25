@@ -143,7 +143,7 @@ public sealed partial class AgentBoard(BoardStore store, IPythonPlugins plugins,
         worker["events"] = BoardDb.Arr(item is null ? [] : db.Rows(
             "SELECT * FROM (SELECT ts, kind, body, id FROM work_events WHERE work_id=$w ORDER BY id DESC LIMIT 80) ORDER BY id", ("w", item)));
         return new JsonObject { ["slack"] = Load(Path.Combine(data, "slack_bridge.state")), ["worker"] = worker,
-            ["usage"] = Usage.Report(Path.Combine(data, "claude_usage.json"), DateTimeOffset.UtcNow),
+            ["usage"] = Usage.Report(Path.Combine(data, "claude_usage.json"), DateTimeOffset.UtcNow), ["governor"] = Governor.Report(db, data, DateTimeOffset.UtcNow),
             ["prs"] = BoardDb.Arr(db.Rows("SELECT * FROM pull_requests ORDER BY id DESC LIMIT 200")), ["crew"] = Crew.Status(data, db) };
     });
 

@@ -142,12 +142,14 @@ def status(cmd: "Commands", text: str) -> str:
     qs = cmd.call("list_threads", {"channel": "question", "status": "open", "limit": 200})
     slack, w, crew = s.get("slack") or {}, s.get("worker") or {}, s.get("crew") or {}
     count = lambda st: sum(r.get("state") == st for r in ids)
+    governor = (s.get("governor") or {}).get("summary", "")  # advisory; an older core has none
     return "\n".join([
         f"*Slack* {'up' if _ago(slack.get('ts')) < 90 else 'down'}",
         f"*Worker* {'on' if w.get('running') else 'off'}" + (f", holding #{w['held']}" if w.get("held") else ""),
         f"*Agents* {count('running')} running / cap {crew.get('max', '?')}, {count('queued')} queued",
         f"*Open questions* {len(qs.get('threads', []))}",
-        f"*Usage* {(s.get('usage') or {}).get('summary', '?')}"])
+        f"*Usage* {(s.get('usage') or {}).get('summary', '?')}"]
+        + ([f"*Governor* {governor.removeprefix('governor: ')}"] if governor else []))
 
 
 def update(cmd: "Commands", text: str) -> str:

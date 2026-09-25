@@ -165,6 +165,8 @@ public sealed partial class BoardDb : IDisposable
         var ids = Rows("PRAGMA table_info(identities)").Select(r => Str(r["name"])).ToHashSet();
         if (!ids.Contains("generation")) Exec("ALTER TABLE identities ADD COLUMN generation INTEGER NOT NULL DEFAULT 1");
         if (!ids.Contains("phoenix_msg")) Exec("ALTER TABLE identities ADD COLUMN phoenix_msg INTEGER");
+        if (!ids.Contains("model")) Exec("ALTER TABLE identities ADD COLUMN model TEXT NOT NULL DEFAULT 'sonnet'"); // haiku|sonnet|opus
+        Exec(Governor.Schema); // the usage governor's samples
     }
 
     // ---- writes

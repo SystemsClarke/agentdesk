@@ -50,9 +50,11 @@ public sealed partial class Identities
     static string Projects => Environment.GetEnvironmentVariable("AGENTDESK_CLAUDE_PROJECTS")
         ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude", "projects");
 
-    public Task<string> Create(string name, string folder, string? charter, string? host, bool autostart = false, string? sessionId = null)
+    public Task<string> Create(string name, string folder, string? charter, string? host, bool autostart = false, string? sessionId = null, string? model = null)
     {
         if (string.IsNullOrWhiteSpace(name)) throw new ArgumentException("name is required");
+        model = string.IsNullOrWhiteSpace(model) ? "sonnet" : model.Trim().ToLowerInvariant();
+        if (!Governor.Models.Contains(model)) throw new ArgumentException($"model must be haiku, sonnet or opus, got {model}");
         host = string.IsNullOrWhiteSpace(host) ? "windows" : host;
         if (host != "windows" && !(host.StartsWith("wsl:") && host.Length > 4)) throw new ArgumentException($"host must be windows or wsl:<distro>, got {host}");
         if (host == "windows" && !Directory.Exists(folder)) throw new ArgumentException($"no such folder: {folder}");
@@ -60,8 +62,8 @@ public sealed partial class Identities
         {
             using var db = store.Open();
             if (Get(db, name) is not null) throw new ArgumentException($"identity already exists: {name}");
-            db.Exec("INSERT INTO identities (name, folder, charter, host, claude_session_id, autostart, created_ts, updated_ts) VALUES ($n,$f,$c,$h,$s,$a,$ts,$ts)",
-                ("n", name), ("f", folder), ("c", charter), ("h", host), ("s", sessionId), ("a", autostart ? 1 : 0), ("ts", db.NowIso()));
+            db.Exec("INSERT INTO identities (name, folder, charter, host, claude_session_id, autostart, model, created_ts, updated_ts) VALUES ($n,$f,$c,$h,$s,$a,$m,$ts,$ts)",
+                ("n", name), ("f", folder), ("c", charter), ("h", host), ("s", sessionId), ("a", autostart ? 1 : 0), ("m", model), ("ts", db.NowIso()));
             return Ok(Get(db, name)!);
         }
     }
@@ -250,7 +252,8 @@ public sealed partial class Identities
         var resume = prompt is null && id is not null && (wsl || Transcript(id) is not null); // claude writes no transcript until the first message
         id ??= Guid.NewGuid().ToString();
         var charter = string.Format(Chain, name) + (row["charter"]?.ToString() is { Length: > 0 } own ? "\n\n" + own : "");
-        var args = (resume ? "--resume " : "--session-id ") + id + " --append-system-prompt " + quote(charter) + (prompt is null ? "" : " " + quote(prompt));
+        var tier = row["model"]?.ToString() is { } model && Governor.Models.Contains(model) ? " --model " + model : ""; // its tier (haiku|sonnet|opus)
+        var args = (resume ? "--resume " : "--session-id ") + id + tier + " --append-system-prompt " + quote(charter) + (prompt is null ? "" : " " + quote(prompt));
         var env = new Dictionary<string, string?> { ["AGENTDESK_IDENTITY"] = name, ["AGENTDESK_AUTHOR"] = name };
         int pid;
         if (wsl)
