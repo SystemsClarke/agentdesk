@@ -26,6 +26,7 @@ var watch = new BoardWatch(store);
 Tray.Start(store);
 _ = Usage.KeepFresh(Path.Combine(data, "claude_usage.json"), watch);
 var prs = new PrChecker(store);
+var sessions = new Sessions();
 _ = prs.Run(TimeSpan.FromSeconds(5));
 
 Log.Info($"core starting (pid {Environment.ProcessId})");
@@ -51,5 +52,11 @@ Task<string> Ui(string op, Args a, Func<string, Task> push, CancellationToken go
     "worker" => board.ToggleWorker(data, python),
     "wake" => board.Wake(a.Int("thread_id"), data, python),
     "subscribe" => Task.FromResult(watch.Subscribe(push, gone)),
+    "session_start" => sessions.Start(a.String("name"), a.String("folder"), a.StringOrNull("command")),
+    "session_list" => sessions.List(),
+    "session_stop" => sessions.Stop(a.String("name")),
+    "attach" => sessions.Attach(a.String("name"), a.Int("cols", 120), a.Int("rows", 30), push, gone),
+    "input" => sessions.Input(a.String("name"), a.String("data")),
+    "resize" => sessions.Resize(a.String("name"), a.Int("cols"), a.Int("rows")),
     _ => Task.FromResult(Tools.Error($"unknown request: ui:{op}")),
 };
