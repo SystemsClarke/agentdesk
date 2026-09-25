@@ -28,8 +28,9 @@ phone command against the core's pipe (agentdesk/slackcmd.py; `help` lists them)
 Several bots: bots.json next to the credentials lists Slack bots, each with its own
 credential folder and areas; with no bots.json there is one bot with every area.
 
-Run: the AgentDesk app starts this as its own child and restarts it whenever
-the heartbeat goes quiet (App._keep_bridge_alive). A scheduled task for it hung
+Run: the AgentDesk core starts this with itself and restarts it whenever it
+exits (src/AgentDesk.Core/Host/Supervisor.cs); settings.json's slack_bridge: false
+turns that off. A scheduled task for it hung
 silently on this machine, so there deliberately is none. By hand:
 `python scripts/slack_bridge.py`.
 Needs `slack_bolt` installed and two credential files that are NOT part of
