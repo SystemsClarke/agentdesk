@@ -50,7 +50,10 @@ public partial class MainWindow : Window
         var beats = new DispatcherTimer { Interval = TimeSpan.FromSeconds(30) };
         beats.Tick += async (_, _) => await RefreshAsync();
         beats.Start();
-        board.Changed += (_, _) => Dispatcher.InvokeAsync(RefreshAsync);
+        // A busy board pushes several changes a second; fold each burst into one refresh so the screen doesn't flicker.
+        var changed = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(750) };
+        changed.Tick += async (_, _) => { changed.Stop(); await RefreshAsync(); };
+        board.Changed += (_, _) => Dispatcher.InvokeAsync(() => { if (!changed.IsEnabled) changed.Start(); });
         PreviewKeyDown += OnKey;
         Body.PreviewMouseLeftButtonDown += OnClick;
         Body.SizeChanged += (_, _) => MeasureScreen();
@@ -113,12 +116,19 @@ public partial class MainWindow : Window
         SubjectRow.Visibility = screen == "compose" ? Visibility.Visible : Visibility.Collapsed;
         if (scrollToEnd)
             Body.ScrollToEnd();
-        else if (!reading)
+        else if (!reading && screen != shownScreen) // only on arriving at a screen: a refresh must not jump the view
             Body.ScrollToHome();
+        shownScreen = screen;
     }
+
+    string? shownScreen;
+    readonly Dictionary<System.Windows.Controls.TextBlock, Line> shownLine = [];
 
     void PaintLine(System.Windows.Controls.TextBlock block, Line line)
     {
+        if (shownLine.TryGetValue(block, out var was) && was.SequenceEqual(line))
+            return; // unchanged: repainting it anyway is what made the bars blink
+        shownLine[block] = line;
         block.Inlines.Clear();
         block.Inlines.AddRange(line.Select(ToRun));
     }
@@ -262,6 +272,7 @@ public partial class MainWindow : Window
         }
         looks.Clear();
         painted = [];
+        shownLine.Clear();
         ColourTitleBar();
         Render();
     }
@@ -271,6 +282,7 @@ public partial class MainWindow : Window
         SetPref("font_size", Math.Clamp(Pref("font_size", 11) + delta, 8, 22));
         ApplyFont();
         painted = [];
+        shownLine.Clear();
         MeasureScreen();
         Render();
     }
