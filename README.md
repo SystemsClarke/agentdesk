@@ -40,7 +40,8 @@ releases\AgentDeskApp-win-Setup.exe
 `Setup.exe` and update feed into `releases\` with the local code-signing cert
 (`build\agentdesk-cert-thumbprint.txt`). It installs per user to
 `%LOCALAPPDATA%\AgentDeskApp` (not `AgentDesk`, which holds the board and would
-be deleted on uninstall). An installed core checks GitHub releases for updates
+be deleted on uninstall). Install and every update also put that folder's `current` on the user PATH, so `agentdesk`
+works in any new terminal; uninstall takes it off. An installed core checks GitHub releases for updates
 every four hours and offers the restart.
 
 ## Dev loop

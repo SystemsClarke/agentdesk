@@ -1,5 +1,5 @@
 // Install, update and uninstall, via Velopack. Setup.exe runs the installed core with a hook argument;
-// the hook points Claude Code and the login Run key at the installed exes, or takes them back out.
+// the hook points Claude Code, the login Run key and the user PATH at the installed exes, or takes them back out.
 // The data in %LOCALAPPDATA%\AgentDesk is never touched.
 using System.Text.Encodings.Web;
 using System.Text.Json;
@@ -109,6 +109,10 @@ public static class Setup
     {
         using (var run = Registry.CurrentUser.CreateSubKey(RunKey))
             if (on) run.SetValue("AgentDesk", $"\"{Environment.ProcessPath}\" --background"); else run.DeleteValue("AgentDesk", false);
+
+        // agentdesk in any terminal: the hooks run the installed core, from Velopack's stable current folder.
+        try { UserPath.Apply(Path.GetDirectoryName(Environment.ProcessPath)!, on); }
+        catch (Exception e) { Log.Warn($"user PATH not updated: {e.Message}"); }
 
         Edit(Path.Combine(Home, ".claude.json"), root =>
         {
