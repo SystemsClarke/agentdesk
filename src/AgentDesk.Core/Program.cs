@@ -27,7 +27,9 @@ Tray.Start(store);
 _ = Usage.KeepFresh(Path.Combine(data, "claude_usage.json"), watch);
 var prs = new PrChecker(store);
 var sessions = new Sessions();
+var identities = new Identities(store, sessions, data);
 _ = prs.Run(TimeSpan.FromSeconds(5));
+identities.Resume();
 
 Log.Info($"core starting (pid {Environment.ProcessId})");
 await PipeServer.Run((req, push, gone) => req.Tool switch
@@ -58,5 +60,12 @@ Task<string> Ui(string op, Args a, Func<string, Task> push, CancellationToken go
     "attach" => sessions.Attach(a.String("name"), a.Int("cols", 120), a.Int("rows", 30), push, gone),
     "input" => sessions.Input(a.String("name"), a.String("data")),
     "resize" => sessions.Resize(a.String("name"), a.Int("cols"), a.Int("rows")),
+    "identity_create" => identities.Create(a.String("name"), a.String("folder"), a.StringOrNull("charter"), a.StringOrNull("host"), a.Bool("autostart", false)),
+    "identity_list" => identities.List(),
+    "identity_start" => identities.Start(a.String("name")),
+    "identity_stop" => identities.Stop(a.String("name")),
+    "identity_forget" => identities.Forget(a.String("name")),
+    "adoptable" => Identities.Adoptable(),
+    "adopt" => identities.Adopt(a.String("session_id"), a.String("name")),
     _ => Task.FromResult(Tools.Error($"unknown request: ui:{op}")),
 };

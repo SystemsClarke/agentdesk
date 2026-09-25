@@ -67,6 +67,9 @@ public sealed partial class BoardDb : IDisposable
         CREATE TABLE IF NOT EXISTS sessions (author TEXT PRIMARY KEY, session_id TEXT NOT NULL, cwd TEXT, pid INTEGER,
             channels INTEGER NOT NULL DEFAULT 0, seen_ts TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS deliveries (message_id INTEGER PRIMARY KEY, method TEXT NOT NULL, state TEXT NOT NULL, detail TEXT, ts TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS identities (name TEXT PRIMARY KEY COLLATE NOCASE, folder TEXT NOT NULL, charter TEXT, host TEXT NOT NULL DEFAULT 'windows',
+            claude_session_id TEXT, pid INTEGER, state TEXT NOT NULL DEFAULT 'stopped', autostart INTEGER NOT NULL DEFAULT 0,
+            created_ts TEXT NOT NULL, updated_ts TEXT NOT NULL);
         """;
 
     const string InsertMessage = "INSERT INTO messages (ts, thread_id, author, author_kind, body, reply_to, meta) VALUES ($ts,$tid,$author,$kind,$body,$replyTo,$meta)";
