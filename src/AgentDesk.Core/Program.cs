@@ -30,13 +30,15 @@ var feed = Path.Combine(data, "claude_usage.json");
 _ = Usage.KeepFresh(feed, watch, () => Governor.Record(store, feed));
 var prs = new PrChecker(store);
 var sessions = new Sessions();
-var identities = new Identities(store, sessions, data);
+var identities = new Identities(store, sessions, data, Environment.GetEnvironmentVariable("AGENTDESK_CLAUDE") ?? "claude"); // a stand-in, for tests
+var goals = new Goals(store, identities, sessions);
 _ = prs.Run(TimeSpan.FromSeconds(5));
 identities.Resume();
 using var bridge = SlackBridge.For(data, python); // the Slack bridge lives and dies with the core
 var started = DateTimeOffset.UtcNow;
 try { Tray.WebUrl = await Web.Start(data, WebCall); }
 catch (Exception e) { Log.Warn($"ops console not started: {e.Message}"); }
+_ = goals.Run(TimeSpan.FromSeconds(double.TryParse(Environment.GetEnvironmentVariable("AGENTDESK_GOAL_TICK"), out var tick) ? tick : 15));
 
 Log.Info($"core starting (pid {Environment.ProcessId})");
 await PipeServer.Run((req, push, gone) => req.Tool switch
@@ -45,13 +47,14 @@ await PipeServer.Run((req, push, gone) => req.Tool switch
     ['h', 'o', 'o', 'k', ':', .. var hookEvent] => hooks.Run(hookEvent, req.Args),
     "wait" => hooks.Wait(req.Args.GetInt32(), gone),
     "ui:update" => Setup.Update(new Args(req.Args), $"pipe (pid {req.Caller.Pid}, {req.Caller.EnvAuthor ?? req.Caller.Harness ?? "no author"})"),
-    ['u', 'i', ':', .. var op] => Ui(op, new Args(req.Args), push, gone),
+    ['u', 'i', ':', .. var op] => Ui(op, new Args(req.Args), req.Caller, push, gone),
     "pass_the_torch" => identities.Torch(req.Caller, Tools.Dispatch(board, req.Caller, req.Tool, req.Args)),
+    "goal_propose" or "experiment_start" or "experiment_done" or "member_spawn" or "member_done" => GoalTool(req.Tool, req.Caller, new Args(req.Args)),
     _ => Tools.Dispatch(board, req.Caller, req.Tool, req.Args),
 }, CancellationToken.None);
 
 // AgentDesk's window (docs/ui-api.md).
-Task<string> Ui(string op, Args a, Func<string, Task> push, CancellationToken gone) => op switch
+Task<string> Ui(string op, Args a, Caller caller, Func<string, Task> push, CancellationToken gone) => op switch
 {
     "reply" => board.JohnReplies(a.Int("thread_id"), a.String("body")),
     "thread" => board.PeekThread(a.Int("thread_id")),
@@ -80,6 +83,12 @@ Task<string> Ui(string op, Args a, Func<string, Task> push, CancellationToken go
     "adopt" => identities.Adopt(a.String("session_id"), a.String("name")),
     "log_tail" => Task.FromResult(new JsonObject { ["lines"] = new JsonArray([.. Log.Tail(a.Int("lines", 100)).Select(l => (JsonNode)l)]) }.ToJsonString(Wire.Indented)),
     "web_url" => Task.FromResult(new JsonObject { ["url"] = Tray.WebUrl }.ToJsonString(Wire.Indented)),
+    "goal_create" => goals.Create(a.String("name"), a.String("objective"), a.String("folder")),
+    "goal_propose" => GoalTool("goal_propose", caller, a),
+    "goal_approve" => goals.Approve(caller, a.String("name"), a.IntOrNull("max_members"), a.DoubleOrNull("max_hours"), a.DoubleOrNull("cadence_minutes")),
+    "goal_stop" => goals.Stop(caller, a.String("name")),
+    "goal_list" => goals.List(),
+    "goal_status" => goals.Status(a.String("name")),
     _ => Task.FromResult(Tools.Error($"unknown request: ui:{op}")),
 };
 
@@ -90,7 +99,7 @@ Task<string> WebCall(string op, JsonElement args) => op switch
     "update" => Setup.Update(new Args(args), "web"),
     "open_questions" => board.OpenQuestions(new Caller(null, null, null, "web", 0), false, null),
     "status" or "worker" or "session_list" or "log_tail" or "identity_list" or "identity_create" or "identity_start" or "identity_stop" or "identity_forget"
-        => Ui(op, new Args(args), _ => Task.CompletedTask, CancellationToken.None),
+        => Ui(op, new Args(args), new Caller(null, null, null, "web", 0), _ => Task.CompletedTask, CancellationToken.None),
     _ => Task.FromResult(Tools.Error($"unknown request: {op}")),
 };
 
@@ -98,5 +107,16 @@ async Task<string> Status()
 {
     var s = JsonNode.Parse(await board.Heartbeats(data))!;
     s["bridge"] = bridge?.Status() ?? new JsonObject { ["enabled"] = false };
+    s["goals"] = goals.Summaries();
     return s.ToJsonString(Wire.Indented);
 }
+
+// The goal tools agents call (Tools.g.cs lists them); the caller decides what each may do.
+Task<string> GoalTool(string tool, Caller c, Args a) => tool switch
+{
+    "goal_propose" => goals.Propose(c, a.String("name"), a.String("hypothesis"), a.String("measure_cmd"), a.String("success"), a.Int("samples", 1)),
+    "experiment_start" => goals.ExperimentStart(c, a.String("goal"), a.String("change")),
+    "experiment_done" => goals.ExperimentDone(c, a.String("goal"), a.Int("n")),
+    "member_spawn" => goals.Spawn(c, a.String("goal"), a.String("name"), a.String("task"), a.StringOrNull("model")),
+    _ => goals.MemberDone(c, a.String("summary")),
+};

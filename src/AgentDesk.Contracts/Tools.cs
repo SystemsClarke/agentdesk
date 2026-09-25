@@ -35,6 +35,7 @@ public readonly struct Args(JsonElement json)
     public int Int(string name) => Need(name).GetInt32();
     public int Int(string name, int fallback) => Has(name, out var v) ? v.GetInt32() : fallback;
     public int? IntOrNull(string name) => Has(name, out var v) ? v.GetInt32() : null;
+    public double? DoubleOrNull(string name) => Has(name, out var v) ? v.GetDouble() : null;
     public bool Bool(string name, bool fallback) => Has(name, out var v) ? v.GetBoolean() : fallback;
 
     public Dictionary<string, object?>? DictOrNull(string name) =>

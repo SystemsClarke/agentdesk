@@ -19,6 +19,7 @@ public sealed partial class Identities
     const string Chain = """
         You are one generation of {0}, a long-lived AgentDesk agent. The identity {0} continues past this session.
         Your successor starts automatically from your handoff, and nothing you did not write down reaches it.
+        If you work on a goal (its lead or a member), the core runs its measure (experiment_done) and wakes its lead: never report a measured value yourself.
         When you get the 60% context warning (PHOENIX), finish the step you are on and call pass_the_torch
         with a standalone handoff: what you own, what is mid-flight, and what is next.
         Then stop. The system ends this session and starts your successor from that handoff.
@@ -28,6 +29,10 @@ public sealed partial class Identities
     readonly Sessions sessions;
     readonly string data, claude;
     readonly Lock gate = new();
+    readonly Dictionary<string, string> prompts = new(StringComparer.OrdinalIgnoreCase); // first messages for their next launch (Start)
+
+    /// <summary>More for a Phoenix successor's first prompt, given the identity's name (its goal's status: Goals).</summary>
+    public Func<string, string?>? Context;
 
     /// <summary><paramref name="claude"/> is the command line that stands for claude (tests pass a harmless one).</summary>
     public Identities(BoardStore store, Sessions sessions, string data, string claude = "claude")
@@ -74,12 +79,13 @@ public sealed partial class Identities
         return Ok(new JsonObject { ["identities"] = new JsonArray([.. db.Rows("SELECT * FROM identities ORDER BY name")]) });
     }
 
-    /// <summary>Launches it now if a slot is free, else queues it.</summary>
-    public Task<string> Start(string name)
+    /// <summary>Launches it now if a slot is free, else queues it. A <paramref name="prompt"/> is its first message when it launches.</summary>
+    public Task<string> Start(string name, string? prompt = null)
     {
         lock (gate)
         {
             using var db = store.Open();
+            if (prompt is not null) prompts[name] = prompt;
             if (Need(db, name)["state"]?.ToString() is "stopped") Mark(db, name, "queued");
             if (Drain(db).TryGetValue(name, out var why)) throw new ArgumentException(why);
             return Ok(Get(db, name)!);
@@ -219,7 +225,7 @@ public sealed partial class Identities
         {
             using var db = store.Open();
             if (Get(db, name) is not { } row || row["state"]?.ToString() != "running") return; // stopped or forgotten meanwhile
-            try { Launch(db, row, $"You are {name}, generation {gen + 1}. Your previous generation handed off with:\n\n{handoff}"); }
+            try { Launch(db, row, $"You are {name}, generation {gen + 1}. Your previous generation handed off with:\n\n{handoff}" + (Context?.Invoke(name) is { } more ? "\n\n" + more : "")); }
             catch (ArgumentException e) { Log.Warn($"identity {name} did not restart: {e.Message}"); Mark(db, name, "stopped"); Drain(db); return; }
             db.Reply((long)db.Scalar("SELECT thread_id FROM messages WHERE id=$m", ("m", msg))!, name, BoardDb.Agent,
                 $"generation {gen + 1} started from handoff #{msg}", msg, new JsonObject { ["kind"] = "phoenix" });
@@ -242,14 +248,16 @@ public sealed partial class Identities
     }
 
     /// <summary>claude --resume its conversation when there is one to resume, else --session-id a new (or never-used) id, plus the
-    /// chain charter and its own; a successor gets a new conversation with <paramref name="prompt"/> as its first message.</summary>
+    /// chain charter and its own, then <paramref name="prompt"/> (else the one Start was given) as the first message. A successor has
+    /// no conversation to resume, so it gets a new one.</summary>
     void Launch(BoardDb db, JsonObject row, string? prompt = null)
     {
+        if (prompt is null && prompts.Remove(row["name"]!.ToString(), out var queued)) prompt = queued;
         var (name, folder, host) = (row["name"]!.ToString(), row["folder"]!.ToString(), row["host"]!.ToString());
         var wsl = host.StartsWith("wsl:");
         Func<string, string> quote = wsl ? Sh : Win;
         var id = row["claude_session_id"]?.ToString();
-        var resume = prompt is null && id is not null && (wsl || Transcript(id) is not null); // claude writes no transcript until the first message
+        var resume = id is not null && (wsl || Transcript(id) is not null); // claude writes no transcript until the first message
         id ??= Guid.NewGuid().ToString();
         var charter = string.Format(Chain, name) + (row["charter"]?.ToString() is { Length: > 0 } own ? "\n\n" + own : "");
         var tier = row["model"]?.ToString() is { } model && Governor.Models.Contains(model) ? " --model " + model : ""; // its tier (haiku|sonnet|opus)

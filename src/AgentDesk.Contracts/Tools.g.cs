@@ -244,6 +244,47 @@ row; you get the existing one back with created=false.
 """, """
 {"type": "object", "properties": {"pr_url": {"type": "string"}, "thread_id": {"type": "integer"}, "note": {"type": "string"}, "author": {"type": "string"}}, "required": ["pr_url"]}
 """),
+        // Goals (docs/GOAL.md). The core answers these itself (Program.cs, Goals.cs), not through IAgentBoard.
+        new("goal_propose", """
+For a goal's lead: propose how the goal is tested. The core runs measure_cmd
+itself in the goal's folder; the metric is the last number it prints (a
+non-zero exit is an error), or, for success 'pass', exit code 0. success is
+'value < N', 'value <= N', 'value > N', 'value >= N', 'value == N' or 'pass';
+samples is how many runs each measurement takes (the median counts). John
+approves the proposal; until then the goal is a draft and you can re-propose.
+""", """
+{"type": "object", "properties": {"name": {"type": "string"}, "hypothesis": {"type": "string"}, "measure_cmd": {"type": "string"}, "success": {"type": "string"}, "samples": {"type": "integer", "default": 1}}, "required": ["name", "hypothesis", "measure_cmd", "success"]}
+"""),
+        new("experiment_start", """
+For a running goal's lead and members: open an experiment before making a
+change. Returns its number n; call experiment_done with it once the change is
+in place.
+""", """
+{"type": "object", "properties": {"goal": {"type": "string"}, "change": {"type": "string"}}, "required": ["goal", "change"]}
+"""),
+        new("experiment_done", """
+The change for experiment n is in place: the core runs the goal's measure,
+records the value and the verdict (met, improved, no gain, or error), posts it
+on the goal thread and wakes the lead. A measure that crosses the success line
+ends the goal. Never report a measured value yourself; this is how it is
+measured.
+""", """
+{"type": "object", "properties": {"goal": {"type": "string"}, "n": {"type": "integer"}}, "required": ["goal", "n"]}
+"""),
+        new("member_spawn", """
+For a running goal's lead: start a member identity <goal>-<name> with one
+small task (model haiku, sonnet or opus; sonnet by default). Refused past the
+goal's max_members; past the machine's session cap it queues. The member
+hands off with pass_the_torch or retires with member_done.
+""", """
+{"type": "object", "properties": {"goal": {"type": "string"}, "name": {"type": "string"}, "task": {"type": "string"}, "model": {"type": "string"}}, "required": ["goal", "name", "task"]}
+"""),
+        new("member_done", """
+For a goal member whose task is finished: posts the summary on the goal
+thread, wakes the lead, and retires this identity (its session ends).
+""", """
+{"type": "object", "properties": {"summary": {"type": "string"}}, "required": ["summary"]}
+"""),
     ];
 
     static Task<string> Call(IAgentBoard b, Caller c, string tool, Args a) => tool switch
