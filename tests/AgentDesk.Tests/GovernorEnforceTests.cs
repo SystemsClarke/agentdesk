@@ -21,7 +21,6 @@ public sealed class GovernorEnforceTests : IDisposable
 
     public GovernorEnforceTests()
     {
-        Environment.SetEnvironmentVariable("AGENTDESK_CLAUDE_PROJECTS", Directory.CreateDirectory(Path.Combine(dir, "projects")).FullName);
         store = new BoardStore(Path.Combine(dir, "agentdesk.db"));
         ids = new Identities(store, sessions, dir, Claude);
     }
@@ -31,7 +30,6 @@ public sealed class GovernorEnforceTests : IDisposable
         using (var db = store.Open()) db.Exec("DELETE FROM identities"); // else a stop frees a slot and launches the next queued one
         foreach (var n in JsonDocument.Parse(sessions.List().Result).RootElement.GetProperty("sessions").EnumerateArray())
             try { sessions.Stop(n.GetProperty("name").GetString()!).Wait(); } catch (AggregateException) { }
-        Environment.SetEnvironmentVariable("AGENTDESK_CLAUDE_PROJECTS", null);
     }
 
     void Settings(bool enforce, int cap) =>
