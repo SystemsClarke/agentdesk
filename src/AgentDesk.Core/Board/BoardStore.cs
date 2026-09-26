@@ -189,7 +189,8 @@ public sealed partial class BoardDb : IDisposable
         if (!ids.Contains("model")) Exec("ALTER TABLE identities ADD COLUMN model TEXT NOT NULL DEFAULT 'sonnet'"); // haiku|sonnet|opus
         if (!Rows("PRAGMA table_info(goals)").Any(r => Str(r["name"]) == "standing")) Exec("ALTER TABLE goals ADD COLUMN standing INTEGER NOT NULL DEFAULT 0");
         if (!Rows("PRAGMA table_info(goal_members)").Any(r => Str(r["name"]) == "work_id")) Exec("ALTER TABLE goal_members ADD COLUMN work_id INTEGER");
-        Exec(Governor.Schema); // the usage governor's samples
+        if (!ids.Contains("running_model")) Exec("ALTER TABLE identities ADD COLUMN running_model TEXT"); // the tier its session was launched at
+        Governor.Migrate(this); // the usage governor's samples
     }
 
     // ---- writes

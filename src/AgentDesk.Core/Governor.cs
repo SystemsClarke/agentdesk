@@ -10,7 +10,7 @@ public sealed record UsageSample(DateTimeOffset Ts, double WeeklyPct, DateTimeOf
 /// <summary>settings.json's governor_* keys. The defaults are conservative: they assume John is busy and sessions are expensive
 /// until the samples say otherwise.</summary>
 public sealed record GovernorSettings(double K = 2, double Margin = 2, double DefaultRate = 0.3, double DefaultSigma = 0.5,
-    double DefaultSessionRate = 3, int MaxSessions = 12, int MaxMembers = 4, int MaxSwarms = 10)
+    double DefaultSessionRate = 3, int MaxSessions = 12, int MaxMembers = 4, int MaxSwarms = 10, bool Enforce = false)
 {
     public static GovernorSettings From(JsonObject? s)
     {
@@ -19,29 +19,40 @@ public sealed record GovernorSettings(double K = 2, double Margin = 2, double De
         var g = new GovernorSettings();
         return new(D("governor_k", g.K), D("governor_margin", g.Margin), D("governor_default_rate", g.DefaultRate), D("governor_default_sigma", g.DefaultSigma),
             D("governor_default_session_rate", g.DefaultSessionRate), I("governor_max_sessions", g.MaxSessions), I("governor_max_members", g.MaxMembers),
-            I("governor_max_swarms", g.MaxSwarms));
+            I("governor_max_swarms", g.MaxSwarms), s?["governor_enforce"]?.ToString().Equals("true", StringComparison.OrdinalIgnoreCase) == true);
     }
 }
 
 /// <summary>John's own burn in weekly-% per hour: an EWMA per hour of week (UTC), a global EWMA and variance behind it, and
-/// the measured burn of one identity session on top of John.</summary>
+/// the measured burn of one identity session on top of John. When swarms run constantly there are few session-free hours, so a
+/// long-memory EWMA over every hour (the Est* fields) estimates John as total rate minus sessions x the per-session burn.</summary>
 public sealed class BurnModel
 {
     public readonly double[] Mean = new double[168], Var = new double[168];
     public readonly int[] N = new int[168];
-    public double GlobalMean, GlobalVar, SessionRate;
-    public int GlobalN, SessionN, BaselineHours;
+    public double GlobalMean, GlobalVar, SessionRate, EstMean, EstVar, Slope;
+    public int GlobalN, SessionN, BaselineHours, EstN;
+    /// <summary>The session count varied enough over the long memory to regress the hourly rate on it (<see cref="Slope"/>).</summary>
+    public bool SlopeOk;
 
-    /// <summary>A bucket needs two observed hours before it outweighs the global rate, which needs six before it outweighs the default.</summary>
-    public double Rate(int hourOfWeek, GovernorSettings s) => N[hourOfWeek] >= 2 ? Mean[hourOfWeek] : GlobalN >= 6 ? GlobalMean : s.DefaultRate;
+    /// <summary>A bucket needs two observed hours before it outweighs the global rate, which needs six before it outweighs the
+    /// starvation estimate, which needs six before it outweighs the default.</summary>
+    public double Rate(int hourOfWeek, GovernorSettings s) =>
+        N[hourOfWeek] >= 2 ? Mean[hourOfWeek] : GlobalN >= 6 ? GlobalMean : EstN >= 6 ? EstMean : s.DefaultRate;
 
     /// <summary>Per-hour sigma, from the global variance: it includes the daily pattern, so it errs high (a bigger reserve).</summary>
-    public double Sigma(GovernorSettings s) => GlobalN >= 6 ? Math.Max(0.1, Math.Sqrt(GlobalVar)) : s.DefaultSigma;
+    public double Sigma(GovernorSettings s) => GlobalN >= 6 ? Math.Max(0.1, Math.Sqrt(GlobalVar)) : EstN >= 6 ? Math.Max(0.1, Math.Sqrt(EstVar)) : s.DefaultSigma;
 
-    public double PerSession(GovernorSettings s) => SessionN >= 3 ? Math.Max(0.25, SessionRate) : s.DefaultSessionRate;
+    /// <summary>Where John's rate comes from when a bucket is thin: measured session-free hours, the starvation estimate, or the default.</summary>
+    public string Source => GlobalN >= 6 ? "measured" : EstN >= 6 ? "estimated" : "default";
+
+    /// <summary>Measured against John's session-free hours; with too few of those (starved), the regression slope when the session
+    /// count varied, since (rate - an assumed baseline) would only echo the default rate back.</summary>
+    public double PerSession(GovernorSettings s) => GlobalN < 6 && SlopeOk ? Math.Clamp(Slope, 0.25, 20)
+        : SessionN >= 3 ? Math.Max(0.25, SessionRate) : s.DefaultSessionRate;
 }
 
-/// <summary>What the governor recommends now. Advisory: nothing reads it to enforce anything yet (milestone 7).</summary>
+/// <summary>What the governor recommends now. Identities enforces it when settings.json's governor_enforce is true (milestone 7).</summary>
 public sealed record Advice(double Used, double Remaining, double ResetInHours, double Baseline, double Sigma, double Reserve, double Spendable,
     double AllowedRate, double SessionRate, int Running, int TotalSessions, int NewSessions, int Swarms, int MembersPerSwarm, double FiveHourPct,
     bool StepDown, string LeadModel, string MemberModel, double ProjectedEnd, string Reason);
@@ -54,10 +65,24 @@ public sealed record Advice(double Used, double Remaining, double ResetInHours, 
 public static class Governor
 {
     const double BucketAlpha = 0.5, GlobalAlpha = 0.02, SessionAlpha = 0.2;
+    /// <summary>The starvation estimate's EWMA: a 4-week half-life counted in observed hours (672).</summary>
+    public static readonly double LongAlpha = 1 - Math.Pow(0.5, 1.0 / 672);
+    /// <summary>A sample older than this, or a failing /usage, allows no new swarm sessions (fail closed).</summary>
+    public const double StaleMinutes = 30;
     static readonly CultureInfo Inv = CultureInfo.InvariantCulture;
 
     public const string Schema = "CREATE TABLE IF NOT EXISTS usage_samples (id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL UNIQUE, weekly_pct REAL NOT NULL,"
         + " weekly_reset_ts TEXT, five_hour_pct REAL, five_hour_reset_ts TEXT, swarm_sessions INTEGER NOT NULL DEFAULT 0);";
+
+    /// <summary>usage_samples, plus the per-tier session counts (the model each running identity was launched at) that let
+    /// per-tier burn be measured later.</summary>
+    public static void Migrate(BoardDb db)
+    {
+        db.Exec(Schema);
+        var cols = db.Rows("PRAGMA table_info(usage_samples)").Select(r => r["name"]!.ToString()).ToHashSet();
+        foreach (var m in Models)
+            if (!cols.Contains(m + "_sessions")) db.Exec($"ALTER TABLE usage_samples ADD COLUMN {m}_sessions INTEGER NOT NULL DEFAULT 0");
+    }
 
     public static string[] Models => ["haiku", "sonnet", "opus"];
 
@@ -110,6 +135,20 @@ public static class Governor
             var unused = 0.0;
             Ewma(ref m.SessionRate, ref unused, ref m.SessionN, Math.Clamp((rate - m.Rate(how, s)) / sessions, 0, 20), SessionAlpha);
         }
+        // Baseline starvation. First the long-memory regression of rate on sessions (exponential weights), which separates a session
+        // from John whenever the session count varies; then every hour, oldest first, as John's rate = total rate - sessions x per session.
+        double sw = 0, sx = 0, sy = 0, sxx = 0, sxy = 0, keep = 1 - LongAlpha;
+        foreach (var (_, h) in hours)
+            if (h.Dt >= 0.5)
+            {
+                var (x, y) = (h.SessionHours / h.Dt, h.Delta / h.Dt);
+                (sw, sx, sy, sxx, sxy) = (keep * sw + 1, keep * sx + x, keep * sy + y, keep * sxx + x * x, keep * sxy + x * y);
+            }
+        var varX = sw > 0 ? sxx / sw - sx / sw * (sx / sw) : 0;
+        (m.SlopeOk, m.Slope) = (hours.Count >= 6 && varX >= 0.25, varX > 0 ? (sxy / sw - sx / sw * (sy / sw)) / varX : 0);
+        foreach (var (_, h) in hours)
+            if (h.Dt >= 0.5)
+                Ewma(ref m.EstMean, ref m.EstVar, ref m.EstN, Math.Max(0, h.Delta / h.Dt - h.SessionHours / h.Dt * m.PerSession(s)), LongAlpha);
         return m;
     }
 
@@ -144,7 +183,7 @@ public static class Governor
         var total = (int)Math.Min(s.MaxSessions, Math.Floor(affordable + 1e-9));
         var newSessions = Math.Max(0, total - running);
         string reason;
-        if (five >= 90) { (total, newSessions) = (Math.Min(total, running), 0); reason = $"the 5-hour window is at {five:0}%: no new sessions until it resets"; }
+        if (five >= 90) { (total, newSessions) = (0, 0); reason = $"the 5-hour window is at {five:0}%: no swarm sessions (shed them) until it resets"; }
         else if (spendable <= 0) reason = $"nothing spendable: John's forecast {baseline:0.#}% plus a {reserve:0.#}% reserve covers the {remaining:0.#}% left";
         else if (total == 0) reason = $"{spendable:0.#}% spendable over {Usage.Span(hours * 3600)} funds {affordable:0.00} sessions at {per:0.##}%/session-hour; the reserve shrinks as the reset nears";
         else reason = $"{spendable:0.#}% spendable over {Usage.Span(hours * 3600)}: {rate:0.00}%/h funds {total} sessions at {per:0.##}%/session-hour"
@@ -162,10 +201,11 @@ public static class Governor
 
     static DateTimeOffset? Time(JsonNode? n) => n?.ToString() is { Length: > 0 } s && DateTimeOffset.TryParse(s, Inv, DateTimeStyles.AssumeUniversal, out var t) ? t : null;
 
-    public static void Insert(BoardDb db, UsageSample x) =>
-        db.Exec("INSERT OR IGNORE INTO usage_samples (ts, weekly_pct, weekly_reset_ts, five_hour_pct, five_hour_reset_ts, swarm_sessions) VALUES ($ts,$w,$wr,$f,$fr,$n)",
+    public static void Insert(BoardDb db, UsageSample x, (int Haiku, int Sonnet, int Opus) tiers = default) =>
+        db.Exec("INSERT OR IGNORE INTO usage_samples (ts, weekly_pct, weekly_reset_ts, five_hour_pct, five_hour_reset_ts, swarm_sessions, haiku_sessions, sonnet_sessions, opus_sessions)"
+                + " VALUES ($ts,$w,$wr,$f,$fr,$n,$h,$s,$o)",
             ("ts", Iso(x.Ts)), ("w", x.WeeklyPct), ("wr", x.WeeklyReset is { } wr ? Iso(wr) : null), ("f", x.FiveHourPct),
-            ("fr", x.FiveHourReset is { } fr ? Iso(fr) : null), ("n", x.SwarmSessions));
+            ("fr", x.FiveHourReset is { } fr ? Iso(fr) : null), ("n", x.SwarmSessions), ("h", tiers.Haiku), ("s", tiers.Sonnet), ("o", tiers.Opus));
 
     public static List<UsageSample> Load(BoardDb db, DateTimeOffset since) =>
         [.. db.Rows("SELECT * FROM usage_samples WHERE ts >= $since ORDER BY ts", ("since", Iso(since))).Select(r => new UsageSample(
@@ -181,23 +221,81 @@ public static class Governor
         if (AgentBoard.Load(feed) is not { } d || Usage.Ts(d["captured_ts"]) is not { } ts || !Usage.Num(d["seven_day"]?["used"], out var weekly)) return false;
         double? five = Usage.Num(d["five_hour"]?["used"], out var f) ? f : null;
         using var db = store.Open();
-        Insert(db, new(ts, weekly, Usage.Ts(d["seven_day"]?["resets_at"]), five, Usage.Ts(d["five_hour"]?["resets_at"]), Running(db)));
+        int Tier(string m) => Convert.ToInt32(db.Scalar("SELECT COUNT(*) FROM identities WHERE state='running' AND COALESCE(running_model, model)=$m", ("m", m)), Inv);
+        Insert(db, new(ts, weekly, Usage.Ts(d["seven_day"]?["resets_at"]), five, Usage.Ts(d["five_hour"]?["resets_at"]), Running(db)), (Tier("haiku"), Tier("sonnet"), Tier("opus")));
         return true;
     }
 
-    /// <summary>ui:governor, and ui:status's governor section: the last five weeks of samples (the EWMAs have forgotten older ones).</summary>
-    public static JsonObject Report(BoardDb db, string data, DateTimeOffset now)
+    // ---- enforcement (milestone 7)
+
+    /// <summary>The governor's answer for a session start, a shed or a launch tier, at one moment. <see cref="Fresh"/> is false
+    /// when there is no sample, the latest is older than <see cref="StaleMinutes"/>, or /usage is failing: then no new swarm
+    /// session starts, and nothing is shed (there is nothing to shed on).</summary>
+    public sealed record Verdict(GovernorSettings Settings, Advice? Advice, bool Fresh, string Why)
+    {
+        public bool Enforce => Settings.Enforce;
+
+        /// <summary>May one more swarm session start with <paramref name="running"/> identity sessions running?</summary>
+        public bool Allows(int running) => Fresh && Advice is { } a && running < a.TotalSessions;
+
+        /// <summary>How many swarm sessions to stop so the running count is back within the recommended total.</summary>
+        public int Excess(int running) => Fresh && Advice is { } a ? Math.Max(0, running - a.TotalSessions) : 0;
+
+        /// <summary>The tier to launch at: the recommended one when stepping down and it is cheaper than the stored one, else the stored one.</summary>
+        public string Model(string stored, bool lead) => Advice is { StepDown: true } a && Array.IndexOf(Models, lead ? a.LeadModel : a.MemberModel) is var r and >= 0
+            && Array.IndexOf(Models, stored) is var had && had > r ? Models[r] : stored;
+
+        public string Cap => Advice is { } a ? a.TotalSessions.ToString(Inv) : "none";
+    }
+
+    public static Verdict Judge(BoardDb db, string data, DateTimeOffset now, bool usageFailing)
     {
         var s = GovernorSettings.From(AgentBoard.Load(Path.Combine(data, "settings.json")));
         var samples = Load(db, now.AddDays(-35));
+        if (samples.Count == 0) return new(s, null, false, "no usage samples yet: no new swarm sessions (fail closed)");
+        var a = Advise(Train(samples, s), samples[^1], Running(db), now, s);
+        var age = (now - samples[^1].Ts).TotalMinutes;
+        return usageFailing ? new(s, a, false, "/usage is failing: no new swarm sessions (fail closed)")
+            : age > StaleMinutes ? new(s, a, false, $"the latest usage sample is {age:0} minutes old: no new swarm sessions (fail closed)")
+            : new(s, a, true, a.Reason);
+    }
+
+    /// <summary>ui:governor_enforce: settings.json's governor_enforce, keeping every other key.</summary>
+    public static void SetEnforce(string data, bool on)
+    {
+        var file = Path.Combine(data, "settings.json");
+        var d = AgentBoard.Load(file) ?? [];
+        d["governor_enforce"] = on;
+        File.WriteAllText(file + ".tmp", d.ToJsonString(AgentDesk.Contracts.Wire.Indented));
+        File.Move(file + ".tmp", file, true);
+    }
+
+    /// <summary>ui:governor, and ui:status's governor section: the last five weeks of samples (the EWMAs have forgotten older ones).</summary>
+    /// <summary><paramref name="enforcement"/> (Identities: would_queue, would_shed, held) is merged in when given.</summary>
+    public static JsonObject Report(BoardDb db, string data, DateTimeOffset now, bool usageFailing = false, JsonObject? enforcement = null)
+    {
+        var s = GovernorSettings.From(AgentBoard.Load(Path.Combine(data, "settings.json")));
+        var v = Judge(db, data, now, usageFailing);
+        var o = Build(db, s, now);
+        (o["enforcing"], o["advisory"], o["fresh"]) = (s.Enforce, !s.Enforce, v.Fresh);
+        if (!v.Fresh) o["fail_closed"] = v.Why;
+        if (v.Advice is not null) o["summary"] += (v.Fresh ? "" : " · fail closed: " + v.Why) + (s.Enforce ? " · enforcing" : " · advisory");
+        foreach (var (k, x) in enforcement ?? []) o[k] = x?.DeepClone();
+        return o;
+    }
+
+    static JsonObject Build(BoardDb db, GovernorSettings s, DateTimeOffset now)
+    {
+        var samples = Load(db, now.AddDays(-35));
         if (samples.Count == 0)
-            return new() { ["samples"] = 0, ["advisory"] = true, ["reason"] = "no usage samples yet", ["summary"] = "governor: no usage samples yet" };
+            return new() { ["samples"] = 0, ["reason"] = "no usage samples yet", ["summary"] = "governor: no usage samples yet" };
         var m = Train(samples, s);
         var a = Advise(m, samples[^1], Running(db), now, s);
         static double R(double v) => Math.Round(v, 2);
         return new()
         {
-            ["advisory"] = true, ["samples"] = samples.Count, ["baseline_hours"] = m.BaselineHours, ["session_hours"] = m.SessionN,
+            ["samples"] = samples.Count, ["baseline_hours"] = m.BaselineHours, ["session_hours"] = m.SessionN,
+            ["estimated_hours"] = m.EstN, ["baseline_source"] = m.Source,
             ["sample_age_minutes"] = R((now - samples[^1].Ts).TotalMinutes),
             ["used"] = R(a.Used), ["remaining"] = R(a.Remaining), ["reset_in_hours"] = R(a.ResetInHours), ["baseline"] = R(a.Baseline),
             ["sigma"] = R(a.Sigma), ["reserve"] = R(a.Reserve), ["k"] = s.K, ["spendable"] = R(a.Spendable), ["allowed_rate"] = R(a.AllowedRate),
@@ -217,9 +315,9 @@ public static class Governor
     public static JsonArray Series(IEnumerable<UsageSample> samples, DateTimeOffset now) =>
         [.. samples.Where(x => x.Ts > now.AddDays(-7)).GroupBy(x => x.Ts.ToUnixTimeSeconds() / 3600).Select(h => (JsonNode?)Math.Round(h.Last().WeeklyPct, 2))];
 
-    public static Task<string> Ui(BoardStore store, string data)
+    public static Task<string> Ui(BoardStore store, string data, bool usageFailing = false, JsonObject? enforcement = null)
     {
         using var db = store.Open();
-        return Task.FromResult(Report(db, data, DateTimeOffset.UtcNow).ToJsonString(AgentDesk.Contracts.Wire.Indented));
+        return Task.FromResult(Report(db, data, DateTimeOffset.UtcNow, usageFailing, enforcement).ToJsonString(AgentDesk.Contracts.Wire.Indented));
     }
 }

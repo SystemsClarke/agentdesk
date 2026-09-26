@@ -30,7 +30,8 @@ var feed = Path.Combine(data, "claude_usage.json");
 _ = Usage.KeepFresh(feed, watch, () => Governor.Record(store, feed));
 var prs = new PrChecker(store);
 var sessions = new Sessions();
-var identities = new Identities(store, sessions, data, Environment.GetEnvironmentVariable("AGENTDESK_CLAUDE") ?? "claude"); // a stand-in, for tests
+var identities = new Identities(store, sessions, data, Environment.GetEnvironmentVariable("AGENTDESK_CLAUDE") ?? "claude") // a stand-in, for tests
+    { UsageFailing = () => Usage.Failing }; // the governor fails closed while /usage fails
 var goals = new Goals(store, identities, sessions);
 var slots = new Slots(store);
 var concierge = new Concierge(store, goals, python); // its lead works from the AgentDesk checkout, as the crew did
@@ -41,6 +42,7 @@ var started = DateTimeOffset.UtcNow;
 try { Tray.WebUrl = await Web.Start(data, WebCall); }
 catch (Exception e) { Log.Warn($"ops console not started: {e.Message}"); }
 _ = goals.Run(TimeSpan.FromSeconds(double.TryParse(Environment.GetEnvironmentVariable("AGENTDESK_GOAL_TICK"), out var tick) ? tick : 15));
+_ = identities.Run(TimeSpan.FromSeconds(tick > 0 ? tick : 15)); // the governor: starts what it now allows, sheds what it must
 
 Log.Info($"core starting (pid {Environment.ProcessId})");
 await PipeServer.Run((req, push, gone) => req.Tool switch
@@ -64,7 +66,8 @@ Task<string> Ui(string op, Args a, Caller caller, Func<string, Task> push, Cance
     "post" => board.JohnPosts(a.String("channel"), a.String("subject", ""), a.String("body")),
     "unarchive" => board.Unarchive(a.Int("thread_id")),
     "status" => Status(),
-    "governor" => Governor.Ui(store, data),
+    "governor" => identities.GovernorUi(),
+    "governor_enforce" => identities.Enforce(caller, a.BoolOrNull("on") ?? throw new ArgumentException("on is required (true or false)")),
     "check_prs" => Task.FromResult(prs.Poke()),
     "concierge" => concierge.Toggle(caller, a.BoolOrNull("on")),
     "wake" => identities.Wake(a.Int("thread_id")),
@@ -102,7 +105,7 @@ Task<string> WebCall(string op, JsonElement args) => op switch
     "core" => Task.FromResult(new JsonObject { ["pid"] = Environment.ProcessId, ["started"] = started.ToString("yyyy-MM-ddTHH:mm:ssZ"), ["update"] = Setup.State() }.ToJsonString(Wire.Indented)),
     "update" => Setup.Update(new Args(args), "web"),
     "open_questions" => board.OpenQuestions(new Caller(null, null, null, "web", 0), false, null),
-    "status" or "concierge" or "session_list" or "log_tail" or "identity_list" or "identity_create" or "identity_start" or "identity_stop" or "identity_forget"
+    "status" or "concierge" or "governor" or "governor_enforce" or "session_list" or "log_tail" or "identity_list" or "identity_create" or "identity_start" or "identity_stop" or "identity_forget"
         => Ui(op, new Args(args), new Caller(null, null, null, "web", 0), _ => Task.CompletedTask, CancellationToken.None),
     _ => Task.FromResult(Tools.Error($"unknown request: {op}")),
 };
@@ -114,6 +117,7 @@ async Task<string> Status()
     s["goals"] = goals.Summaries();
     s["concierge"] = concierge.State();
     s["sessions"] = identities.Counts();
+    s["governor"] = JsonNode.Parse(await identities.GovernorUi()); // with enforcing, would_queue, would_shed and held
     return s.ToJsonString(Wire.Indented);
 }
 

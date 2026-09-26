@@ -81,16 +81,22 @@ public static partial class Usage
             try
             {
                 var fresh = await Task.Run(() => Refresh(file));
+                failures = fresh ? 0 : failures + 1;
                 sampled?.Invoke(); // the status-line feeder may have written a reading even when this one failed
                 if (fresh) await watch.Notify();
             }
-            catch (Exception e) { Log.Warn($"usage refresh failed: {e}"); }
+            catch (Exception e) { failures++; Log.Warn($"usage refresh failed: {e}"); }
         }
     }
 
     /// <summary>The probe's arguments. --no-session-persistence: without it every run (288 a day) left a transcript under
     /// ~/.claude/projects. ui:adoptable skips any older ones anyway, since nobody typed in them.</summary>
     public static readonly string[] ProbeArgs = ["-p", "/usage", "--setting-sources", "project", "--no-session-persistence"];
+
+    static int failures;
+
+    /// <summary>Two `claude -p /usage` refreshes in a row (5 minutes apart) failed: the usage governor fails closed.</summary>
+    public static bool Failing => failures >= 2;
 
     /// <summary>Ask the claude CLI for plan usage (no hooks, no model call, ~10 s). True if the feed was updated.</summary>
     static bool Refresh(string file)
