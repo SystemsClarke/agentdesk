@@ -1,5 +1,4 @@
 using System.Text;
-using System.Threading.Channels;
 using System.Text.Json.Nodes;
 using AgentDesk.Contracts;
 using AgentDesk.Core.Host;
@@ -10,7 +9,7 @@ namespace AgentDesk.Core;
 /// Named Claude Code sessions the core hosts on pseudoconsoles, with no window: John attaches from any terminal
 /// (agentdesk attach), like tmux. Each keeps its last 256 KB of output, replayed to whoever attaches. In memory:
 /// the sessions end with the core. Each viewer has its own bounded queue, so a stalled one never slows the others or
-/// the reader: one that falls <paramref name="viewerQueue"/> chunks behind is dropped with {"event":"session.overflow"},
+/// the reader: one that falls <paramref name="viewerQueue"/> pushes behind is dropped with {"event":"session.overflow"},
 /// and reattaching gets the ring again.
 /// </summary>
 public sealed class Sessions(int viewerQueue = 256)
@@ -32,10 +31,11 @@ public sealed class Sessions(int viewerQueue = 256)
     }
 
     /// <summary>One attached connection: its pushes, in order, from its own queue.</summary>
-    sealed class Viewer
+    sealed class Viewer(Func<string, Task> push)
     {
-        public required Func<string, Task> Push;
-        public required Channel<string> Queue;
+        public readonly Func<string, Task> Push = push;
+        public readonly Queue<string> Pending = new(); // guarded by lock (Pending), with Busy and Closed
+        public bool Busy, Closed; // a delivery loop is running; nothing more may be queued
     }
 
     /// <summary>Raised with a session's name and pid once its process has ended, however it ended.</summary>
@@ -94,15 +94,18 @@ public sealed class Sessions(int viewerQueue = 256)
     public async Task<string> Attach(string name, int cols, int rows, Func<string, Task> push, CancellationToken gone)
     {
         var s = Find(name);
-        var v = new Viewer { Push = push, Queue = Channel.CreateBounded<string>(new BoundedChannelOptions(viewerQueue + 1) { SingleWriter = false }) };
+        var v = new Viewer(push);
         lock (s)
         {
             var replay = Tail(s);
-            if (replay.Length > 0) v.Queue.Writer.TryWrite(Output(s.Name, replay, replay.Length));
+            if (replay.Length > 0) Enqueue(s, v, Output(s.Name, replay, replay.Length));
             s.Viewers.Add(v);
         }
-        _ = Drain(v, gone);
-        gone.Register(() => { lock (s) s.Viewers.Remove(v); v.Queue.Writer.TryComplete(); });
+        gone.Register(() =>
+        {
+            lock (s) s.Viewers.Remove(v);
+            lock (v.Pending) { v.Closed = true; v.Pending.Clear(); }
+        });
         s.Pty.Resize(cols + 1, rows);
         await Task.Delay(100); // two sizes in one breath can read as no change
         s.Pty.Resize(cols, rows);
@@ -151,37 +154,50 @@ public sealed class Sessions(int viewerQueue = 256)
         lock (gate) all.Remove(s.Name);
         var ended = new JsonObject { ["event"] = s.Restarting ? "session.restarted" : "session.exited", ["name"] = s.Name }.ToJsonString();
         lock (s)
-            foreach (var v in s.Viewers)
-            {
-                v.Queue.Writer.TryWrite(ended); // the spare slot: a full queue still gets its ending
-                v.Queue.Writer.TryComplete();
-            }
+            foreach (var v in s.Viewers) Enqueue(s, v, ended, last: true); // a full queue still gets its ending
         s.Pty.Dispose();
         Log.Info($"session {s.Name} ended");
         try { Ended?.Invoke(s.Name, s.Pty.Pid); }
         finally { s.Gone.TrySetResult(); }
     }
 
-    /// <summary>Queues one push for a viewer, under lock (s). A viewer whose queue is full is dropped: it is told
-    /// session.overflow after what it already has, in the spare slot, and gets nothing more.</summary>
-    void Enqueue(Session s, Viewer v, string e)
+    /// <summary>Queues one push for a viewer, under lock (s), and starts delivering if it was idle. Delivery starts on
+    /// this thread, so a viewer that keeps up needs no other thread to be free. A viewer with <c>viewerQueue</c> pushes
+    /// still unsent is dropped: it is told session.overflow after what it already has, and gets nothing more.</summary>
+    void Enqueue(Session s, Viewer v, string e, bool last = false)
     {
-        if (v.Queue.Reader.Count < viewerQueue && v.Queue.Writer.TryWrite(e)) return;
-        s.Viewers.Remove(v);
-        v.Queue.Writer.TryWrite(new JsonObject { ["event"] = "session.overflow", ["name"] = s.Name }.ToJsonString());
-        v.Queue.Writer.TryComplete();
-        Log.Warn($"session {s.Name}: a viewer fell {viewerQueue} chunks behind and was dropped");
+        bool overflow = false, start;
+        lock (v.Pending)
+        {
+            if (v.Closed) return;
+            if (v.Pending.Count >= viewerQueue && !last)
+            {
+                (e, overflow) = (new JsonObject { ["event"] = "session.overflow", ["name"] = s.Name }.ToJsonString(), true);
+                s.Viewers.Remove(v);
+            }
+            v.Pending.Enqueue(e);
+            v.Closed = last || overflow;
+            (start, v.Busy) = (!v.Busy, true);
+        }
+        if (overflow) Log.Warn($"session {s.Name}: a viewer fell {viewerQueue} pushes behind and was dropped");
+        if (start) _ = Deliver(v);
     }
 
-    /// <summary>Sends a viewer its queue, one push at a time, until the queue ends or the connection goes.</summary>
-    static async Task Drain(Viewer v, CancellationToken gone)
+    /// <summary>Sends a viewer what is queued for it, one push at a time, until nothing is left or the viewer is gone.</summary>
+    static async Task Deliver(Viewer v)
     {
-        try
+        while (true)
         {
-            await foreach (var e in v.Queue.Reader.ReadAllAsync(gone))
-                if (!await Send(v.Push, e)) return;
+            string e;
+            lock (v.Pending)
+            {
+                if (v.Pending.Count == 0) { v.Busy = false; return; }
+                e = v.Pending.Dequeue();
+            }
+            if (await Send(v.Push, e)) continue;
+            lock (v.Pending) { v.Closed = true; v.Pending.Clear(); v.Busy = false; } // that viewer left
+            return;
         }
-        catch (OperationCanceledException) { } // the connection closed
     }
 
     static byte[] Tail(Session s)

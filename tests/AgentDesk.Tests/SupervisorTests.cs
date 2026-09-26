@@ -136,15 +136,15 @@ public sealed class SupervisorTests : IDisposable
     public async Task A_supervised_bridge_that_stops_beating_is_killed_and_restarted()
     {
         // The stand-in never beats by itself; the test beats for it, then stops.
-        using var bridge = new SlackBridge(data, "cmd /d /c ping -n 120 127.0.0.1 >nul", data, TimeSpan.FromMilliseconds(100), hung: TimeSpan.FromSeconds(1));
+        using var bridge = new SlackBridge(data, "cmd /d /c ping -n 120 127.0.0.1 >nul", data, TimeSpan.FromMilliseconds(100), hung: TimeSpan.FromSeconds(3)); // generous: the test beats from a busy thread pool
         await Until(() => bridge.Supervisor?.Pid is not null);
         var first = bridge.Supervisor!.Pid!.Value;
         using var child = Process.GetProcessById(first);
-        for (var sw = Stopwatch.StartNew(); sw.Elapsed < TimeSpan.FromSeconds(2.5); await Task.Delay(100))
+        for (var sw = Stopwatch.StartNew(); sw.Elapsed < TimeSpan.FromSeconds(4.5); await Task.Delay(100))
             Beat(Environment.ProcessId, DateTimeOffset.UtcNow); // any pid's beat counts (pythonw runs the interpreter as a child)
         Assert.Equal(0, bridge.HungRestarts); // up past the hung time, but beating
 
-        await Until(() => bridge.HungRestarts == 1); // it stops beating
+        await Until(() => bridge.HungRestarts == 1, 15); // it stops beating
         Assert.True(child.WaitForExit(5000), "the hung bridge was not killed");
         await Until(() => bridge.Supervisor.Pid is { } pid && pid != first, 15); // restarted after the usual 5 s
         Assert.Equal(1, bridge.Status()["hung_restarts"]!.GetValue<int>());
