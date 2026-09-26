@@ -55,7 +55,7 @@ public sealed class CoreBoard : IBoard, IDisposable
 
     static ThreadRow Row(JsonElement t) => new(Int(t, "id") is var id and > 0 ? id : Int(t, "thread_id"), Str(t, "channel") ?? "question",
         Str(t, "status") ?? "open", Str(t, "subject") ?? "", Str(t, "opened_by") ?? "", Ts(t, "created_ts"), Ts(t, "updated_ts"),
-        Int(t, "message_count"), Int(t, "waiting") != 0, Str(t, "last_author"), Str(t, "delivery"), Meta(t, "assignee"));
+        Int(t, "message_count"), Int(t, "waiting") != 0, Str(t, "last_author"), Str(t, "delivery"), Meta(t, "assignee"), Str(t, "follow_up"));
 
     static Post ToPost(JsonElement m) => new(Str(m, "author") ?? "", Ts(m, "ts"), Int(m, "thread_id"), Str(m, "subject") ?? "",
         Str(m, "channel") ?? "", Kind: Meta(m, "kind"), Via: Meta(m, "via"));

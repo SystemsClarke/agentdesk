@@ -117,7 +117,7 @@ function renderSessions(list) {
 function renderStatus(st) {
   const sl = st.slack, c = st.concierge, up = sl && (Date.now() - Date.parse(sl.ts)) / 1000 < 90;
   conciergeOn = c.on;
-  show('concierge', `<dl><dt>SlackNet</dt><dd class="${up ? 'up' : 'down'}">${sl ? `${up ? 'up' : 'down'}, heartbeat ${ago(sl.ts)} ago` : 'down, no heartbeat file'}${sl && sl.last_relay ? `<br><small>last relay ${ago(sl.last_relay.ts)} ago, thread ${esc(sl.last_relay.thread_id)}</small>` : ''}</dd>
+  show('concierge', `<dl><dt>SlackNet</dt><dd class="${up ? 'up' : 'down'}">${sl ? `${up ? 'up' : 'down'}, heartbeat ${ago(sl.ts)} ago` : 'down, no heartbeat file'}${st.bridge && st.bridge.state === 'stale-orphan' ? `<br><strong>bridge: stale-orphan</strong>, pid ${esc(st.bridge.orphan_pid)} is alive but silent; kill it and the core starts its own` : ''}${sl && sl.last_relay ? `<br><small>last relay ${ago(sl.last_relay.ts)} ago, thread ${esc(sl.last_relay.thread_id)}</small>` : ''}</dd>
     <dt>Concierge</dt><dd class="${c.on ? 'up' : 'down'}">${c.on ? 'on' : 'off'}, ${esc(c.open)} open item(s) waiting${c.held.length ? `, holding ${c.held.map(h => '#' + esc(h)).join(', ')}` : ''}${c.members.length ? `<br><small>swarm: ${c.members.map(m => esc(m.identity)).join(', ')}</small>` : ''}</dd>
     <dt>Agents</dt><dd>${esc(st.sessions.running)} running, cap ${esc(st.sessions.max)}</dd></dl>`);
   $('toggle').textContent = c.on ? 'Turn the Concierge off' : 'Turn the Concierge on';

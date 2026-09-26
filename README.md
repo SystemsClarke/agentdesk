@@ -40,7 +40,8 @@ releases\AgentDeskApp-win-Setup.exe
 `Setup.exe` and update feed into `releases\` with the local code-signing cert
 (`build\agentdesk-cert-thumbprint.txt`). It installs per user to
 `%LOCALAPPDATA%\AgentDeskApp` (not `AgentDesk`, which holds the board and would
-be deleted on uninstall). An installed core checks GitHub releases for updates
+be deleted on uninstall). Install and every update also put that folder's `current` on the user PATH, so `agentdesk`
+works in any new terminal; uninstall takes it off. An installed core checks GitHub releases for updates
 every four hours and offers the restart.
 
 ## Dev loop
@@ -52,6 +53,29 @@ every four hours and offers the restart.
 It builds the solution and runs `tests/AgentDesk.Tests`: the parity tests replay
 the MCP tools against `golden/` output recorded from the old Python server, and
 the UI tests cover the window's requests. CI runs the same command.
+
+## Working on AgentDesk with agents
+
+Several agents often work on this repo at once, next to John's live install. The live core, its data
+(`%LOCALAPPDATA%\AgentDesk`), the install, the user PATH and the Slack bridge are never touched from a work session.
+
+- **One worktree per piece of work**, beside the checkout:
+  `git worktree add ..\AgentDesk-wt-<topic> -b feature/<topic> origin/main`. Remove it once the PR is merged
+  (`git worktree remove ..\AgentDesk-wt-<topic>`), and `git worktree list` now and then for leftovers.
+- **A temp core needs both variables.** `AGENTDESK_PIPE` (a pipe name of its own) and `AGENTDESK_DATA` (a folder under this
+  repo's `obj\`, such as `obj\tempcore-<topic>`, not `%TEMP%`). With only the pipe set, it shares John's board. With only the
+  data set, it answers on John's pipe. Kill only the core you started. Never kill `agentdesk.exe` relays: one of them is your
+  own MCP connection.
+- **Temp cores have no tray.** A core with `AGENTDESK_DATA` set (or `AGENTDESK_NO_TRAY=1`) shows no icon and no toasts, and
+  never starts the real Slack bridge (`AGENTDESK_BRIDGE_CMD` supplies a stand-in). So check tray and toast changes through
+  their tests, not by looking for a balloon.
+- **Commits are signed** with the automation key, as `claude[bot]`. The signing flags go on every commit, amend and rebase,
+  or a rebase re-signs nothing and the PR shows unverified commits:
+  `git -c gpg.format=openpgp -c user.signingkey=C079BAAABAD6BBEDBDE3FFD9C5D98EBD6765C188 -c commit.gpgsign=true rebase origin/main`
+  (with `GIT_AUTHOR_NAME='claude[bot]'` and `GIT_AUTHOR_EMAIL='209825114+claude[bot]@users.noreply.github.com'`).
+- **Merge on green.** Rebase onto `origin/main` before opening the PR, then wait for CI:
+  `gh pr checks <n> -R SystemsClarke/agentdesk --watch`, and `gh pr merge <n> -R SystemsClarke/agentdesk --merge --delete-branch`
+  once it passes. Every merge publishes a release, and John applies it with the tray's Restart to update.
 
 ## Layout
 

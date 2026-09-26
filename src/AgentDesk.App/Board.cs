@@ -1,9 +1,10 @@
 namespace AgentDesk.App;
 
-/// <summary>A thread as the lists show it. Status is the board's word (open, answered, claimed, done, closed, fyi, archived).</summary>
+/// <summary>A thread as the lists show it. Status is the board's word (open, answered, claimed, done, closed, fyi, archived).
+/// FollowUp is "done" or "follow-up" when the question's opener posted after John's latest reply.</summary>
 public sealed record ThreadRow(int Id, string Channel, string Status, string Subject, string OpenedBy, DateTimeOffset CreatedTs,
     DateTimeOffset UpdatedTs, int MessageCount, bool Waiting = false, string? LastAuthor = null, string? Delivery = null,
-    string? Holder = null);
+    string? Holder = null, string? FollowUp = null);
 
 /// <summary>Kind is null for a post, or "read-receipt"; Via is "slack" when it came from John's phone.</summary>
 public sealed record Message(string Author, DateTimeOffset Ts, string Body, string? Kind = null, string? Via = null);

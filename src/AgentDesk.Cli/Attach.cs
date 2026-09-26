@@ -32,12 +32,13 @@ static partial class Attach
             if (!ev.TryGetProperty("name", out var n) || n.GetString() != name) return;
             var kind = ev.GetProperty("event").GetString();
             if (kind == "session.exited") done.TrySetResult($"{name} ended");
-            else if (kind == "session.restarted") _ = Reattach();
+            else if (kind == "session.restarted") _ = Reattach("restarted from its handoff");
+            else if (kind == "session.overflow") _ = Reattach("fell behind; replaying"); // the core dropped this viewer: the ring again
             else if (ev.TryGetProperty("data", out var data)) { stdout.Write(data.GetBytesFromBase64()); stdout.Flush(); }
         };
-        async Task Reattach() // Phoenix: its successor takes the same name a moment later
+        async Task Reattach(string why) // Phoenix: a successor takes the same name a moment later; overflow: it is still there
         {
-            Console.Error.Write($"\x1b[0m\r\n[agentdesk: {name} restarted from its handoff]\r\n");
+            Console.Error.Write($"\x1b[0m\r\n[agentdesk: {name} {why}]\r\n");
             for (var i = 0; i < 60; i++, await Task.Delay(250))
                 if (!JsonDocument.Parse(await core.Call("ui:attach", Json(new() { ["name"] = name, ["cols"] = Console.WindowWidth, ["rows"] = Console.WindowHeight })))
                         .RootElement.TryGetProperty("error", out _)) return;
