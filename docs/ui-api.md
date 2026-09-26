@@ -55,7 +55,7 @@ reply: `done` when that post starts with the word Done, else `follow-up`; the wi
 opener's name. The tray toasts each such post once, as "#<id> <subject>: <first line>" (titled `Done from <agent>` or
 `Follow-up from <agent>`), and clicking it opens the thread, as a new question's toast does.
 
-The core refreshes the usage meter every 5 minutes (`claude -p /usage`, no model call), window or not, records each reading
+The core refreshes the usage meter every 5 minutes (`claude -p /usage --no-session-persistence`, no model call and no transcript), window or not, records each reading
 in `usage_samples` for the governor, and pushes `board.changed` to subscribed windows when it lands.
 
 Not in the core: notifier sinks (the Teams sink; SysOp shows "all delivering"), and the scan for unregistered PRs on

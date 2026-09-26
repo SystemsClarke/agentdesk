@@ -88,13 +88,17 @@ public static partial class Usage
         }
     }
 
+    /// <summary>The probe's arguments. --no-session-persistence: without it every run (288 a day) left a transcript under
+    /// ~/.claude/projects. ui:adoptable skips any older ones anyway, since nobody typed in them.</summary>
+    public static readonly string[] ProbeArgs = ["-p", "/usage", "--setting-sources", "project", "--no-session-persistence"];
+
     /// <summary>Ask the claude CLI for plan usage (no hooks, no model call, ~10 s). True if the feed was updated.</summary>
     static bool Refresh(string file)
     {
         if (ClaudeExe() is not { } exe) return false;
         var psi = new ProcessStartInfo(exe) { WorkingDirectory = Path.GetTempPath(), UseShellExecute = false, CreateNoWindow = true,
             RedirectStandardOutput = true, StandardOutputEncoding = Encoding.UTF8 };
-        foreach (var a in new[] { "-p", "/usage", "--setting-sources", "project" }) psi.ArgumentList.Add(a);
+        foreach (var a in ProbeArgs) psi.ArgumentList.Add(a);
         using var p = Process.Start(psi)!;
         var output = p.StandardOutput.ReadToEndAsync();
         if (!p.WaitForExit(60_000)) { p.Kill(true); return false; }
