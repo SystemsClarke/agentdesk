@@ -34,6 +34,15 @@ public sealed partial class Identities
     /// <summary>More for a Phoenix successor's first prompt, given the identity's name (its goal's status: Goals).</summary>
     public Func<string, string?>? Context;
 
+    /// <summary>True while `claude -p /usage` keeps failing (Usage.Failing): the governor then allows no new swarm sessions.</summary>
+    public Func<bool> UsageFailing = () => false;
+
+    // The governor's enforcement state (docs/governor.md), all under gate. held: swarm identities it keeps queued, and why.
+    readonly Dictionary<string, string> held = new(StringComparer.OrdinalIgnoreCase);
+    readonly HashSet<string> wouldShedNow = new(StringComparer.OrdinalIgnoreCase);
+    int wouldQueue, wouldShed;
+    string? warned;
+
     /// <summary><paramref name="claude"/> is the command line that stands for claude (tests pass a harmless one).</summary>
     public Identities(BoardStore store, Sessions sessions, string data, string claude = "claude")
     {
@@ -88,7 +97,9 @@ public sealed partial class Identities
             if (prompt is not null) prompts[name] = prompt;
             if (Need(db, name)["state"]?.ToString() is "stopped") Mark(db, name, "queued");
             if (Drain(db).TryGetValue(name, out var why)) throw new ArgumentException(why);
-            return Ok(Get(db, name)!);
+            var row = Get(db, name)!;
+            if (held.TryGetValue(name, out var hold)) row["governor"] = $"queued by the usage governor; it starts when the governor allows: {hold}";
+            return Ok(row);
         }
     }
 
@@ -216,7 +227,7 @@ public sealed partial class Identities
             var started = JsonNode.Parse(await Start(agent, text))!;
             Delivery("resumed", started["claude_session_id"]?.ToString());
             return Said($"woke {agent}: resuming its session with your reply"
-                + (started["state"]?.ToString() == "queued" ? " (queued: every session slot is busy)" : "")
+                + (started["state"]?.ToString() == "queued" ? $" (queued: {started["governor"]?.ToString() ?? "every session slot is busy"})" : "")
                 + (row is null ? $"; it is an identity now (agentdesk attach {agent})" : ""));
         }
         catch (Exception e) when (e is ArgumentException or System.ComponentModel.Win32Exception)
@@ -313,32 +324,171 @@ public sealed partial class Identities
         {
             using var db = store.Open();
             if (Get(db, name) is not { } row || row["state"]?.ToString() != "running") return; // stopped or forgotten meanwhile
-            try { Launch(db, row, $"You are {name}, generation {gen + 1}. Your previous generation handed off with:\n\n{handoff}" + (Context?.Invoke(name) is { } more ? "\n\n" + more : "")); }
+            // A replacement, not a new session: never gated or counted, but launched at the governor's tier when it steps down.
+            var model = Role(db, name) is { Swarm: true } role ? Tier(Judge(db), row, role.Lead) : null;
+            try { Launch(db, row, model: model, prompt: $"You are {name}, generation {gen + 1}. Your previous generation handed off with:\n\n{handoff}" + (Context?.Invoke(name) is { } more ? "\n\n" + more : "")); }
             catch (ArgumentException e) { Log.Warn($"identity {name} did not restart: {e.Message}"); Mark(db, name, "stopped"); Drain(db); return; }
             db.Reply((long)db.Scalar("SELECT thread_id FROM messages WHERE id=$m", ("m", msg))!, name, BoardDb.Agent,
                 $"generation {gen + 1} started from handoff #{msg}", msg, new JsonObject { ["kind"] = "phoenix" });
         }
     }
 
-    /// <summary>Launches queued identities, oldest first, while there are free slots. Returns the ones that failed, which are stopped.</summary>
+    /// <summary>Launches queued identities, oldest first, while there are free slots. A swarm identity (a goal's lead or member)
+    /// also needs the usage governor's leave: enforcing, it stays queued until the governor allows it; advisory, it launches and
+    /// the core logs that it would have queued. Returns the ones that failed, which are stopped.</summary>
     Dictionary<string, string> Drain(BoardDb db)
     {
         var failed = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         var max = MaxSessions(data);
-        while (Convert.ToInt32(db.Scalar("SELECT COUNT(*) FROM identities WHERE state='running'")) < max
-               && db.Rows("SELECT * FROM identities WHERE state='queued' ORDER BY updated_ts, name LIMIT 1") is [var next])
+        Governor.Verdict? v = null;
+        foreach (var next in db.Rows("SELECT * FROM identities WHERE state='queued' ORDER BY updated_ts, name"))
         {
+            var running = Running(db);
+            if (running >= max) break;
             var name = next["name"]!.ToString();
-            try { Launch(db, next); }
+            string? model = null;
+            if (Role(db, name) is { Swarm: true } role)
+            {
+                v ??= Judge(db);
+                if (!v.Allows(running))
+                {
+                    if (v.Enforce)
+                    {
+                        if (held.TryAdd(name, v.Why)) Log.Info($"governor: queued {name} ({running} running, cap {v.Cap}): {v.Why}");
+                        continue;
+                    }
+                    wouldQueue++;
+                    Log.Info($"governor (advisory): would have queued {name} ({running} running, cap {v.Cap}): {v.Why}");
+                }
+                model = Tier(v, next, role.Lead);
+            }
+            held.Remove(name);
+            try { Launch(db, next, model: model); }
             catch (ArgumentException e) { failed[name] = e.Message; Mark(db, name, "stopped"); }
         }
         return failed;
     }
 
+    static int Running(BoardDb db) => Convert.ToInt32(db.Scalar("SELECT COUNT(*) FROM identities WHERE state='running'"), CultureInfo.InvariantCulture);
+
+    Governor.Verdict Judge(BoardDb db) => Governor.Judge(db, data, DateTimeOffset.Parse(db.NowIso(), CultureInfo.InvariantCulture), UsageFailing());
+
+    /// <summary>A goal's member or lead is a swarm identity: the governor gates, sheds and re-tiers those. Any other identity is John's own.</summary>
+    static (bool Swarm, bool Lead) Role(BoardDb db, string name) =>
+        db.Scalar("SELECT 1 FROM goal_members WHERE identity=$n", ("n", name)) is not null ? (true, false)
+        : db.Scalar("SELECT 1 FROM goals WHERE lead=$n COLLATE NOCASE", ("n", name)) is not null ? (true, true) : (false, false);
+
+    /// <summary>The tier a swarm session launches at: when the governor steps down, the cheaper recommended tier (enforcing) or
+    /// the stored one with a would-have log line (advisory). Null means the stored column.</summary>
+    static string? Tier(Governor.Verdict v, JsonObject row, bool lead)
+    {
+        var (name, stored) = (row["name"]!.ToString(), row["model"]?.ToString() ?? "sonnet");
+        var want = v.Model(stored, lead);
+        if (want == stored) return null;
+        Log.Info(v.Enforce ? $"governor: launching {name} at {want} instead of {stored} (step down)"
+            : $"governor (advisory): would have launched {name} at {want} instead of {stored} (step down)");
+        return v.Enforce ? want : null;
+    }
+
+    /// <summary>Every <paramref name="every"/>: <see cref="Tick"/>.</summary>
+    public async Task Run(TimeSpan every, CancellationToken ct = default)
+    {
+        using var timer = new PeriodicTimer(every);
+        while (await timer.WaitForNextTickAsync(ct))
+            try { await Tick(); }
+            catch (Exception e) { Log.Warn($"governor tick failed: {e}"); }
+    }
+
+    /// <summary>Starts what the governor now allows (Drain), then sheds: when the recommended total is below the number running,
+    /// swarm sessions stop, members before leads, the Concierge's members first, then the longest idle (last board write, else
+    /// launch) first. A shed identity goes back to queued, so it resumes its conversation when the governor allows. John's own
+    /// identities are never stopped: the core only warns about them. Advisory, it only logs what it would have shed.</summary>
+    public async Task Tick()
+    {
+        var shed = new List<string>();
+        lock (gate)
+        {
+            using var db = store.Open();
+            Drain(db);
+            foreach (var n in held.Keys.ToList())
+                if (Get(db, n)?["state"]?.ToString() != "queued") held.Remove(n); // stopped or forgotten while held
+            var v = Judge(db);
+            var running = Running(db);
+            var excess = v.Excess(running);
+            var victims = excess == 0 ? [] : db.Rows(ShedOrder).Select(r => r["name"]!.ToString()).Take(excess).ToList();
+            if (excess > victims.Count)
+            {
+                var johns = db.Rows("SELECT name FROM identities WHERE state='running' AND name NOT IN (SELECT identity FROM goal_members) "
+                    + "AND name NOT IN (SELECT lead FROM goals) ORDER BY name").Select(r => r["name"]!.ToString());
+                var warning = $"governor: {running} sessions running against a cap of {v.Cap}; John's own identities ({string.Join(", ", johns)}) "
+                    + "are over it and are never stopped automatically";
+                if (warning != warned) Log.Warn(warning);
+                warned = warning;
+            }
+            else warned = null;
+            if (v.Enforce)
+            {
+                wouldShedNow.Clear();
+                foreach (var name in victims)
+                {
+                    Mark(db, name, "queued");
+                    held[name] = v.Why;
+                    Log.Warn($"governor: shed {name} ({running} running, cap {v.Cap}): {v.Why}");
+                    shed.Add(name);
+                }
+            }
+            else
+            {
+                foreach (var name in victims.Where(wouldShedNow.Add))
+                {
+                    wouldShed++;
+                    Log.Info($"governor (advisory): would have shed {name} ({running} running, cap {v.Cap}): {v.Why}");
+                }
+                wouldShedNow.IntersectWith(victims);
+            }
+        }
+        foreach (var name in shed)
+            try { await sessions.Stop(name); }
+            catch (ArgumentException) { } // it had just ended
+    }
+
+    /// <summary>Running swarm sessions in the order the governor sheds them. A session mid-Phoenix (no pid) is left alone.</summary>
+    const string ShedOrder = """
+        SELECT i.name FROM identities i LEFT JOIN presence p ON p.author = i.name
+        WHERE i.state='running' AND i.pid IS NOT NULL
+          AND (i.name IN (SELECT identity FROM goal_members) OR i.name IN (SELECT lead FROM goals))
+        ORDER BY (i.name IN (SELECT identity FROM goal_members)) DESC,
+                 (i.name IN (SELECT identity FROM goal_members WHERE goal='concierge')) DESC,
+                 MAX(COALESCE(p.seen_ts, ''), i.updated_ts), i.name
+        """;
+
+    /// <summary>ui:governor: the governor's document, with enforcing, the would_queue and would_shed counts since the core started
+    /// (what enforcement would have done while advisory), and the identities it holds queued.</summary>
+    public Task<string> GovernorUi()
+    {
+        JsonObject extra;
+        lock (gate)
+            extra = new JsonObject
+            {
+                ["would_queue"] = wouldQueue, ["would_shed"] = wouldShed,
+                ["held"] = new JsonArray([.. held.Keys.Order().Select(n => (JsonNode)n)]),
+            };
+        return Governor.Ui(store, data, UsageFailing(), extra);
+    }
+
+    /// <summary>ui:governor_enforce: John turns enforcement on or off (settings.json's governor_enforce).</summary>
+    public Task<string> Enforce(Caller c, bool on)
+    {
+        if (!Goals.John(c)) throw new ArgumentException("only John turns governor enforcement on or off");
+        Governor.SetEnforce(data, on);
+        Log.Info($"governor: enforcement turned {(on ? "on" : "off")} by John ({c.Harness ?? "unknown"})");
+        return GovernorUi();
+    }
+
     /// <summary>claude --resume its conversation when there is one to resume, else --session-id a new (or never-used) id, plus the
     /// chain charter and its own, then <paramref name="prompt"/> (else the one Start was given) as the first message. A successor has
     /// no conversation to resume, so it gets a new one.</summary>
-    void Launch(BoardDb db, JsonObject row, string? prompt = null)
+    void Launch(BoardDb db, JsonObject row, string? prompt = null, string? model = null)
     {
         if (prompt is null && prompts.Remove(row["name"]!.ToString(), out var queued)) prompt = queued;
         var (name, folder, host) = (row["name"]!.ToString(), row["folder"]!.ToString(), row["host"]!.ToString());
@@ -348,7 +498,9 @@ public sealed partial class Identities
         var resume = id is not null && (wsl || Transcript(id) is not null); // claude writes no transcript until the first message
         id ??= Guid.NewGuid().ToString();
         var charter = string.Format(Chain, name) + (row["charter"]?.ToString() is { Length: > 0 } own ? "\n\n" + own : "");
-        var tier = row["model"]?.ToString() is { } model && Governor.Models.Contains(model) ? " --model " + model : ""; // its tier (haiku|sonnet|opus)
+        model ??= row["model"]?.ToString(); // its tier (haiku|sonnet|opus), unless the governor stepped it down
+        if (model is not null && !Governor.Models.Contains(model)) model = null;
+        var tier = model is null ? "" : " --model " + model;
         var args = (resume ? "--resume " : "--session-id ") + id + tier + " --append-system-prompt " + quote(charter) + (prompt is null ? "" : " " + quote(prompt));
         var env = new Dictionary<string, string?> { ["AGENTDESK_IDENTITY"] = name, ["AGENTDESK_AUTHOR"] = name };
         int pid;
@@ -359,8 +511,8 @@ public sealed partial class Identities
                 $"wsl.exe -d {Win(host[4..])} --cd {Win(folder)} -- {claude} {args}", env);
         }
         else pid = sessions.Launch(name, folder, $"{claude} {args}", env);
-        db.Exec("UPDATE identities SET state='running', pid=$pid, claude_session_id=$id, updated_ts=$ts WHERE name=$n",
-            ("pid", pid), ("id", id), ("ts", db.NowIso()), ("n", name));
+        db.Exec("UPDATE identities SET state='running', pid=$pid, claude_session_id=$id, running_model=$m, updated_ts=$ts WHERE name=$n",
+            ("pid", pid), ("id", id), ("m", model), ("ts", db.NowIso()), ("n", name));
     }
 
     static string? Transcript(string id) =>

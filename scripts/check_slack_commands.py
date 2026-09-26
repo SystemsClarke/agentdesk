@@ -100,6 +100,16 @@ with contextlib.redirect_stderr(io.StringIO()):
     core.answers["ui:update"] = {"current": "0.1.40", "latest": "0.1.42"}
     out = every.handle("update apply", JOHN)
     check("update apply sends apply and shows versions", core.calls[-1] == ("ui:update", {"apply": True}) and "0.1.42" in out, out)
+    core.answers["ui:governor"] = {"enforcing": False, "would_queue": 3, "would_shed": 1, "held": [], "summary": "governor: 20% spendable"}
+    out = every.handle("governor", JOHN)
+    check("governor shows advisory, the would-have counts, and changes nothing",
+          core.calls[-1] == ("ui:governor", {}) and "advisory, would have queued 3 and shed 1" in out and "20% spendable" in out, out)
+    core.answers["ui:governor_enforce"] = {"enforcing": True, "held": ["g-m1"], "summary": "governor: 20% spendable"}
+    out = every.handle("governor on", JOHN)
+    check("governor on turns enforcement on", core.calls[-1] == ("ui:governor_enforce", {"on": True}) and "*enforcing*, holding g-m1" in out, out)
+    every.handle("governor off", JOHN)
+    check("governor off turns it off", core.calls[-1] == ("ui:governor_enforce", {"on": False}))
+    check("governor with a stray word shows usage", "Usage" in every.handle("governor maybe", JOHN) and core.calls[-1][0] == "ui:governor_enforce")
     check("not a command: None, so the board relay answers", every.handle("thanks!", JOHN) is None)
 
 print("area routing")

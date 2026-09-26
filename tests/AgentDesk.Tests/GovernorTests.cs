@@ -43,7 +43,7 @@ public sealed class GovernorTests(ITestOutputHelper output)
     }
 
     [Fact]
-    public void The_five_hour_guard_allows_no_new_sessions()
+    public void The_five_hour_guard_allows_no_swarm_sessions()
     {
         var model = new BurnModel();
         UsageSample At(double five, DateTimeOffset? fiveReset) => new(Mon, 10, Mon.AddHours(2), five, fiveReset, 2);
@@ -51,7 +51,7 @@ public sealed class GovernorTests(ITestOutputHelper output)
         Assert.True(open.NewSessions > 0, open.Reason);
         Assert.Equal(S.MaxSessions, open.TotalSessions); // 89% spendable over 2 h funds more than the ceiling
         var guarded = Governor.Advise(model, At(90, Mon.AddHours(1)), 2, Mon, S);
-        Assert.Equal((0, 2), (guarded.NewSessions, guarded.TotalSessions));
+        Assert.Equal((0, 0), (guarded.NewSessions, guarded.TotalSessions)); // holding the running ones would take the window past 90%: shed them
         Assert.Contains("5-hour window", guarded.Reason);
         Assert.True(guarded.StepDown);
         Assert.Equal(0, Governor.Advise(model, At(95, Mon.AddHours(1)), 0, Mon, S).TotalSessions);
@@ -90,6 +90,56 @@ public sealed class GovernorTests(ITestOutputHelper output)
         Assert.Equal(1.5, m.PerSession(S), 1); // the hour a session ends counts it half
         Assert.Equal(2, m.N[10]);
         Assert.Equal(1.0, Governor.Baseline(m, Mon.AddHours(9.5), Mon.AddHours(11.5), S), 6);
+    }
+
+    [Fact]
+    public void Starved_of_session_free_hours_johns_baseline_is_estimated()
+    {
+        // Three weeks in which the swarm never stops: 1 to 3 sessions in 3-hour blocks, each burning 1.2%/h, over John's 0.4%/h.
+        var samples = new List<UsageSample>();
+        var pct = 0.0;
+        for (var t = Mon; t < Mon.AddDays(21); t = t.AddMinutes(5))
+        {
+            var sessions = 1 + (int)((t - Mon).TotalHours / 3) % 3;
+            var weekStart = Mon.AddDays(7 * (int)((t - Mon).TotalDays / 7));
+            if (t == weekStart) pct = 0;
+            samples.Add(new(t, pct, weekStart.AddDays(7), 0, null, sessions));
+            pct += (0.4 + sessions * 1.2) / 12;
+        }
+        var m = Governor.Train(samples, S);
+        Assert.Equal(0, m.BaselineHours);
+        Assert.Equal("estimated", m.Source);
+        Assert.True(m.SlopeOk);
+        Assert.Equal(1.2, m.PerSession(S), 1);
+        Assert.InRange(m.Rate(10, S), 0.3, 0.5); // within the sampling error of a 5-minute feed whose session count changes mid-pair
+        Assert.InRange(Governor.Baseline(m, Mon, Mon.AddDays(1), S), 0.3 * 24, 0.5 * 24);
+
+        // A swarm that never changes size cannot be told apart from John: the per-session default stands, and so does the estimate it implies.
+        var flat = Governor.Train([.. samples.Select(x => x with { SwarmSessions = 2 })], S);
+        Assert.False(flat.SlopeOk);
+        Assert.Equal(Math.Max(0.25, flat.SessionRate), flat.PerSession(S)); // measured against the default baseline, as before
+        Assert.True(double.IsFinite(flat.Rate(10, S)));
+    }
+
+    [Fact]
+    public void The_verdict_fails_closed_and_steps_tiers_down_only()
+    {
+        var data = Directory.CreateTempSubdirectory("governor-verdict-").FullName;
+        var store = new BoardStore(Path.Combine(data, "agentdesk.db"));
+        store.Init();
+        using var db = store.Open();
+        var now = DateTimeOffset.UtcNow;
+        Assert.False(Governor.Judge(db, data, now, false).Fresh); // no sample at all
+        Governor.Insert(db, new(now.AddMinutes(-29), 10, now.AddHours(2), 80, now.AddHours(1), 0));
+        var v = Governor.Judge(db, data, now, false);
+        Assert.True(v.Fresh);
+        Assert.False(v.Enforce); // off by default
+        Assert.True(v.Allows(3));
+        Assert.False(Governor.Judge(db, data, now, usageFailing: true).Allows(0));
+        var stale = Governor.Judge(db, data, now.AddMinutes(2), false);
+        Assert.False(stale.Allows(0));
+        Assert.Equal(0, stale.Excess(50)); // stale: nothing to shed on
+        Assert.Equal(("sonnet", "haiku", "haiku", "sonnet"), (v.Model("opus", lead: true), v.Model("sonnet", lead: false), v.Model("haiku", lead: false), v.Model("sonnet", lead: true)));
     }
 
     [Fact]
@@ -188,6 +238,7 @@ public sealed class GovernorTests(ITestOutputHelper output)
             var (ends, maxWeekly, maxFive) = Simulate([Steady, Steady, week], seed);
             output.WriteLine($"{scenario} seed {seed}: weeks end at {string.Join(", ", ends.Select(e => e.ToString("0.0")))}%; max weekly {maxWeekly:0.0}%, max 5-hour {maxFive:0.0}%");
             Assert.True(maxWeekly <= 100, $"went over: {maxWeekly}");
+            Assert.True(maxFive <= 90, $"5-hour window over 90%: {maxFive}");
             Assert.InRange(ends[^1], 85, 100);
             Assert.InRange(ends[1], 85, 100);
         }

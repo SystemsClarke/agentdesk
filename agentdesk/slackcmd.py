@@ -158,6 +158,24 @@ def status(cmd: "Commands", text: str) -> str:
         + ([f"*Governor* {governor.removeprefix('governor: ')}"] if governor else []))
 
 
+def _governor_line(g: dict) -> str:
+    mode = "*enforcing*" if g.get("enforcing") else "advisory"
+    would = "" if g.get("enforcing") else f", would have queued {g.get('would_queue', 0)} and shed {g.get('would_shed', 0)}"
+    held = f", holding {', '.join(g['held'])}" if g.get("held") else ""
+    return f"Governor is {mode}{would}{held}.\n{g.get('summary', '').removeprefix('governor: ')}"
+
+
+def governor(cmd: "Commands", text: str) -> str:
+    arg = text.split()[1].lower() if len(text.split()) > 1 else ""
+    if arg in ("on", "off"):
+        r = cmd.call("ui:governor_enforce", {"on": arg == "on"})
+    elif arg:
+        return "Usage: `governor` status · `governor on|off` enforce its caps, or only advise"
+    else:
+        r = cmd.call("ui:governor")
+    return _err(r) or _governor_line(r)
+
+
 def update(cmd: "Commands", text: str) -> str:
     r = cmd.call("ui:update", {"apply": text.lower().split()[1:] == ["apply"]})
     if "unknown request" in str(r.get("error", "")):
@@ -213,7 +231,8 @@ COMMANDS = {  # area -> command word -> (handler, help line)
                "yes": (yes, None)},
     "concierge": {"concierge": (concierge, "`concierge` status · `concierge on|off`")},
     "ops": {"status": (status, "`status` core, Concierge, agents, questions, usage"),
-            "update": (update, "`update` versions · `update apply` update and restart")},
+            "update": (update, "`update` versions · `update apply` update and restart"),
+            "governor": (governor, "`governor` status · `governor on|off` enforce the usage caps, or only advise")},
     "board": {},
     "swarms": {"swarms": (swarms, "`swarms` the 10 swarm slots"),
                "swarm": (swarm, "`swarm new <name> <folder> <objective>` · `swarm approve|end|reset <slot>`")},

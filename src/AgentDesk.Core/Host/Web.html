@@ -57,7 +57,7 @@ dialog::backdrop { background:#000a; }
 
 <section aria-labelledby="h-sessions"><h2 id="h-sessions">Sessions</h2><div id="sessions" class="wrap"></div></section>
 <section aria-labelledby="h-concierge"><h2 id="h-concierge">Concierge and Slack</h2><div id="concierge"></div><button type="button" id="toggle">Turn the Concierge on or off</button></section>
-<section aria-labelledby="h-usage"><h2 id="h-usage">Usage</h2><div id="usage"></div></section>
+<section aria-labelledby="h-usage"><h2 id="h-usage">Usage</h2><div id="usage"></div><button type="button" id="enforce">Enforce the governor's caps</button></section>
 <section aria-labelledby="h-prs"><h2 id="h-prs">Merge list</h2><div id="prs" class="wrap"></div></section>
 <section aria-labelledby="h-questions"><h2 id="h-questions">Open questions</h2><div id="questions" class="wrap"></div></section>
 <section aria-labelledby="h-log"><h2 id="h-log">Core log</h2><pre id="log" tabindex="0" aria-label="Last 60 lines of core.log"></pre></section>
@@ -115,7 +115,7 @@ function renderSessions(list) {
     <td>${ago(s.started)} ago</td><td>${s.viewers}</td></tr>`), 'No sessions running.'));
 }
 function renderStatus(st) {
-  const sl = st.slack, c = st.concierge, up = sl && (Date.now() - Date.parse(sl.ts)) / 1000 < 90;
+  const sl = st.slack, c = st.concierge, g = st.governor, up = sl && (Date.now() - Date.parse(sl.ts)) / 1000 < 90;
   conciergeOn = c.on;
   show('concierge', `<dl><dt>SlackNet</dt><dd class="${up ? 'up' : 'down'}">${sl ? `${up ? 'up' : 'down'}, heartbeat ${ago(sl.ts)} ago` : 'down, no heartbeat file'}${st.bridge && st.bridge.state === 'stale-orphan' ? `<br><strong>bridge: stale-orphan</strong>, pid ${esc(st.bridge.orphan_pid)} is alive but silent; kill it and the core starts its own` : ''}${sl && sl.last_relay ? `<br><small>last relay ${ago(sl.last_relay.ts)} ago, thread ${esc(sl.last_relay.thread_id)}</small>` : ''}</dd>
     <dt>Concierge</dt><dd class="${c.on ? 'up' : 'down'}">${c.on ? 'on' : 'off'}, ${esc(c.open)} open item(s) waiting${c.held.length ? `, holding ${c.held.map(h => '#' + esc(h)).join(', ')}` : ''}${c.members.length ? `<br><small>swarm: ${c.members.map(m => esc(m.identity)).join(', ')}</small>` : ''}</dd>
@@ -123,7 +123,10 @@ function renderStatus(st) {
   $('toggle').textContent = c.on ? 'Turn the Concierge off' : 'Turn the Concierge on';
   const pct = (st.usage.lines.join(' ').match(/(\d+)% used/) || [])[1];
   show('usage', `${pct ? `<div class="meter" role="meter" aria-label="5-hour window used" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}"><span style="width:${pct}%"></span></div>` : ''}
-    <p>${esc(st.usage.summary)}</p>${st.usage.lines.map(l => `<p class="dim">${esc(l)}</p>`).join('')}`);
+    <p>${esc(st.usage.summary)}</p>${st.usage.lines.map(l => `<p class="dim">${esc(l)}</p>`).join('')}
+    ${g ? `<p>${esc(g.summary)}</p><p class="dim">${g.enforcing ? 'Enforcing' : `Advisory: would have queued ${esc(g.would_queue ?? 0)} and shed ${esc(g.would_shed ?? 0)} since the core started`}${(g.held || []).length ? `; holding ${g.held.map(esc).join(', ')}` : ''}.</p>` : ''}`);
+  enforcing = !!(g && g.enforcing);
+  $('enforce').textContent = enforcing ? 'Stop enforcing: advise only' : "Enforce the governor's caps";
   const open = st.prs.filter(p => p.state === 'open');
   show('prs', table('Pull requests waiting on John', ['Pull request', 'Asked by', 'Waiting'], open.map(p => `<tr><th scope="row"><a href="${esc(p.url)}" target="_blank" rel="noopener">${esc(p.repo)}#${p.number}</a> ${esc(p.title)}${p.last_error ? `<br><small class="down">${esc(p.last_error)}</small>` : ''}</th>
     <td>${esc(p.requested_by)}</td><td>${ago(p.requested_ts)}</td></tr>`), 'Nothing waiting to merge.'));
@@ -132,7 +135,7 @@ function renderQuestions(list) {
   show('questions', table('Questions waiting on John', ['Question', 'From', 'Updated'], list.map(q => `<tr><th scope="row">#${q.thread_id} ${esc(q.subject)}</th><td>${esc(q.opened_by)}</td><td>${ago(q.updated_ts)} ago</td></tr>`), 'No open questions.'));
 }
 
-let conciergeOn = false;
+let conciergeOn = false, enforcing = false;
 async function refresh() {
   try {
     const [c, st, ids, ss, qs, log] = await Promise.all(['core', 'status', 'identity_list', 'session_list', 'open_questions'].map(op => api(op)).concat(api('log_tail', { lines:60 })));
@@ -153,6 +156,7 @@ $('create').addEventListener('submit', e => {
       r => { f.reset(); return `Created ${r.name}; press Start to run it.`; });
 });
 $('toggle').onclick = () => act('concierge', { on:!conciergeOn }, r => r.on ? 'Concierge on: it works Work to Hire until you turn it off.' : 'Concierge off: its swarm is stopped and held items are back on the queue.');
+$('enforce').onclick = () => act('governor_enforce', { on:!enforcing }, r => r.enforcing ? 'The governor enforces its caps: swarm starts queue when over, and it sheds when the cap drops.' : 'The governor only advises again.');
 $('check').onclick = () => { say('Checking for updates...'); act('update', {}, r => !r.installed ? `Dev build ${r.current}: not installed, so it does not update.` : r.pending ? `${r.pending} is ready (running ${r.current}).` : `Up to date: ${r.current}.`); };
 $('apply').onclick = () => confirmThen('Restart the core into the update? Every agent\'s connection drops and reconnects.', () => act('update', { apply:true }, r => r.restarting ? `Restarting into ${r.pending}; this page comes back when the core does.` : 'No update ready.'));
 refresh(); setInterval(refresh, 5000);
