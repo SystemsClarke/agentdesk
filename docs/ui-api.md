@@ -105,7 +105,10 @@ with the `swarms` area; with no bots.json the one bot has every area). John's co
 - `swarm reset <slot>` runs `ui:goal_stop` and `ui:identity_forget` on the lead, archives the channel, creates a fresh one, and
   runs `ui:goal_create` for `<name>-N` with the same objective and folder.
 
-A message John writes in a slot's channel is typed into the lead as `John (via Slack): <text>`, followed by Enter 300 ms later.
+Every 15 s the bridge reads each slot's channel with `conversations.history`, from the last message it saw (kept per channel in
+`swarm_state.json`, so a restart neither replays nor drops one; a channel seen for the first time starts at its newest message).
+Each new top-level message from John is typed into the lead as `John (via Slack): <text>`, followed by Enter 300 ms later. Bots
+(the persona's own posts), edits and other people are ignored.
 Every 15 s, each new post on the goal's board thread goes into the channel as the persona. Posts by `agentdesk` (verdicts,
 approvals, endings) and by the lead (proposals) are top level. Member notes go in a thread under that day's "Activity" message.
 Read receipts and John's own posts are skipped. The watermark is kept in `swarm_state.json` in the data folder. Persona posts need
@@ -114,8 +117,8 @@ prefixed `*<persona>:*`.
 
 What the Slack app needs for this, on top of what it already has (`chat:write`, `im:write`, `im:history`, `users:read`):
 - Bot token scopes: `channels:manage` (conversations.create, rename, archive and invite on public channels),
-  `chat:write.customize` (the persona's name and icon), and `channels:history` (to receive messages in the slot channels).
-- Event subscription: `message.channels` (bot events, delivered over Socket Mode like `message.im`).
+  `chat:write.customize` (the persona's name and icon), and `channels:history` (conversations.history on the slot channels).
+- No event subscription: the `message.channels` event is not needed, because the slot channels are polled.
 - Reinstall the app to the workspace after adding them. Workspace settings must let the app create and archive channels.
 
 A response with `Id = 0` is an event, raised as `CoreConnection.Pushed` with its JSON text.

@@ -2,8 +2,9 @@
 
 The core stores slot -> channel, persona and goal (ui:slot_*); this module makes every Slack call and keeps that mapping
 current. John's commands (`swarms`, `swarm new|approve|end|reset`, agentdesk/slackcmd.py) land here, John's messages in a
-slot's channel are typed into the goal's lead, and each new post on the goal's board thread is relayed into the channel:
-verdicts and proposals top level, member notes in a thread under one "activity" message a day.
+slot's channel (polled with conversations.history, which needs channels:history) are typed into the goal's lead, and each
+new post on the goal's board thread is relayed into the channel: verdicts and proposals top level, member notes in a thread
+under one "activity" message a day.
 
 Persona posts use chat.postMessage's username/icon overrides, which need the chat:write.customize scope. Without it Slack
 says missing_scope; then every post is a plain one prefixed with the persona's name, and that is logged once.
@@ -58,6 +59,7 @@ class Swarms:
             except (OSError, ValueError):
                 pass
         self.state.setdefault("goals", {})
+        self.state.setdefault("channels", {})  # channel id -> ts of the last message poll() looked at
 
     # ---- plumbing
 
@@ -134,7 +136,8 @@ class Swarms:
         row = self.call("ui:slot_assign", {"n": n, "goal": name, "persona": name, "persona_icon": icon, "channel_id": cid, "channel_name": cname})
         if e := _err(row):
             return f"⚠ {e}"
-        self.post(row, PROPOSING)
+        self.state["channels"][cid] = self.post(row, PROPOSING)  # a new goal's channel: nothing before this is input
+        self._save()
         return f"Slot {n}: *{name}* in <#{cid}>. Its lead is proposing a hypothesis; approve with `swarm approve {n}`."
 
     def _goal_slot(self, n: int) -> tuple[dict | None, str | None]:
@@ -214,27 +217,55 @@ class Swarms:
 
     # ---- inbound: John in a slot's channel
 
-    def route(self, event: dict) -> bool:
-        """A channel message: if it is in a slot's channel, John's words go to the goal's lead. True when it was a slot's."""
-        s = next((x for x in self.slots() if x.get("channel_id") and x["channel_id"] == event.get("channel")), None)
-        if s is None:
-            return False
-        if event.get("user") != self.john or event.get("bot_id") or event.get("subtype") not in (None, "file_share"):
-            return True  # only John steers a swarm; bots (the persona itself) and edits are not input
-        text = slackfmt.slack_to_md(event.get("text") or "").strip()
+    def poll(self) -> int:
+        """One conversations.history pass over every slot's channel; John's new messages go to the goal's lead.
+
+        The watermark per channel is kept in the state file, so a restart neither replays nor drops a message. A channel
+        seen for the first time starts at its newest message: its history is not input. Returns how many were relayed."""
+        sent = 0
+        for s in self.slots():
+            cid = s.get("channel_id")
+            if not cid:
+                continue
+            try:
+                sent += self._poll_channel(s, cid)
+            except Exception as exc:  # one channel failing must not stop the others
+                self.log(f"slot {s['n']}: polling {cid} failed: {slack_error(exc) or exc}")
+        return sent
+
+    def _poll_channel(self, s: dict, cid: str) -> int:
+        marks = self.state["channels"]
+        if cid not in marks:
+            msgs = self.client.conversations_history(channel=cid, limit=1)["messages"]
+            marks[cid] = msgs[0]["ts"] if msgs else "0"
+            self._save()
+            return 0
+        msgs = self.client.conversations_history(channel=cid, oldest=marks[cid], limit=200)["messages"]
+        sent = 0
+        for m in sorted(msgs, key=lambda m: float(m["ts"])):
+            if float(m["ts"]) <= float(marks[cid]):
+                continue
+            if m.get("user") == self.john and not m.get("bot_id") and m.get("subtype") in (None, "file_share"):
+                sent += self._to_lead(s, m)  # only John steers a swarm; bots (the persona itself) and edits are not input
+            marks[cid] = m["ts"]
+            self._save()
+        return sent
+
+    def _to_lead(self, s: dict, m: dict) -> int:
+        text = slackfmt.slack_to_md(m.get("text") or "").strip()
         if not text:
-            return True
+            return 0
         if not s.get("goal"):
-            self.post(s, f"Slot {s['n']} is free. Start a swarm with `swarm new <name> <folder> <objective>`.", event.get("ts"))
-            return True
+            self.post(s, f"Slot {s['n']} is free. Start a swarm with `swarm new <name> <folder> <objective>`.", m.get("ts"))
+            return 0
         lead = s.get("lead") or f"{s['goal']}-lead"
         r = self.call("ui:input", {"name": lead, "data": "John (via Slack): " + text.replace("\n", " / ")})
         if e := _err(r):
-            self.post(s, f"⚠ Couldn't reach {lead} (goal {s.get('state')}): {e}", event.get("ts"))
-            return True
+            self.post(s, f"⚠ Couldn't reach {lead} (goal {s.get('state')}): {e}", m.get("ts"))
+            return 0
         self.sleep(0.3)  # text and Enter in one write read as a paste
         self.call("ui:input", {"name": lead, "data": "\r"})
-        return True
+        return 1
 
     # ---- outbound: the goal's board thread into the channel
 

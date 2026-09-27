@@ -157,6 +157,7 @@ class FakeSlack:
 
     def __init__(self, customize=True):
         self.customize, self.calls, self.posts, self.channels, self.fail = customize, [], [], {}, {}
+        self.history = {}  # channel -> its top-level messages, oldest first, as conversations.history sees them
         self._ids, self._ts = iter(range(1, 999)), iter(range(1, 999))
 
     def _rec(self, name, kw):
@@ -193,7 +194,21 @@ class FakeSlack:
             raise SlackErr("missing_scope")
         ts = f"{next(self._ts)}.000"
         self.posts.append({**kw, "ts": ts})
+        if "thread_ts" not in kw:
+            self.history.setdefault(kw["channel"], []).append({"ts": ts, "bot_id": "B_BRIDGE", "text": kw["text"]})
         return {"ts": ts}
+
+    def says(self, channel, user, text, **extra):
+        """Someone writes a top-level message in a channel; returns its ts."""
+        ts = f"{next(self._ts)}.000"
+        self.history.setdefault(channel, []).append({"ts": ts, "user": user, "text": text, **extra})
+        return ts
+
+    def conversations_history(self, **kw):
+        self._rec("history", kw)
+        oldest = float(kw.get("oldest") or 0)
+        msgs = [m for m in self.history.get(kw["channel"], []) if float(m["ts"]) > oldest]
+        return {"ok": True, "messages": list(reversed(msgs))[:kw.get("limit", 100)]}  # newest first, like Slack
 
 
 class SwarmCore:
@@ -339,21 +354,51 @@ with contextlib.redirect_stderr(io.StringIO()):
     check("relay: a new day starts a new activity message", "Activity, 2026-09-26" in slack.posts[posts]["text"]
           and slack.posts[posts + 1]["thread_ts"] == slack.posts[posts]["ts"])
 
-    print("  channel -> lead")
-    check("a message outside every slot's channel is not the swarm's", bot.swarm.route({"channel": "C_OTHER", "user": JOHN, "text": "hi"}) is False)
-    bot.swarm.route({"channel": "C1", "user": JOHN, "text": "try &lt;ccache&gt;\nthen measure", "ts": "9.1"})
-    check("John in the slot's channel: typed into the lead with provenance, then Enter",
+    print("  channel -> lead (conversations.history)")
+    check("swarm new sets the channel's watermark at the persona's first post, so the channel starts empty of input",
+          bot.swarm.state["channels"].get("C1") == slack.history["C1"][0]["ts"], str(bot.swarm.state["channels"]))
+    check("a poll with nothing new relays nothing (the persona's own posts are not input)", bot.swarm.poll() == 0 and not sc.inputs)
+    slack.says("C1", JOHN, "try &lt;ccache&gt;\nthen measure")
+    check("John's new message in the slot's channel is relayed once", bot.swarm.poll() == 1, str(sc.inputs))
+    check("typed into the lead with provenance, then Enter",
           sc.inputs[-2:] == [("alpha-lead", "John (via Slack): try <ccache> / then measure"), ("alpha-lead", "\r")] and sleeps == [0.3], str(sc.inputs))
+    check("a second poll relays nothing", bot.swarm.poll() == 0 and len(sc.inputs) == 2)
+    check("the watermark survives a restart: a fresh bridge relays nothing old",
+          swarm.Swarms(slack, sc, JOHN, state_dir / "swarm_state.json", log=logs.append, sleep=lambda _: None).poll() == 0 and len(sc.inputs) == 2)
+    slack.says("C1", JOHN, "while it was down")
+    check("a message written while the bridge was down is relayed by the fresh one after the restart",
+          swarm.Swarms(slack, sc, JOHN, state_dir / "swarm_state.json", log=logs.append, sleep=lambda _: None).poll() == 1
+          and sc.inputs[-2][1] == "John (via Slack): while it was down", str(sc.inputs))
+    bot.swarm = swarm.Swarms(slack, sc, JOHN, state_dir / "swarm_state.json", log=logs.append, sleep=sleeps.append,
+                             today=lambda: date.fromisoformat(day[0]))  # the restarted bridge carries on
     n = len(sc.inputs)
-    bot.swarm.route({"channel": "C1", "user": OTHER, "text": "hijack"})
-    bot.swarm.route({"channel": "C1", "user": JOHN, "bot_id": "B1", "text": "persona echo"})
-    bot.swarm.route({"channel": "C1", "user": JOHN, "subtype": "message_changed", "text": "edit"})
-    check("someone else, a bot, or an edit is never input", len(sc.inputs) == n)
+    slack.says("C1", OTHER, "hijack")
+    slack.says("C1", JOHN, "persona echo", bot_id="B1")
+    slack.says("C1", JOHN, "joined", subtype="channel_join")
+    bot.swarm.post(bot.swarm.slot(1), "the bridge's own persona post")
+    check("someone else, a bot, a system message or the bridge's own post is never input", bot.swarm.poll() == 0 and len(sc.inputs) == n, str(sc.inputs[n:]))
+    check("ignored messages still move the watermark", bot.swarm.state["channels"]["C1"] == slack.history["C1"][-1]["ts"])
+    slack.history["C9"] = [{"ts": "0.500", "user": JOHN, "text": "old history"}]
+    sc.slots[9]["channel_id"] = "C9"
+    check("a channel seen for the first time starts at its newest message: its history is not input",
+          bot.swarm.poll() == 0 and bot.swarm.state["channels"]["C9"] == "0.500" and len(sc.inputs) == n)
+    posts = len(slack.posts)
+    ts = slack.says("C9", JOHN, "anyone?")
+    bot.swarm.poll()
+    check("John in a free slot's channel is told how to start a swarm, under his message",
+          "Slot 9 is free" in slack.posts[posts]["text"] and slack.posts[posts]["thread_ts"] == ts and len(sc.inputs) == n, str(slack.posts[posts:]))
+    sc.slots[9]["channel_id"] = None
+    slack.fail["history"] = "channel_not_found"
+    logs.clear()
+    bot.swarm.poll()
+    check("a channel Slack refuses is logged and skipped, not fatal", any("channel_not_found" in x for x in logs), str(logs))
     sc.unreachable.add("alpha-lead")
     posts = len(slack.posts)
-    bot.swarm.route({"channel": "C1", "user": JOHN, "text": "hello?", "ts": "9.2"})
+    ts = slack.says("C1", JOHN, "hello?")
+    bot.swarm.poll()
     check("an unreachable lead is said in the channel, under John's message",
-          "Couldn't reach alpha-lead" in slack.posts[posts]["text"] and slack.posts[posts]["thread_ts"] == "9.2", str(slack.posts[posts:]))
+          "Couldn't reach alpha-lead" in slack.posts[posts]["text"] and slack.posts[posts]["thread_ts"] == ts, str(slack.posts[posts:]))
+    sc.unreachable.discard("alpha-lead")
 
     print("  end and reset")
     bot.handle("swarm new beta C:\\w make tests pass", JOHN)
