@@ -29,9 +29,9 @@ Several bots: bots.json next to the credentials lists Slack bots, each with its 
 credential folder and areas; with no bots.json there is one bot with every area.
 
 Swarm slots: the bot with the `swarms` area runs `swarms` / `swarm new|approve|end|reset`
-(agentdesk/swarm.py), relays John's messages in a slot's channel to that goal's lead, and posts
+(agentdesk/swarm.py), polls each slot's channel every 15 s and relays John's new messages to that goal's lead, and posts
 each goal's board-thread activity into its channel as the persona. The Slack scopes and events
-it needs: docs/ui-api.md, "Swarm slots".
+it needs: docs/ui-api.md, "Swarm slots" (no channel event subscription: the channels are polled).
 
 Run: the AgentDesk core starts this with itself and restarts it whenever it
 exits (src/AgentDesk.Core/Host/Supervisor.cs); settings.json's slack_bridge: false
@@ -216,13 +216,15 @@ swarm_bots: list = []  # agentdesk/swarm.Swarms, one per bot with the swarms are
 
 
 def swarm_loop() -> None:
-    """Relays each swarm goal's new board-thread posts into its slot's channel, as the persona."""
+    """Relays each swarm goal's new board-thread posts into its slot's channel, as the persona, and John's new messages in
+    each slot's channel (conversations.history) to the goal's lead."""
     while True:
         for s in swarm_bots:
-            try:
-                s.relay()
-            except Exception as exc:  # a bad pass must not kill future relaying
-                print(f"[slack_bridge] swarm relay error: {exc}", file=sys.stderr)
+            for step in (s.relay, s.poll):
+                try:
+                    step()
+                except Exception as exc:  # a bad pass must not kill future relaying
+                    print(f"[slack_bridge] swarm {step.__name__} error: {exc}", file=sys.stderr)
         time.sleep(POLL_SECONDS)
 
 
@@ -308,12 +310,6 @@ def make_app(bot: dict) -> App:
 
     @a.event("message")
     def on_message(event: dict, say) -> None:
-        if event.get("channel_type") == "channel" and getattr(cmds, "swarm", None):
-            try:
-                cmds.swarm.route(event)  # John in a swarm slot's channel: to the goal's lead
-            except Exception as exc:
-                print(f"[slack_bridge] swarm route error: {exc}", file=sys.stderr)
-            return
         if event.get("bot_id") or event.get("subtype") not in (None, "file_share") or event.get("channel_type") != "im":
             return
         if not event.get("thread_ts") and (out := cmds.handle(event.get("text") or "", event.get("user"))) is not None:
