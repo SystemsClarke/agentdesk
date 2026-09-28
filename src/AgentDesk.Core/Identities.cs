@@ -9,8 +9,8 @@ namespace AgentDesk.Core;
 
 /// <summary>
 /// Agents that outlive the core: an identity is a name, a folder, a charter and one Claude Code conversation, kept in the
-/// board's identities table. Running, it is the headless session of the same name (agentdesk attach &lt;name&gt;). At most
-/// max_sessions run at once and the rest queue; when the core starts it resumes the ones that were running. When its session
+/// board's identities table. Running, it is the headless session of the same name (agentdesk attach &lt;name&gt;). The session
+/// pool (<see cref="Budget"/>) decides how many run at once and the rest queue; when the core starts it resumes the ones that were running. When its session
 /// hands off (pass_the_torch), the end of that turn restarts it: a fresh conversation, the next generation, started from the handoff.
 /// </summary>
 public sealed partial class Identities
@@ -98,7 +98,7 @@ public sealed partial class Identities
             if (Need(db, name)["state"]?.ToString() is "stopped") Mark(db, name, "queued");
             if (Drain(db).TryGetValue(name, out var why)) throw new ArgumentException(why);
             var row = Get(db, name)!;
-            if (held.TryGetValue(name, out var hold)) row["governor"] = $"queued by the usage governor; it starts when the governor allows: {hold}";
+            if (held.TryGetValue(name, out var hold)) row["governor"] = $"queued in the session pool; it starts when the pool allows: {hold}";
             return Ok(row);
         }
     }
@@ -155,11 +155,14 @@ public sealed partial class Identities
         int.TryParse(Environment.GetEnvironmentVariable("AGENTDESK_MAX_SESSIONS") ?? AgentBoard.Load(Path.Combine(data, "settings.json"))?["max_sessions"]?.ToString() ?? "3",
             out var m) ? Math.Max(1, m) : 3;
 
-    /// <summary>ui:status's "sessions": identities running now, and the cap.</summary>
+    /// <summary>ui:status's "sessions": the session pool (<see cref="Budget.Report"/>), with "running" and "max" (the ceiling).</summary>
     public JsonObject Counts()
     {
-        using var db = store.Open();
-        return new() { ["running"] = Convert.ToInt32(db.Scalar("SELECT COUNT(*) FROM identities WHERE state='running'")), ["max"] = MaxSessions(data) };
+        lock (gate)
+        {
+            using var db = store.Open();
+            return Pool(db).Report();
+        }
     }
 
     /// <summary>Ctrl+R, or `wake` in a question's Slack thread: brings John's latest reply on a question to the agent that asked it.
@@ -324,8 +327,9 @@ public sealed partial class Identities
         {
             using var db = store.Open();
             if (Get(db, name) is not { } row || row["state"]?.ToString() != "running") return; // stopped or forgotten meanwhile
-            // A replacement, not a new session: never gated or counted, but launched at the governor's tier when it steps down.
-            var model = Role(db, name) is { Swarm: true } role ? Tier(Judge(db), row, role.Lead) : null;
+            // A replacement in the same pool slot, not a new session: never gated or counted twice, but launched at the governor's
+            // tier when it steps down.
+            var model = Role(db, name) is { Goal: not null } role ? Tier(Judge(db), row, role.Lead) : null;
             try { Launch(db, row, model: model, prompt: $"You are {name}, generation {gen + 1}. Your previous generation handed off with:\n\n{handoff}" + (Context?.Invoke(name) is { } more ? "\n\n" + more : "")); }
             catch (ArgumentException e) { Log.Warn($"identity {name} did not restart: {e.Message}"); Mark(db, name, "stopped"); Drain(db); return; }
             db.Reply((long)db.Scalar("SELECT thread_id FROM messages WHERE id=$m", ("m", msg))!, name, BoardDb.Agent,
@@ -333,34 +337,40 @@ public sealed partial class Identities
         }
     }
 
-    /// <summary>Launches queued identities, oldest first, while there are free slots. A swarm identity (a goal's lead or member)
-    /// also needs the usage governor's leave: enforcing, it stays queued until the governor allows it; advisory, it launches and
-    /// the core logs that it would have queued. Returns the ones that failed, which are stopped.</summary>
+    /// <summary>Launches queued identities, oldest first, as the session pool allows (<see cref="Budget.CanStart"/>): John's own
+    /// under max_sessions; a swarm identity (a goal's lead or member) under the pool's ceiling, its goal's fair share and its
+    /// max_members. Enforcing, the ceiling is the governor's; advisory, it is max_sessions and the core logs what the governor's
+    /// would have queued. A held identity stays queued, and the next drain (a session ending, the tick) tries again. Returns the
+    /// ones that failed to launch, which are stopped.</summary>
     Dictionary<string, string> Drain(BoardDb db)
     {
         var failed = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        var max = MaxSessions(data);
+        var hard = MaxSessions(data);
         Governor.Verdict? v = null;
         foreach (var next in db.Rows("SELECT * FROM identities WHERE state='queued' ORDER BY updated_ts, name"))
         {
-            var running = Running(db);
-            if (running >= max) break;
+            v ??= Judge(db);
+            var pool = Budget.Read(db, hard, v);
+            if (pool.Running >= hard) break;
             var name = next["name"]!.ToString();
+            var (goal, lead) = Role(db, name);
             string? model = null;
-            if (Role(db, name) is { Swarm: true } role)
+            if (goal is not null)
             {
-                v ??= Judge(db);
-                if (!v.Allows(running))
+                if (pool.CanStart(goal, lead, pool.Ceiling) is { } why)
                 {
-                    if (v.Enforce)
-                    {
-                        if (held.TryAdd(name, v.Why)) Log.Info($"governor: queued {name} ({running} running, cap {v.Cap}): {v.Why}");
-                        continue;
-                    }
-                    wouldQueue++;
-                    Log.Info($"governor (advisory): would have queued {name} ({running} running, cap {v.Cap}): {v.Why}");
+                    var byPlan = v.Enforce && pool.Running >= pool.Governed;
+                    var hold = byPlan ? $"the usage governor caps the pool at {pool.Governed}: {v.Why}" : why;
+                    if (held.TryAdd(name, hold))
+                        Log.Info(byPlan ? $"governor: queued {name} ({pool.Running} running, cap {pool.Governed}): {v.Why}" : $"pool: queued {name}: {why}");
+                    continue;
                 }
-                model = Tier(v, next, role.Lead);
+                if (!v.Enforce && pool.CanStart(goal, lead, pool.Governed) is { } would)
+                {
+                    wouldQueue++;
+                    Log.Info($"governor (advisory): would have queued {name} ({pool.Running} running, cap {pool.Governed}): {(pool.Running >= pool.Governed ? v.Why : would)}");
+                }
+                model = Tier(v, next, lead);
             }
             held.Remove(name);
             try { Launch(db, next, model: model); }
@@ -369,14 +379,15 @@ public sealed partial class Identities
         return failed;
     }
 
-    static int Running(BoardDb db) => Convert.ToInt32(db.Scalar("SELECT COUNT(*) FROM identities WHERE state='running'"), CultureInfo.InvariantCulture);
-
     Governor.Verdict Judge(BoardDb db) => Governor.Judge(db, data, DateTimeOffset.Parse(db.NowIso(), CultureInfo.InvariantCulture), UsageFailing());
 
-    /// <summary>A goal's member or lead is a swarm identity: the governor gates, sheds and re-tiers those. Any other identity is John's own.</summary>
-    static (bool Swarm, bool Lead) Role(BoardDb db, string name) =>
-        db.Scalar("SELECT 1 FROM goal_members WHERE identity=$n", ("n", name)) is not null ? (true, false)
-        : db.Scalar("SELECT 1 FROM goals WHERE lead=$n COLLATE NOCASE", ("n", name)) is not null ? (true, true) : (false, false);
+    Budget Pool(BoardDb db) => Budget.Read(db, MaxSessions(data), Judge(db));
+
+    /// <summary>A goal's member or lead is a swarm identity (Goal is its goal): the governor gates, sheds and re-tiers those. Any
+    /// other identity is John's own (Goal null).</summary>
+    static (string? Goal, bool Lead) Role(BoardDb db, string name) =>
+        db.Scalar("SELECT goal FROM goal_members WHERE identity=$n", ("n", name)) is string member ? (member, false)
+        : db.Scalar("SELECT name FROM goals WHERE lead=$n COLLATE NOCASE", ("n", name)) is string led ? (led, true) : (null, false);
 
     /// <summary>The tier a swarm session launches at: when the governor steps down, the cheaper recommended tier (enforcing) or
     /// the stored one with a would-have log line (advisory). Null means the stored column.</summary>
@@ -413,14 +424,15 @@ public sealed partial class Identities
             foreach (var n in held.Keys.ToList())
                 if (Get(db, n)?["state"]?.ToString() != "queued") held.Remove(n); // stopped or forgotten while held
             var v = Judge(db);
-            var running = Running(db);
-            var excess = v.Excess(running);
+            var pool = Budget.Read(db, MaxSessions(data), v);
+            var running = pool.Running;
+            var excess = v.Fresh ? Math.Max(0, running - pool.Governed) : 0; // stale: nothing to shed on
             var victims = excess == 0 ? [] : db.Rows(ShedOrder).Select(r => r["name"]!.ToString()).Take(excess).ToList();
             if (excess > victims.Count)
             {
                 var johns = db.Rows("SELECT name FROM identities WHERE state='running' AND name NOT IN (SELECT identity FROM goal_members) "
                     + "AND name NOT IN (SELECT lead FROM goals) ORDER BY name").Select(r => r["name"]!.ToString());
-                var warning = $"governor: {running} sessions running against a cap of {v.Cap}; John's own identities ({string.Join(", ", johns)}) "
+                var warning = $"governor: {running} sessions running against a cap of {pool.Governed}; John's own identities ({string.Join(", ", johns)}) "
                     + "are over it and are never stopped automatically";
                 if (warning != warned) Log.Warn(warning);
                 warned = warning;
@@ -433,7 +445,7 @@ public sealed partial class Identities
                 {
                     Mark(db, name, "queued");
                     held[name] = v.Why;
-                    Log.Warn($"governor: shed {name} ({running} running, cap {v.Cap}): {v.Why}");
+                    Log.Warn($"governor: shed {name} ({running} running, cap {pool.Governed}): {v.Why}");
                     shed.Add(name);
                 }
             }
@@ -442,7 +454,7 @@ public sealed partial class Identities
                 foreach (var name in victims.Where(wouldShedNow.Add))
                 {
                     wouldShed++;
-                    Log.Info($"governor (advisory): would have shed {name} ({running} running, cap {v.Cap}): {v.Why}");
+                    Log.Info($"governor (advisory): would have shed {name} ({running} running, cap {pool.Governed}): {v.Why}");
                 }
                 wouldShedNow.IntersectWith(victims);
             }
@@ -472,6 +484,7 @@ public sealed partial class Identities
             {
                 ["would_queue"] = wouldQueue, ["would_shed"] = wouldShed,
                 ["held"] = new JsonArray([.. held.Keys.Order().Select(n => (JsonNode)n)]),
+                ["pool"] = Counts(),
             };
         return Governor.Ui(store, data, UsageFailing(), extra);
     }

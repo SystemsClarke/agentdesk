@@ -121,6 +121,48 @@ public sealed class GovernorTests(ITestOutputHelper output)
         Assert.True(double.IsFinite(flat.Rate(10, S)));
     }
 
+    /// <summary>The 161% forecast from the live core.log (2026-09-27), rebuilt from a series shaped like the recorded one: the week
+    /// resets Saturday 08:00, sampling starts that afternoon at 9%, John burns 1.7-3%/h for four session-free hours, then a swarm of
+    /// 1-4 sessions runs through the night with two bursts, and the hourly rate falls to about nothing. With only four session-free
+    /// hours the starvation estimate stands in, and its regression slope is negative (the swarm ran while John slept), so it clamps
+    /// to the 0.25 floor and nearly everything is John's. The estimate is a plain mean of its first 24 hours, and Baseline used to
+    /// spread that flat over the 137 hours to the reset, nights included, with no cap: 1.17%/h x 137 h = 161% of a 100% plan.</summary>
+    [Fact]
+    public void A_young_estimate_never_forecasts_more_than_is_left()
+    {
+        var start = new DateTimeOffset(2026, 9, 26, 15, 0, 0, TimeSpan.Zero);
+        var reset = new DateTimeOffset(2026, 10, 3, 8, 0, 0, TimeSpan.Zero);
+        // %/h and sessions for each hour from 15:00 Saturday: John alone, then the swarm, then a quiet swarm.
+        (double Rate, int Sessions)[] hours =
+        [
+            (1.7, 0), (3, 0), (2.2, 0), (3, 0), (4, 1), (2, 1), (2, 1), (2, 1), (2.1, 3), (1, 4), (1, 4), (4.4, 4), (1, 4), (0, 4), (0, 4),
+            (0, 4), (5.4, 4), (0, 4), (0, 4), (0, 4), (0, 4), (1, 4), (1, 4), (1, 4),
+        ];
+        var samples = new List<UsageSample>();
+        var pct = 9.0;
+        for (var t = start; t < start.AddHours(hours.Length); t = t.AddMinutes(5))
+        {
+            var (rate, sessions) = hours[(int)(t - start).TotalHours];
+            samples.Add(new(t, Math.Floor(pct), reset.AddMinutes(t.Minute % 10 == 0 ? -1 : 0), 10, null, sessions)); // the feed's reset wobbles by a minute
+            pct += rate / 12;
+        }
+        var now = start.AddHours(hours.Length).AddMinutes(-2);
+        var m = Governor.Train(samples, S);
+        var a = Governor.Advise(m, samples[^1], 4, now, S);
+        Assert.Equal(("estimated", true), (m.Source, m.GlobalN < 6)); // too few session-free hours to measure John
+        Assert.True(m.Slope < 0 && m.PerSession(S) == 0.25, $"slope {m.Slope}, per session {m.PerSession(S)}");
+        Assert.True(m.EstMean * a.ResetInHours > 100, $"the unshrunk estimate forecasts {m.EstMean * a.ResetInHours:0}%: the bug needs more than the whole plan");
+
+        output.WriteLine($"used {a.Used}%, {a.ResetInHours:0.#} h to the reset: unshrunk {m.EstMean:0.###}%/h x T = {m.EstMean * a.ResetInHours:0.#}%, now {m.Rate(0, S):0.###}%/h, forecast {a.Baseline:0.#}%, reserve {a.Reserve:0.#}%");
+        Assert.True(a.Baseline <= a.Remaining, $"forecast {a.Baseline} of {a.Remaining} left");
+        Assert.True(a.Used + a.Baseline <= 100);
+        Assert.InRange(a.Reserve, 0, Governor.MaxReserve);
+        Assert.True(a.ProjectedEnd <= 100);
+        // Shrunk toward the default until it has a day of its own, the young estimate is closer to a plausible week.
+        Assert.InRange(m.Rate(0, S), S.DefaultRate, m.EstMean);
+        Assert.Contains($"forecast {a.Baseline:0.#}%", a.Reason);
+    }
+
     [Fact]
     public void The_verdict_fails_closed_and_steps_tiers_down_only()
     {
@@ -134,11 +176,10 @@ public sealed class GovernorTests(ITestOutputHelper output)
         var v = Governor.Judge(db, data, now, false);
         Assert.True(v.Fresh);
         Assert.False(v.Enforce); // off by default
-        Assert.True(v.Allows(3));
-        Assert.False(Governor.Judge(db, data, now, usageFailing: true).Allows(0));
+        Assert.True(Budget.Read(db, 99, v).Governed > 3); // the pool's ceiling comes from a fresh plan
+        Assert.Equal(0, Budget.Read(db, 99, Governor.Judge(db, data, now, usageFailing: true)).Governed); // fail closed: no swarm slot
         var stale = Governor.Judge(db, data, now.AddMinutes(2), false);
-        Assert.False(stale.Allows(0));
-        Assert.Equal(0, stale.Excess(50)); // stale: nothing to shed on
+        Assert.Equal((false, 0), (stale.Fresh, Budget.Read(db, 99, stale).Governed)); // stale: no swarm slot, and nothing to shed on
         Assert.Equal(("sonnet", "haiku", "haiku", "sonnet"), (v.Model("opus", lead: true), v.Model("sonnet", lead: false), v.Model("haiku", lead: false), v.Model("sonnet", lead: true)));
     }
 

@@ -152,7 +152,8 @@ def status(cmd: "Commands", text: str) -> str:
     return "\n".join([
         f"*Slack* {'up' if _ago(slack.get('ts')) < 90 else 'down'}",
         f"*Concierge* {'on' if c.get('on') else 'off'}" + (f", holding {', '.join('#' + str(h) for h in c['held'])}" if c.get("held") else ""),
-        f"*Agents* {count('running')} running / cap {sessions.get('max', '?')}, {count('queued')} queued",
+        f"*Agents* {sessions['summary']}, {count('queued')} queued" if sessions.get("summary")  # the session pool
+        else f"*Agents* {count('running')} running / cap {sessions.get('max', '?')}, {count('queued')} queued",
         f"*Open questions* {len(qs.get('threads', []))}",
         f"*Usage* {(s.get('usage') or {}).get('summary', '?')}"]
         + ([f"*Governor* {governor.removeprefix('governor: ')}"] if governor else []))

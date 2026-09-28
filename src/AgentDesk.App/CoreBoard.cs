@@ -127,7 +127,8 @@ public sealed class CoreBoard : IBoard, IDisposable
         var mode = g.TryGetProperty("enforcing", out var e) && e.ValueKind is JsonValueKind.True or JsonValueKind.False ? (e.GetBoolean() ? "enforcing" : "advisory")
             : g.TryGetProperty("advisory", out var a) && a.ValueKind is JsonValueKind.True or JsonValueKind.False ? (a.GetBoolean() ? "advisory" : "enforcing") : null;
         return new(Int(g, "samples"), Num(g, "remaining") ?? 0, Num(g, "reset_in_hours") ?? 0, Num(g, "projected_end_pct") ?? 0, Cap("total_sessions"),
-            Cap("swarms"), Cap("members_per_swarm"), Str(g, "reason") ?? "", Str(g, "summary") ?? "", [.. Arr(g, "series").Select(v => v.GetDouble())], mode);
+            Cap("swarms"), Cap("members_per_swarm"), Str(g, "reason") ?? "", Str(g, "summary") ?? "", [.. Arr(g, "series").Select(v => v.GetDouble())], mode,
+            g.TryGetProperty("pool", out var p) && p.ValueKind == JsonValueKind.Object ? Str(p, "summary") ?? "" : "");
     }
 
     static GoalRow ToGoal(JsonElement g) => new(Str(g, "name") ?? "", Str(g, "state") ?? "draft", Str(g, "objective") ?? "", Str(g, "lead") ?? "",
