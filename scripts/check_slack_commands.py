@@ -96,6 +96,9 @@ with contextlib.redirect_stderr(io.StringIO()):
     out = every.handle("status", JOHN)
     check("status has slack, concierge, agents/cap, questions, usage",
           all(s in out for s in ("Slack* down", "Concierge* off", "1 running / cap 3", "Open questions* 2", "12% used", "Governor* 20% spendable")), out)
+    core.answers["ui:status"]["sessions"] = {"running": 3, "max": 4, "summary": "3 of 4 sessions (plan) · John 1 · Concierge 2/2"}
+    out = every.handle("status", JOHN)
+    check("status shows the session pool when the core has one", "Agents* 3 of 4 sessions (plan) · John 1 · Concierge 2/2" in out, out)
     check("update without ui:update says so", "isn't available yet" in every.handle("update", JOHN))
     core.answers["ui:update"] = {"current": "0.1.40", "latest": "0.1.42"}
     out = every.handle("update apply", JOHN)

@@ -273,8 +273,9 @@ measured.
 """),
         new("member_spawn", """
 For a running goal's lead: start a member identity <goal>-<name> with one
-small task (model haiku, sonnet or opus; sonnet by default). Refused past the
-goal's max_members; past the machine's session cap it queues. The member
+small task (model haiku, sonnet or opus; sonnet by default). It starts when
+the session pool allows (the goal's max_members, its share, the ceiling) and
+queues until then. The member
 hands off with pass_the_torch or retires with member_done. work_id (a Work to
 Hire item the lead has claimed) hands that claim to the member, which then
 completes it with complete_work; one it leaves unfinished returns to the lead.

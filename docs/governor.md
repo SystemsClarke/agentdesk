@@ -34,8 +34,16 @@ Consecutive samples in the same week become hourly rates (weekly-% per hour; an 
   rather than the buckets' 2 weeks because the estimate is noisier (it inherits the per-session error) and because
   session-free hours become rare, so the few that exist should be remembered.
 
+- **Young estimates.** The global rate and the starvation estimate are plain means of their first hours (an EWMA runs as a
+  running mean until 1/alpha observations), so until they have a day of their own they are shrunk toward
+  `governor_default_rate`, with 24 hours of weight. On 2026-09-27 the first day of samples was John's busiest: four
+  session-free hours at 1.7-3%/h, then a swarm whose regression slope came out negative (it ran while John slept), so almost
+  every hour was John's. That 1.17%/h, spread flat over the 137 hours to the reset, forecast 161% of a 100% plan
+  (`GovernorTests.A_young_estimate_never_forecasts_more_than_is_left` rebuilds it).
+- **Caps.** John's forecast is at most the % left, and the reserve at most 25 weekly % (and at most the % left).
+
 ```
-spendable    = max(0, remaining - margin - E[baseline until reset] - k * sigma * sqrt(T hours))
+spendable    = max(0, remaining - margin - min(remaining, E[baseline until reset]) - min(25, remaining, k * sigma * sqrt(T hours)))
 allowed rate = spendable / T
 sessions     = min(governor_max_sessions, floor(allowed rate / per-session burn))
 ```
@@ -48,6 +56,26 @@ Caps: a swarm is a lead plus `min(governor_max_members, sessions - 1)` members; 
 enforcing, it sheds them: holding the running ones would take the window past 90%, which the milestone 7 check forbids. When fewer
 than one session is affordable, or the 5-hour window is at 75% or more, it recommends stepping down a tier: members on haiku,
 leads on sonnet (otherwise members sonnet, leads opus). Each identity has a `model` (default `sonnet`), passed as `--model`.
+
+## The session pool
+
+Every running Claude session counts in one pool (`Budget` in Governor.cs): John's own identities, goal leads and members, and the
+Concierge's lead and members. A Phoenix successor takes its predecessor's place and never adds a slot.
+
+- **One ceiling.** `max_sessions` (Options' "Sessions at once", default 3), and while the governor enforces, never more than its
+  `total_sessions` (0 when it fails closed). Advisory, the ceiling is `max_sessions` and the core logs what the lower one would
+  have done. `why` says which: `max_sessions`, `plan` or `fail closed`.
+- **One question.** `Budget.CanStart(goal, lead, ceiling)` answers every start: `identity_start`, a goal's `member_spawn`, the
+  Concierge's dispatch, lead wakes and the core's resume all go through `Identities.Drain`, which asks it. John's own identities
+  answer only to `max_sessions`: the plan never gates them and nothing sheds them.
+- **Fair share.** Goals (the Concierge is one) split the swarm's part, the ceiling minus John's running identities: each gets
+  its lead first, then members round-robin, the goal that has waited longest (its oldest queued identity) first. A share is
+  never more than a goal wants, and `max_members` bounds its members within the pool: a `member_spawn` past it is queued, not
+  refused. A goal starts another session only while it runs fewer than its share, so a slot a member frees goes to the goal
+  that has waited longest.
+- **One view.** `ui:status`'s `sessions` and `ui:governor`'s `pool`: the ceiling and why, running by owner (John, each goal, the
+  Concierge), queued by goal, and each goal's share, with a one-line `summary` that the window's budget panel, Options' "Sessions
+  at once", Slack `status` and the ops console show.
 
 ## Settings (`settings.json` in the data folder)
 
@@ -68,14 +96,15 @@ Every session start goes through `Identities.Drain`: `identity_start`, a goal's 
 The governor applies to **swarm identities**, a goal's lead (`goals.lead`) or member (`goal_members`); John's own identities
 (adopted, or made with `agent new`) are never gated, re-tiered or shed, though they count as running.
 
-- **Gate.** A swarm identity starts only while `running < total_sessions` (all running identities, John's included). Otherwise
-  it stays `queued` rather than failing: `identity_start` and `member_spawn` return the queued row with a `governor` note, and a
-  wake says why. Every 15 s the core's governor tick (`Identities.Tick`) drains again, so a held start launches, with the prompt
-  it was given, as soon as the governor allows. `max_sessions` still applies on top.
+- **Gate.** A swarm identity starts only while the pool is under `min(max_sessions, total_sessions)` (all running identities,
+  John's included) and its goal is under its share ([The session pool](#the-session-pool)). Otherwise it stays `queued` rather
+  than failing: `identity_start` and `member_spawn` return the queued row with a `governor` note, and a wake says why. Every
+  15 s the core's governor tick (`Identities.Tick`) drains again, so a held start launches, with the prompt it was given, as
+  soon as the pool allows.
 - **Phoenix is never blocked.** A `pass_the_torch` restart replaces a session in the same slot (`Identities.Phoenix` launches
   directly, not through `Drain`), so it is never a new session, never counted as one, and runs even when the governor would
   allow nothing, including fail closed. It does take the step-down tier.
-- **Shedding.** When `total_sessions` drops below the number running (the 5-hour guard at 90%, or the reserve outgrowing what is
+- **Shedding.** When the ceiling, `min(max_sessions, total_sessions)`, drops below the number running (the 5-hour guard at 90%, or the reserve outgrowing what is
   left), the tick stops swarm sessions until it is back within the cap: members before leads, the Concierge's members first,
   then the longest idle first (idle means the last board write, `presence.seen_ts`, else the launch). A shed identity goes back
   to `queued`, not `stopped`, so it resumes its conversation (`--resume`) when the governor allows. John's own identities are

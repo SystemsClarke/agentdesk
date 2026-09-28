@@ -27,7 +27,7 @@ public sealed class Concierge(BoardStore store, Goals goals, string folder)
         4. The member completes the item with complete_work (its report lands on the item's thread) and retires with member_done.
            One that retires without completing hands the item back to you: re-dispatch it, or complete_work it yourself saying
            why it could not be done.
-        Stay within the goal's max_members: when it is full, stop; member_done wakes you. A decision only John can make goes to
+        At most max_members run at once; more queue and start as members finish, so dispatch only what you have claimed. A decision only John can make goes to
         ask_human, never a guess. Between wakes, stop.
         """;
 

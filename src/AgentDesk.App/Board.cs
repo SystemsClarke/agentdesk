@@ -42,9 +42,10 @@ public sealed record GoalDetail(GoalRow Row, string? Hypothesis, string? Measure
 public sealed record Slot(int N, string? Goal, string? Channel, string? Persona);
 
 /// <summary>The usage governor (ui:governor): Remaining is the week's % left, the caps are today's allowance, Series the week's
-/// weekly % by hour. Mode is "advisory" or "enforcing", or null when the core does not say.</summary>
+/// weekly % by hour. Mode is "advisory" or "enforcing", or null when the core does not say. Pool is the session pool in one line:
+/// running of the ceiling and why, then running by owner (ui:governor's pool.summary).</summary>
 public sealed record Budget(int Samples, double Remaining, double ResetInHours, double ProjectedEnd, int Sessions, int Swarms, int Members,
-    string Reason, string Summary, IReadOnlyList<double> Series, string? Mode);
+    string Reason, string Summary, IReadOnlyList<double> Series, string? Mode, string Pool = "");
 
 /// <summary>Everything the main menu, SysOp, Who's On and Options screens show besides the channel lists.</summary>
 public sealed record BoardStatus(

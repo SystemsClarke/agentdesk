@@ -133,7 +133,7 @@ public sealed class GoalsTests : IDisposable
     }
 
     [Fact]
-    public async Task The_member_budget_holds()
+    public async Task Max_members_bounds_a_goal_inside_the_pool()
     {
         var lead = await Running(members: 2);
         await Assert.ThrowsAsync<ArgumentException>(() => goals.Spawn(new Caller(Guid.NewGuid().ToString(), "x", dir, "claude-code", 1, "x"), "toy", "a", "t", null));
@@ -141,15 +141,18 @@ public sealed class GoalsTests : IDisposable
         await goals.Spawn(lead, "toy", "b", "try thirds", null);
         Assert.Equal(("running", "haiku"), (Identity("toy-a").GetProperty("state").GetString(), Identity("toy-a").GetProperty("model").GetString()));
         Assert.Contains("Your task for goal toy: try halving", Command("toy-a"));
-        var over = await Assert.ThrowsAsync<ArgumentException>(() => goals.Spawn(lead, "toy", "c", "one too many", null));
-        Assert.StartsWith("budget:", over.Message);
+        // max_members bounds the goal inside the session pool: a third member is not refused, it waits for a slot (4 of 6 would be free).
+        var over = Json(goals.Spawn(lead, "toy", "c", "one too many", null));
+        Assert.Equal("queued", over.GetProperty("state").GetString());
+        Assert.Contains("goal toy has 2 of its max_members 2 running", over.GetProperty("governor").GetString());
 
         var a = As("toy-a");
         Value("300");
         Assert.Equal("toy-a", Json(goals.ExperimentDone(a, "toy", Json(goals.ExperimentStart(a, "toy", "halve")).GetProperty("n").GetInt32())).GetProperty("owner").GetString());
         await goals.MemberDone(a, "halving alone is not enough");
         await Until(() => Json(ids.List()).GetProperty("identities").EnumerateArray().All(r => r.GetProperty("name").GetString() != "toy-a"), "toy-a is forgotten");
-        await goals.Spawn(lead, "toy", "c", "now there is room", null);
+        Assert.Equal("running", Identity("toy-c").GetProperty("state").GetString()); // the freed slot went to the member that waited
+        Assert.Contains("Your task for goal toy: one too many", Command("toy-c"));
         Assert.Equal(["toy-b", "toy-c"], Json(goals.Status("toy")).GetProperty("members").EnumerateArray().Select(m => m.GetProperty("identity").GetString()).Order());
     }
 

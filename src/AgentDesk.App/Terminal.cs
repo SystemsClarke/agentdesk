@@ -534,7 +534,7 @@ public partial class MainWindow
     {
         return
         [
-            ("Sessions at once", $"{Pref("max_sessions", 3)}   (←/→)  ·  {st?.LiveSessions ?? 0} running now", "max_sessions"),
+            ("Sessions at once", $"{Pref("max_sessions", 3)}   (←/→)  ·  {(st?.Budget?.Pool is { Length: > 0 } pool ? pool : $"{st?.LiveSessions ?? 0} running now")}", "max_sessions"),
             ("Concierge", (st?.ConciergeOn == true ? "ON" : "off") + "   ↵ toggles (same as Ctrl+W)", "concierge"),
             ("Theme", $"{Palettes[Theme].Label}   ({Array.IndexOf(ThemeOrder, Theme) + 1} of {ThemeOrder.Length}, ←/→ to browse, from your VS Code themes)", "theme"),
             ("Modem screech on connect", Pref("screech", false) ? "ON" : "off", "screech"),
@@ -638,6 +638,7 @@ public partial class MainWindow
                 .. If(b.Mode != null, S("   "), S($" {b.Mode} ", b.Mode == "enforcing" ? "pk b inv" : "cy inv"))],
             [S("Today's allowance: ", "mu"), S(N(b.Sessions, "session"), "fg b"), S(" · ", "mu"), S($"{N(b.Swarms, "swarm")} x {N(b.Members, "member")}")],
             [S(b.Reason, "fa")],
+            .. b.Pool.Length > 0 ? [[S("Session pool: ", "mu"), S(b.Pool)]] : new List<Line>(),
             .. b.Series.Count > 1 ? [[S("This week  ", "mu"), .. Spark(b.Series, "cy", "%", W - 36)]] : new List<Line>(),
         ];
     }

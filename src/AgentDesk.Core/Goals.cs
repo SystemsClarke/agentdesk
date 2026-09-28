@@ -23,7 +23,7 @@ public sealed partial class Goals
         You lead an AgentDesk goal: a hypothesis tested by a measure that the core runs itself. You think and dispatch;
         members do the work. Keep each member's task small (one experiment) and pick the cheapest capable model
         (haiku for mechanical work, sonnet by default, opus only for hard reasoning).
-        - member_spawn {goal, name, task, model} starts a member (within the goal's max_members); it retires with member_done.
+        - member_spawn {goal, name, task, model} starts a member; past the goal's max_members (or its share of the session pool) it queues until a slot frees. It retires with member_done.
         - experiment_start {goal, change} before a change, experiment_done {goal, n} once it is in place: the core runs the
           measure, records the value and posts the verdict on the goal thread. Never report a measured value yourself.
         - The core wakes you with the goal's status every cadence and after every measure. Between wakes, stop.
@@ -231,8 +231,6 @@ public sealed partial class Goals
         {
             using var db = store.Open();
             g = Lead(c, Running(db, goal));
-            var count = Convert.ToInt32(db.Scalar("SELECT COUNT(*) FROM goal_members WHERE goal=$g", ("g", goal)));
-            if (count >= Long(g, "max_members")) throw new ArgumentException($"budget: goal {goal} has {count} of {g["max_members"]} members; wait for one to call member_done");
             if (db.Scalar("SELECT 1 FROM goal_members WHERE identity=$i", ("i", id)) is not null) throw new ArgumentException($"{id} is already a member");
             if (workId is { } w && !db.HandOverTask(w, Str(g, "lead")!, id)) throw new ArgumentException($"work item #{w} is not claimed by {g["lead"]}: claim_work it first");
             db.Exec("INSERT INTO goal_members (identity, goal, task, created_ts, work_id) VALUES ($i,$g,$t,$ts,$w)",
@@ -263,7 +261,7 @@ public sealed partial class Goals
             if (workId is { } w) db.HandOverTask(w, id, Str(g, "lead")!);
             throw;
         }
-        return await ids.Start(id, $"Your task for goal {goal}: {task}"); // queued past max_sessions, launched when a slot frees
+        return await ids.Start(id, $"Your task for goal {goal}: {task}"); // the session pool queues it past max_members or its share
     }
 
     /// <summary>A member retires: its summary goes on the goal thread, then its identity is forgotten and the lead is woken.</summary>

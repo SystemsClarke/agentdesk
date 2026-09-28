@@ -119,7 +119,7 @@ function renderStatus(st) {
   conciergeOn = c.on;
   show('concierge', `<dl><dt>SlackNet</dt><dd class="${up ? 'up' : 'down'}">${sl ? `${up ? 'up' : 'down'}, heartbeat ${ago(sl.ts)} ago` : 'down, no heartbeat file'}${st.bridge && st.bridge.state === 'stale-orphan' ? `<br><strong>bridge: stale-orphan</strong>, pid ${esc(st.bridge.orphan_pid)} is alive but silent; kill it and the core starts its own` : ''}${sl && sl.last_relay ? `<br><small>last relay ${ago(sl.last_relay.ts)} ago, thread ${esc(sl.last_relay.thread_id)}</small>` : ''}</dd>
     <dt>Concierge</dt><dd class="${c.on ? 'up' : 'down'}">${c.on ? 'on' : 'off'}, ${esc(c.open)} open item(s) waiting${c.held.length ? `, holding ${c.held.map(h => '#' + esc(h)).join(', ')}` : ''}${c.members.length ? `<br><small>swarm: ${c.members.map(m => esc(m.identity)).join(', ')}</small>` : ''}</dd>
-    <dt>Agents</dt><dd>${esc(st.sessions.running)} running, cap ${esc(st.sessions.max)}</dd></dl>`);
+    <dt>Agents</dt><dd>${esc(st.sessions.summary ?? `${st.sessions.running} running, cap ${st.sessions.max}`)}</dd></dl>`);
   $('toggle').textContent = c.on ? 'Turn the Concierge off' : 'Turn the Concierge on';
   const pct = (st.usage.lines.join(' ').match(/(\d+)% used/) || [])[1];
   show('usage', `${pct ? `<div class="meter" role="meter" aria-label="5-hour window used" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}"><span style="width:${pct}%"></span></div>` : ''}

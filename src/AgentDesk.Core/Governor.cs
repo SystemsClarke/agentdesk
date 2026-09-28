@@ -36,9 +36,16 @@ public sealed class BurnModel
     public bool SlopeOk;
 
     /// <summary>A bucket needs two observed hours before it outweighs the global rate, which needs six before it outweighs the
-    /// starvation estimate, which needs six before it outweighs the default.</summary>
+    /// starvation estimate, which needs six before it outweighs the default. The global rate and the estimate start as plain
+    /// means of the first hours seen, so a young one is shrunk toward the default (<see cref="PriorHours"/> hours of it): a
+    /// first day that happens to be John's busiest must not become his rate for the whole week.</summary>
     public double Rate(int hourOfWeek, GovernorSettings s) =>
-        N[hourOfWeek] >= 2 ? Mean[hourOfWeek] : GlobalN >= 6 ? GlobalMean : EstN >= 6 ? EstMean : s.DefaultRate;
+        N[hourOfWeek] >= 2 ? Mean[hourOfWeek] : GlobalN >= 6 ? Shrunk(GlobalMean, GlobalN, s) : EstN >= 6 ? Shrunk(EstMean, EstN, s) : s.DefaultRate;
+
+    /// <summary>The weight, in observed hours, of the default rate a young global rate or estimate is shrunk toward.</summary>
+    public const double PriorHours = 24;
+
+    static double Shrunk(double mean, int n, GovernorSettings s) => (n * mean + PriorHours * s.DefaultRate) / (n + PriorHours);
 
     /// <summary>Per-hour sigma, from the global variance: it includes the daily pattern, so it errs high (a bigger reserve).</summary>
     public double Sigma(GovernorSettings s) => GlobalN >= 6 ? Math.Max(0.1, Math.Sqrt(GlobalVar)) : EstN >= 6 ? Math.Max(0.1, Math.Sqrt(EstVar)) : s.DefaultSigma;
@@ -69,6 +76,8 @@ public static class Governor
     public static readonly double LongAlpha = 1 - Math.Pow(0.5, 1.0 / 672);
     /// <summary>A sample older than this, or a failing /usage, allows no new swarm sessions (fail closed).</summary>
     public const double StaleMinutes = 30;
+    /// <summary>The most the reserve for John's noise holds back, in weekly %: a quarter of the plan.</summary>
+    public const double MaxReserve = 25;
     static readonly CultureInfo Inv = CultureInfo.InvariantCulture;
 
     public const string Schema = "CREATE TABLE IF NOT EXISTS usage_samples (id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL UNIQUE, weekly_pct REAL NOT NULL,"
@@ -172,10 +181,11 @@ public static class Governor
         while (reset <= now) (used, reset) = (0, reset.AddDays(7)); // the week turned over since the sample
         var hours = Math.Max((reset - now).TotalHours, 1 / 60.0);
         var remaining = Math.Max(0, 100 - used);
-        var baseline = Baseline(m, now, reset, s);
+        // John cannot burn more than what is left of the plan, and the reserve for his noise is never more than MaxReserve.
+        var baseline = Math.Min(Baseline(m, now, reset, s), remaining);
         var sigma = m.Sigma(s);
-        var reserve = s.K * sigma * Math.Sqrt(hours);
-        var spendable = Spendable(remaining - s.Margin, baseline, sigma, hours, s.K);
+        var reserve = Math.Min(s.K * sigma * Math.Sqrt(hours), Math.Min(MaxReserve, remaining));
+        var spendable = Math.Max(0, remaining - s.Margin - baseline - reserve);
         var rate = spendable / hours;
         var per = m.PerSession(s);
         var five = latest.FiveHourReset is { } f && f <= now ? 0 : latest.FiveHourPct ?? 0;
@@ -228,24 +238,18 @@ public static class Governor
 
     // ---- enforcement (milestone 7)
 
-    /// <summary>The governor's answer for a session start, a shed or a launch tier, at one moment. <see cref="Fresh"/> is false
-    /// when there is no sample, the latest is older than <see cref="StaleMinutes"/>, or /usage is failing: then no new swarm
-    /// session starts, and nothing is shed (there is nothing to shed on).</summary>
+    /// <summary>The governor's answer at one moment: its advice (the plan's total_sessions, which <see cref="Budget"/> turns into
+    /// the pool's ceiling) and the launch tier. <see cref="Fresh"/> is false when there is no sample, the latest is older than
+    /// <see cref="StaleMinutes"/>, or /usage is failing: then no new swarm session starts, and nothing is shed (there is nothing
+    /// to shed on).</summary>
     public sealed record Verdict(GovernorSettings Settings, Advice? Advice, bool Fresh, string Why)
     {
         public bool Enforce => Settings.Enforce;
-
-        /// <summary>May one more swarm session start with <paramref name="running"/> identity sessions running?</summary>
-        public bool Allows(int running) => Fresh && Advice is { } a && running < a.TotalSessions;
-
-        /// <summary>How many swarm sessions to stop so the running count is back within the recommended total.</summary>
-        public int Excess(int running) => Fresh && Advice is { } a ? Math.Max(0, running - a.TotalSessions) : 0;
 
         /// <summary>The tier to launch at: the recommended one when stepping down and it is cheaper than the stored one, else the stored one.</summary>
         public string Model(string stored, bool lead) => Advice is { StepDown: true } a && Array.IndexOf(Models, lead ? a.LeadModel : a.MemberModel) is var r and >= 0
             && Array.IndexOf(Models, stored) is var had && had > r ? Models[r] : stored;
 
-        public string Cap => Advice is { } a ? a.TotalSessions.ToString(Inv) : "none";
     }
 
     public static Verdict Judge(BoardDb db, string data, DateTimeOffset now, bool usageFailing)
@@ -319,5 +323,121 @@ public static class Governor
     {
         using var db = store.Open();
         return Task.FromResult(Report(db, data, DateTimeOffset.UtcNow, usageFailing, enforcement).ToJsonString(AgentDesk.Contracts.Wire.Indented));
+    }
+}
+
+/// <summary>
+/// The one session pool: every running identity counts, John's own included, and a Phoenix successor takes its predecessor's
+/// place rather than a new one. The ceiling is max_sessions (Options' "Sessions at once"), and, while the governor enforces, never
+/// more than the plan's total_sessions (advisory, the core only logs what that lower ceiling would have done). John's identities
+/// are never gated by the plan or shed; they only shrink the swarm's part, the ceiling minus them. Goals, the Concierge among them,
+/// split that part: each gets its lead first, then members round-robin, the goal waiting longest first, and a goal's max_members
+/// bounds its members within the pool. Identities.Drain asks <see cref="CanStart"/> before every start (identity_start,
+/// member_spawn, the Concierge's dispatch, lead wakes, the core's resume), and its tick sheds against <see cref="Governed"/>.
+/// </summary>
+public sealed record Budget
+{
+    /// <summary>A swarm identity that is running or queued: its goal, whether it leads it, and since when it has waited.</summary>
+    public sealed record Want(string Name, string Goal, bool Lead, bool Running, string Since);
+
+    /// <summary>max_sessions, John's hard maximum.</summary>
+    public int Hard { get; init; }
+    /// <summary>The governor's total_sessions, or null when it fails closed (no swarm session may start).</summary>
+    public int? Plan { get; init; }
+    public bool Enforce { get; init; }
+    public string PlanWhy { get; init; } = "";
+    public int Running { get; init; }
+    /// <summary>John's own identities running (any identity that is neither a goal's lead nor a member).</summary>
+    public int John { get; init; }
+    public IReadOnlyList<Want> Wants { get; init; } = [];
+    public IReadOnlyDictionary<string, int> MaxMembers { get; init; } = new Dictionary<string, int>();
+
+    /// <summary>The ceiling the governor would set: max_sessions, or the plan when that is lower, and 0 when it fails closed.</summary>
+    public int Governed => Math.Min(Hard, Plan ?? 0);
+
+    /// <summary>The ceiling that applies now: <see cref="Governed"/> while the governor enforces, else max_sessions.</summary>
+    public int Ceiling => Enforce ? Governed : Hard;
+
+    /// <summary>Why the ceiling is what it is: "max_sessions", "plan" or "fail closed".</summary>
+    public string Why => !Enforce || Governed >= Hard ? "max_sessions" : Plan is null ? "fail closed" : "plan";
+
+    public static Budget Read(BoardDb db, int hard, Governor.Verdict v)
+    {
+        var wants = db.Rows("""
+            SELECT i.name, i.state, i.updated_ts, COALESCE(m.goal, g.name) AS goal, m.identity IS NULL AS lead
+            FROM identities i LEFT JOIN goal_members m ON m.identity = i.name
+              LEFT JOIN goals g ON m.identity IS NULL AND g.lead = i.name COLLATE NOCASE
+            WHERE i.state IN ('running', 'queued') AND COALESCE(m.goal, g.name) IS NOT NULL
+            """).Select(r => new Want(r["name"]!.ToString(), r["goal"]!.ToString(), (long)r["lead"]! != 0, r["state"]!.ToString() == "running",
+                r["updated_ts"]?.ToString() ?? "")).ToList();
+        var running = Convert.ToInt32(db.Scalar("SELECT COUNT(*) FROM identities WHERE state='running'"), CultureInfo.InvariantCulture);
+        return new()
+        {
+            Hard = hard, Plan = v.Fresh ? v.Advice?.TotalSessions : null, Enforce = v.Enforce, PlanWhy = v.Why, Running = running,
+            John = running - wants.Count(w => w.Running), Wants = wants,
+            MaxMembers = db.Rows("SELECT name, max_members FROM goals").ToDictionary(r => r["name"]!.ToString(), r => (int)(long)r["max_members"]!, StringComparer.OrdinalIgnoreCase),
+        };
+    }
+
+    int Bound(string goal) => MaxMembers.GetValueOrDefault(goal);
+
+    /// <summary>Each goal's share of the swarm's part of <paramref name="ceiling"/>: leads first, then members round-robin, the goal
+    /// that has waited longest (its oldest queued identity) first; a goal never gets more than it wants, nor members past max_members.</summary>
+    public Dictionary<string, int> Shares(int ceiling)
+    {
+        var free = Math.Max(0, ceiling - John);
+        var goals = Wants.GroupBy(w => w.Goal, StringComparer.OrdinalIgnoreCase)
+            .Select(g => (Goal: g.Key, Lead: g.Any(w => w.Lead), Members: Math.Min(g.Count(w => !w.Lead), Bound(g.Key)),
+                Since: g.Where(w => !w.Running).Select(w => w.Since).DefaultIfEmpty("ï¿¿").Min(StringComparer.Ordinal)!))
+            .OrderBy(g => g.Since, StringComparer.Ordinal).ThenBy(g => g.Goal, StringComparer.OrdinalIgnoreCase).ToList();
+        var share = goals.ToDictionary(g => g.Goal, _ => 0, StringComparer.OrdinalIgnoreCase);
+        foreach (var g in goals.Where(g => g.Lead))
+            if (free > 0) (share[g.Goal], free) = (1, free - 1);
+        for (var more = true; more && free > 0;)
+        {
+            more = false;
+            foreach (var g in goals)
+                if (free > 0 && share[g.Goal] - (g.Lead ? 1 : 0) < g.Members) (share[g.Goal], free, more) = (share[g.Goal] + 1, free - 1, true);
+        }
+        return share;
+    }
+
+    /// <summary>May one more session start under <paramref name="ceiling"/>? Null means yes, else why not. John's own identities
+    /// (<paramref name="goal"/> null) answer only to max_sessions; a goal's lead or member also needs a free slot under the ceiling,
+    /// its goal under its fair share, and a member its goal under max_members.</summary>
+    public string? CanStart(string? goal, bool lead, int ceiling)
+    {
+        if (goal is null) return Running < Hard ? null : $"{Running} sessions running: max_sessions is {Hard}";
+        if (Running >= ceiling) return $"the pool is full: {Running} running, ceiling {ceiling}";
+        var mine = Wants.Where(w => w.Running && string.Equals(w.Goal, goal, StringComparison.OrdinalIgnoreCase)).ToList();
+        if (!lead && mine.Count(w => !w.Lead) >= Bound(goal)) return $"goal {goal} has {mine.Count(w => !w.Lead)} of its max_members {Bound(goal)} running";
+        var share = Shares(ceiling).GetValueOrDefault(goal);
+        return mine.Count < share ? null : $"goal {goal} has its share of the pool running ({mine.Count} of {share}) while other goals wait";
+    }
+
+    static string Owner(string goal) => goal.Equals(Concierge.Name, StringComparison.OrdinalIgnoreCase) ? "Concierge" : goal;
+
+    /// <summary>ui:status's "sessions" and ui:governor's "pool": the ceiling and why, running by owner (John, each goal, the
+    /// Concierge), queued by goal, and each goal's share. "max" is the ceiling, as ui:status's "sessions" always had it.</summary>
+    public JsonObject Report()
+    {
+        var shares = Shares(Ceiling);
+        var owners = new JsonArray(new JsonObject { ["owner"] = "John", ["running"] = John });
+        var line = new List<string> { $"John {John}" };
+        foreach (var g in Wants.GroupBy(w => w.Goal, StringComparer.OrdinalIgnoreCase).OrderBy(g => g.Key, StringComparer.OrdinalIgnoreCase))
+        {
+            var (run, queued, share) = (g.Count(w => w.Running), g.Count(w => !w.Running), shares.GetValueOrDefault(g.Key));
+            owners.Add((JsonNode)new JsonObject { ["owner"] = Owner(g.Key), ["goal"] = g.Key, ["running"] = run, ["queued"] = queued, ["share"] = share, ["bound"] = 1 + Bound(g.Key) });
+            line.Add($"{Owner(g.Key)} {run}/{share}" + (queued > 0 ? $", {queued} queued" : ""));
+        }
+        var reason = Why switch { "plan" => $"the usage plan: {PlanWhy}", "fail closed" => PlanWhy, _ => "max_sessions (Sessions at once)" }
+            + (!Enforce && Governed < Hard ? $"; advisory: the plan would hold it at {Governed}" : "");
+        return new()
+        {
+            ["running"] = Running, ["max"] = Ceiling, ["ceiling"] = Ceiling, ["why"] = Why, ["reason"] = reason, ["max_sessions"] = Hard,
+            ["plan"] = Plan, ["governed"] = Governed, ["enforcing"] = Enforce, ["john"] = John, ["swarm"] = Math.Max(0, Ceiling - John),
+            ["queued"] = Wants.Count(w => !w.Running), ["owners"] = owners,
+            ["summary"] = $"{Running} of {Ceiling} sessions ({Why}) · {string.Join(" · ", line)}",
+        };
     }
 }

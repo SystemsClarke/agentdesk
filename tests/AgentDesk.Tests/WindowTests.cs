@@ -85,6 +85,8 @@ epo"));
         Assert.Equal(11 + 56 + "  0–83.5%, last 83.5%".Length, text[3].Length); // 168 hours squeezed to the width
         Assert.Single(MainWindow.BudgetLines(b with { Samples = 0 }, 92));
         Assert.Equal(3, MainWindow.BudgetLines(b with { Series = [], Mode = null }, 92).Count);
+        var pooled = MainWindow.BudgetLines(b with { Pool = "4 of 6 sessions (max_sessions) · John 1 · Concierge 1/1 · g8 2/3" }, 92).Select(Text).ToList();
+        Assert.Equal("Session pool: 4 of 6 sessions (max_sessions) · John 1 · Concierge 1/1 · g8 2/3", pooled[3]); // under the allowance's reason
         Assert.Equal("18% left · resets in 1d 6h · forecast 97.4% · 5 sessions (2x2) · advisory", MainWindow.GovLine(b));
         Assert.StartsWith("no usage samples yet", MainWindow.GovLine(null));
     }
