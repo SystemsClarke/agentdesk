@@ -76,7 +76,12 @@ public interface IBoard
     Task<string?> WebUrlAsync();
     /// <summary>One of John's actions the core carries out (ui:check_prs, ...); returns its "said" line (ui:adopt's "note") for the flash, if any.</summary>
     Task<string?> ActAsync(string request, object? args = null);
+    /// <summary>Ctrl+D's local speech-to-text: "start", "poll" (the words so far) or "stop".</summary>
+    Task<DictationState> DictateAsync(string action);
 }
+
+/// <summary>State is downloading (first use), loading, listening or done; Text is everything heard so far.</summary>
+public sealed record DictationState(string State, string Text, string? Error, double Progress);
 
 /// <summary>A fake board with every state the screens draw, for building the window before the core API lands.</summary>
 public sealed class SampleBoard : IBoard
@@ -353,6 +358,11 @@ public sealed class SampleBoard : IBoard
     public Task<string?> WebUrlAsync() => Task.FromResult<string?>("http://127.0.0.1:47811/?k=sample-key-not-real");
 
     public Task<string?> ActAsync(string request, object? args = null) => Task.FromResult<string?>(null);
+
+    /// <summary>What "start", "poll" and "stop" answer; tests script it.</summary>
+    public Func<string, DictationState> Dictate = _ => new("done", "", "dictation needs the core", 0);
+
+    public Task<DictationState> DictateAsync(string action) => Task.FromResult(Dictate(action));
 
     Task Update(int id, Action<ThreadRow, int> change)
     {

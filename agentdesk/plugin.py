@@ -10,7 +10,7 @@ import json
 import sys
 import traceback
 
-from agentdesk import db, vault, vault_search
+from agentdesk import db, dictate, vault, vault_search
 
 
 def mirror_thread(thread_id: int) -> dict:
@@ -31,7 +31,8 @@ def search(query: str, k: int = 8, full: int = 0) -> dict:
     return {"hits": hits}
 
 
-METHODS = {"vault.mirror_thread": mirror_thread, "vault.search": search, "ping": lambda: "pong"}
+METHODS = {"vault.mirror_thread": mirror_thread, "vault.search": search, "dictate.start": dictate.start, "dictate.poll": dictate.poll,
+           "dictate.stop": dictate.stop, "ping": lambda: "pong"}
 
 
 def main() -> None:

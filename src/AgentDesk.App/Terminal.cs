@@ -787,6 +787,7 @@ public partial class MainWindow
 
     void Goto(string to, string? ch = null)
     {
+        CancelDictation();
         channel = ch ?? channel;
         screen = to;
         confirm = null;
@@ -1241,7 +1242,14 @@ public partial class MainWindow
     /// <summary>Keys while the reply or subject box has focus: typing goes to the box, these reach the reader.</summary>
     bool BoxKey(Key key, bool ctrl, bool alt)
     {
-        if (ctrl && key == Key.Enter)
+        if (Dictating && key is Key.Escape or Key.Enter)
+        {
+            if (key == Key.Escape)
+                CancelDictation();
+            else
+                Flash("Ctrl+D stops dictating first.", "ye");
+        }
+        else if (ctrl && key == Key.Enter)
             _ = screen == "ask" ? AskNext() : SendAsync();
         else if (ctrl)
             return CtrlKey(key);
@@ -1277,7 +1285,7 @@ public partial class MainWindow
             case Key.OemMinus or Key.Subtract: Zoom(-1); break;
             case Key.W: ToggleConcierge(); break;
             case Key.R: Wake(); break;
-            case Key.D: Flash("Dictation lands with the core: local speech-to-text, nothing leaves the machine.", "ye"); break;
+            case Key.D: ToggleDictation(); break;
             default: return false;
         }
         return true;

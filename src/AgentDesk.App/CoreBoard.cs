@@ -168,5 +168,11 @@ public sealed class CoreBoard : IBoard, IDisposable
 
     public async Task<string?> ActAsync(string request, object? args = null) => await Call(request, args) is var r ? Str(r, "said") ?? Str(r, "note") : null;
 
+    public async Task<DictationState> DictateAsync(string action)
+    {
+        var r = await Call("ui:dictate", new { action });
+        return new(Str(r, "state") ?? "done", Str(r, "text") ?? "", Str(r, "error"), Num(r, "progress") ?? 0);
+    }
+
     public void Dispose() => core.Dispose();
 }

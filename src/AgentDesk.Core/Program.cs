@@ -22,7 +22,9 @@ Log.Path = Path.Combine(data, "core.log");
 var python = Environment.GetEnvironmentVariable("AGENTDESK_PYTHON")
              ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "NoOneDrive", "AgentDesk");
 var store = new BoardStore(Path.Combine(data, "agentdesk.db"));
-var board = new AgentBoard(store, new PythonPlugins(python), $"\"{Path.Combine(AppContext.BaseDirectory, "agentdesk.exe")}\" wait {{0}}");
+var plugins = new PythonPlugins(python);
+var dictation = new Dictation(plugins);
+var board = new AgentBoard(store, plugins, $"\"{Path.Combine(AppContext.BaseDirectory, "agentdesk.exe")}\" wait {{0}}");
 var hooks = new Hooks(store);
 var watch = new BoardWatch(store);
 Tray.Start(store);
@@ -72,6 +74,7 @@ Task<string> Ui(string op, Args a, Caller caller, Func<string, Task> push, Cance
     "check_prs" => Task.FromResult(prs.Poke()),
     "concierge" => concierge.Toggle(caller, a.BoolOrNull("on")),
     "wake" => identities.Wake(a.Int("thread_id")),
+    "dictate" => dictation.Run(a.String("action")),
     "subscribe" => Task.FromResult(watch.Subscribe(push, gone)),
     "session_start" => sessions.Start(a.String("name"), a.String("folder"), a.StringOrNull("command")),
     "session_list" => sessions.List(),

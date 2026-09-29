@@ -56,6 +56,7 @@ public partial class MainWindow : Window
         changed.Tick += async (_, _) => { changed.Stop(); await RefreshAsync(); };
         board.Changed += (_, _) => Dispatcher.InvokeAsync(() => { if (!changed.IsEnabled) changed.Start(); });
         PreviewKeyDown += OnKey;
+        dictTimer.Tick += async (_, _) => await DictationTick();
         Body.PreviewMouseLeftButtonDown += OnClick;
         Body.SizeChanged += (_, _) => MeasureScreen();
         SourceInitialized += (_, _) => ColourTitleBar();
