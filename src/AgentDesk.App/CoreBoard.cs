@@ -30,7 +30,8 @@ public sealed class CoreBoard : IBoard, IDisposable
     async Task<JsonElement> Call(string tool, object? args = null)
     {
         var root = JsonDocument.Parse(await core.Call(tool, args is null ? null : JsonSerializer.SerializeToElement(args))).RootElement;
-        return root.TryGetProperty("error", out var e) ? throw new InvalidOperationException(e.GetString()) : root;
+        // {"error": null} is a reply that carries no error (the dictation state has one always); only a message is a failure.
+        return root.TryGetProperty("error", out var e) && e.ValueKind == JsonValueKind.String ? throw new InvalidOperationException(e.GetString()) : root;
     }
 
     static string? Str(JsonElement o, string name) => o.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;

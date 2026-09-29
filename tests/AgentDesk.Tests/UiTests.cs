@@ -135,6 +135,34 @@ public sealed class UiTests : IDisposable
         Directory.Delete(data);
     }
 
+    /// <summary>Ctrl+D never worked in the real window: the core's dictation reply always has "error": null, and the window
+    /// took the presence of that field for a failure. Through the real pipe and the real CoreBoard.</summary>
+    [Fact]
+    public async Task The_window_reads_the_cores_dictation_reply_including_its_null_error_and_real_failures()
+    {
+        Environment.SetEnvironmentVariable("AGENTDESK_DATA", Path.GetTempPath());
+        Environment.SetEnvironmentVariable("AGENTDESK_PIPE", $"agentdesk-test-{Guid.NewGuid():N}");
+        var heard = JsonDocument.Parse("""{"state":"listening","text":"hello there","error":null,"progress":0.0}""").RootElement;
+        var broken = false;
+        var dictation = new Dictation(new FakePlugin(() => broken ? throw new PythonPluginException("PortAudioError('no microphone')") : heard));
+        using var stop = new CancellationTokenSource();
+        _ = PipeServer.Run((req, _, _) => req.Tool == "ui:dictate" ? dictation.Run(req.Args.GetProperty("action").GetString()!) : Task.FromResult("""{"ok": true}"""), stop.Token);
+        using var board = await AgentDesk.App.CoreBoard.Connect();
+
+        var s = await board.DictateAsync("poll");
+        Assert.Equal(("listening", "hello there", null), (s.State, s.Text, s.Error));
+
+        broken = true; // a plugin failure keeps its message instead of being lost
+        var e = await Assert.ThrowsAsync<InvalidOperationException>(() => board.DictateAsync("start"));
+        Assert.Equal("PortAudioError('no microphone')", e.Message);
+        stop.Cancel();
+    }
+
+    sealed class FakePlugin(Func<System.Text.Json.JsonElement> answer) : IPythonPlugins
+    {
+        public Task<System.Text.Json.JsonElement> Call(string method, System.Text.Json.Nodes.JsonObject args) => Task.FromResult(answer());
+    }
+
     [Fact]
     public async Task A_connection_outlives_a_core_restart()
     {
