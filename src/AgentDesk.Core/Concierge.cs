@@ -32,7 +32,7 @@ public sealed class Concierge(BoardStore store, Goals goals, string folder)
         """;
 
     readonly Goals.StandingGoal spec = new(Name, "Keep Work to Hire drained: every open item claimed, worked by a small swarm, and completed with a report on its thread.",
-        folder, Charter, "sonnet", "A lead that triages each open item into a small swarm keeps the queue empty.", "internal:open_work", "value <= 0",
+        folder, Charter, "opus", "A lead that triages each open item into a small swarm keeps the queue empty.", "internal:open_work", "value <= 0",
         MaxMembers: 3, CadenceMinutes: 10);
 
     /// <summary>ui:concierge. With <paramref name="on"/> (John only) it turns the Concierge on (creating or approving the goal) or
