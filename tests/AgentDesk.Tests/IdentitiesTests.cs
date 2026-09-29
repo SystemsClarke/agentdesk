@@ -72,7 +72,7 @@ public sealed class IdentitiesTests : IDisposable
         Assert.Equal("running", row.GetProperty("state").GetString());
         var id = row.GetProperty("claude_session_id").GetString()!;
         await Sees(s, "alpha", $"author=alpha --session-id {id} --model opus --append-system-prompt \"You are one generation of alpha, a long-lived AgentDesk agent.");
-        Assert.EndsWith("that handoff.\n\nbe brief\"", Command(s));
+        Assert.EndsWith("conversation intact.\n\nbe brief\"", Command(s));
         var pid = row.GetProperty("pid").GetInt32();
         Assert.Contains("\"forgotten\"", await ids.Forget("alpha"));
         Assert.Empty(States(ids));
@@ -179,6 +179,33 @@ public sealed class IdentitiesTests : IDisposable
             (after.GetProperty("claude_session_id").GetString(), after.GetProperty("generation").GetInt32(), after.GetProperty("pid").GetInt32()));
         using var db = store.Open();
         Assert.Empty(db.Rows("SELECT * FROM phoenix_chain"));
+    }
+
+    [Fact]
+    public async Task Retire_stops_the_identity_after_its_turn_and_frees_the_slot()
+    {
+        var (_, ids) = Core();
+        await ids.Create("done", dir, null, null);
+        await ids.Create("waiting", dir, null, null);
+        var sid = Json(ids.Start("done")).GetProperty("claude_session_id").GetString()!;
+        await ids.Start("waiting");
+        var me = new Caller(sid, "done", dir, "claude-code", 1, "done");
+
+        Assert.Throws<ArgumentException>(() => { _ = ids.Retire(me with { Identity = null }); });
+        Assert.Throws<ArgumentException>(() => { _ = ids.Retire(me with { SessionId = Guid.NewGuid().ToString() }); });
+
+        await ids.Retire(me);
+        Assert.Equal("running", States(ids)["done"]); // still mid-turn
+        await ids.AfterTurn(Hook(sid), Task.FromResult("{\"decision\":\"block\"}")); // John's reply held the turn open: it goes on
+        await Task.Delay(2500);
+        Assert.Equal("running", States(ids)["done"]);
+
+        await ids.Retire(me);
+        await ids.AfterTurn(Hook(sid), Task.FromResult(""));
+        for (var sw = Stopwatch.StartNew(); States(ids)["done"] != "stopped"; await Task.Delay(50))
+            Assert.True(sw.Elapsed < TimeSpan.FromSeconds(15), "never retired");
+        Assert.Equal("running", States(ids)["waiting"]);
+        Assert.Equal(sid, Row(ids, "done").GetProperty("claude_session_id").GetString()); // stopped, not forgotten: it resumes this conversation
     }
 
     [Fact]

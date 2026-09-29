@@ -52,6 +52,7 @@ await PipeServer.Run((req, push, gone) => req.Tool switch
     "wait" => hooks.Wait(req.Args.GetInt32(), gone),
     "ui:update" => Setup.Update(new Args(req.Args), $"pipe (pid {req.Caller.Pid}, {req.Caller.EnvAuthor ?? req.Caller.Harness ?? "no author"})"),
     ['u', 'i', ':', .. var op] => Ui(op, new Args(req.Args), req.Caller, push, gone),
+    "retire" => req.Caller.Identity is { } who && goals.IsMember(who) ? goals.MemberDone(req.Caller, "Retired: its task is done.") : identities.Retire(req.Caller),
     "pass_the_torch" => identities.Torch(req.Caller, Tools.Dispatch(board, req.Caller, req.Tool, req.Args)),
     "goal_propose" or "experiment_start" or "experiment_done" or "member_spawn" or "member_done" => GoalTool(req.Tool, req.Caller, new Args(req.Args)),
     _ => Tools.Dispatch(board, req.Caller, req.Tool, req.Args),

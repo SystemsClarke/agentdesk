@@ -23,6 +23,8 @@ public sealed partial class Identities
         When you get the 60% context warning (PHOENIX), finish the step you are on and call pass_the_torch
         with a standalone handoff: what you own, what is mid-flight, and what is next.
         Then stop. The system ends this session and starts your successor from that handoff.
+        When your work is done and nothing is waiting on you, call retire, then stop: it ends this session and frees its slot.
+        John's reply, or the core's next wake, starts you again with your conversation intact.
         """;
     static readonly TimeSpan Cooldown = TimeSpan.FromMinutes(2), Settle = TimeSpan.FromSeconds(1);
     readonly BoardStore store;
@@ -30,6 +32,7 @@ public sealed partial class Identities
     readonly string data, claude;
     readonly Lock gate = new();
     readonly Dictionary<string, string> prompts = new(StringComparer.OrdinalIgnoreCase); // first messages for their next launch (Start)
+    readonly HashSet<string> retiring = []; // claude session ids that called retire; their turn's end stops them (AfterTurn), under gate
 
     /// <summary>More for a Phoenix successor's first prompt, given the identity's name (its goal's status: Goals).</summary>
     public Func<string, string?>? Context;
@@ -284,14 +287,52 @@ public sealed partial class Identities
         return result;
     }
 
-    /// <summary>The Stop hook. Once the turn really ends (the hook did not block it), a session that handed off is restarted,
-    /// after the hook has answered.</summary>
+    /// <summary>retire from an identity's own session: when its turn ends it is stopped, not forgotten, freeing its slot.
+    /// John's reply (wake) or the core's next wake starts it again on the same conversation.</summary>
+    public Task<string> Retire(Caller caller)
+    {
+        if (caller is not { Identity: { } name, SessionId: { } sid }) throw new ArgumentException("retire is for agents the core runs: an identity's own session");
+        lock (gate)
+        {
+            using var db = store.Open();
+            if (Get(db, name) is not { } row || row["state"]?.ToString() != "running" || row["claude_session_id"]?.ToString() != sid)
+                throw new ArgumentException($"{name} is not running under this session, so there is nothing to retire");
+            retiring.Add(sid);
+        }
+        return Ok(new JsonObject { ["retiring"] = name, ["note"] = "Your session ends when this turn does: stop now." });
+    }
+
+    /// <summary>The Stop hook. Once the turn really ends (the hook did not block it), a session that handed off is restarted
+    /// and one that retired is stopped, after the hook has answered. A blocked turn goes on, so its retirement is withdrawn.</summary>
     public async Task<string> AfterTurn(JsonElement input, Task<string> hook)
     {
         var result = await hook;
-        if (!result.Contains("\"block\"") && input.TryGetProperty("session_id", out var s) && s.GetString() is { Length: > 0 } sid)
-            _ = Task.Run(() => Phoenix(sid)).ContinueWith(t => Log.Warn($"phoenix for session {sid} failed: {t.Exception?.InnerException?.Message}"), TaskContinuationOptions.OnlyOnFaulted);
+        if (input.TryGetProperty("session_id", out var s) && s.GetString() is { Length: > 0 } sid)
+        {
+            if (result.Contains("\"block\""))
+                lock (gate) retiring.Remove(sid);
+            else
+            {
+                _ = Task.Run(() => Phoenix(sid)).ContinueWith(t => Log.Warn($"phoenix for session {sid} failed: {t.Exception?.InnerException?.Message}"), TaskContinuationOptions.OnlyOnFaulted);
+                _ = Task.Run(() => Retired(sid)).ContinueWith(t => Log.Warn($"retiring session {sid} failed: {t.Exception?.InnerException?.Message}"), TaskContinuationOptions.OnlyOnFaulted);
+            }
+        }
         return result;
+    }
+
+    async Task Retired(string sid)
+    {
+        string name;
+        lock (gate)
+        {
+            if (!retiring.Remove(sid)) return;
+            using var db = store.Open();
+            if (db.Rows("SELECT name FROM identities WHERE claude_session_id=$s AND state='running'", ("s", sid)) is not [var row]) return; // handed off, stopped or forgotten meanwhile
+            name = row["name"]!.ToString()!;
+        }
+        await Task.Delay(Settle); // the hook's answer reaches claude before claude goes
+        Log.Info($"identity {name} retired");
+        await Stop(name);
     }
 
     /// <summary>Records the generation in phoenix_chain, ends the session, and launches its successor in the same slot:
