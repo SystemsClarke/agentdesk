@@ -1109,6 +1109,8 @@ public partial class MainWindow
                 return;
             case "preroll":
                 SetPref(key, !Pref("preroll", true));
+                if (!Pref("preroll", true))
+                    DisarmMic();
                 Flash(Pref("preroll", true) ? "Pre-roll on: the mic keeps a 2-second rolling buffer while you're in a box."
                     : "Pre-roll off: the mic only opens when you press Ctrl+D.", "ye");
                 break;

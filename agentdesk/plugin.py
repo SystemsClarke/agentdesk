@@ -31,7 +31,7 @@ def search(query: str, k: int = 8, full: int = 0) -> dict:
     return {"hits": hits}
 
 
-METHODS = {"vault.mirror_thread": mirror_thread, "vault.search": search, "dictate.start": dictate.start, "dictate.poll": dictate.poll,
+METHODS = {"vault.mirror_thread": mirror_thread, "vault.search": search, "dictate.arm": dictate.arm, "dictate.disarm": dictate.disarm, "dictate.start": dictate.start, "dictate.poll": dictate.poll,
            "dictate.stop": dictate.stop, "ping": lambda: "pong"}
 
 

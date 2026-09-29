@@ -57,6 +57,7 @@ public partial class MainWindow : Window
         board.Changed += (_, _) => Dispatcher.InvokeAsync(() => { if (!changed.IsEnabled) changed.Start(); });
         PreviewKeyDown += OnKey;
         dictTimer.Tick += async (_, _) => await DictationTick();
+        WireMic();
         Subject.TextChanged += (_, _) => { if (OnFolderStep) { folderSel = 0; Render(); } };
         Body.PreviewMouseLeftButtonDown += OnClick;
         Body.SizeChanged += (_, _) => MeasureScreen();

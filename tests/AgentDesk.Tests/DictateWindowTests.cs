@@ -90,6 +90,23 @@ public sealed class DictateWindowTests
         Assert.False(window2.Reply.IsReadOnly);
         window2.Close();
 
+        // The pre-roll: a focused box arms the mic once, losing focus lets it go, and with the option off nothing is armed.
+        var actions = new List<string>();
+        var window4 = new MainWindow(new SampleBoard { Dictate = a => { lock (actions) actions.Add(a); return new("idle", "", null, 0); } }, null);
+        window4.Show();
+        Pump(200);
+        window4.ArmMic(false);
+        window4.DisarmMic();
+        Pump(100);
+        lock (actions) Assert.Empty(actions);
+        window4.ArmMic(true);
+        window4.ArmMic(true); // the 2-minute heartbeat: the plugin's arm is idempotent
+        window4.DisarmMic();
+        window4.DisarmMic(); // nothing armed, nothing to let go of
+        Until(() => { lock (actions) return actions.Count == 3; }, "arm, arm again, disarm");
+        lock (actions) Assert.Equal(["arm", "arm", "disarm"], actions);
+        window4.Close();
+
         // New agent: the folder step lists what he uses (the sample board's two), ↓ moves the pick, Tab copies it into the box,
         // and typing narrows the list. (One Application per process, so this shares the dictation scenario's thread.)
         var window3 = new MainWindow(new SampleBoard(), null);
