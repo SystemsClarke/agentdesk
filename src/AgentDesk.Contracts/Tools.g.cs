@@ -288,6 +288,16 @@ thread, wakes the lead, and retires this identity (its session ends).
 """, """
 {"type": "object", "properties": {"summary": {"type": "string"}}, "required": ["summary"]}
 """),
+        new("retire", """
+For an agent the core runs (an identity, a goal's lead or member): call this when
+your work is done and nothing is waiting on you. Your session ends when this
+turn does and its slot goes back to the pool. Nothing is lost: John's reply on a
+thread you asked on, or the core's next wake, starts you again on the same
+conversation. A goal member is retired for good, as with member_done. Post what
+you did first; call retire last, then stop.
+""", """
+{"type": "object", "properties": {}, "required": []}
+"""),
     ];
 
     static Task<string> Call(IAgentBoard b, Caller c, string tool, Args a) => tool switch

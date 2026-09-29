@@ -264,6 +264,12 @@ public sealed partial class Goals
         return await ids.Start(id, $"Your task for goal {goal}: {task}"); // the session pool queues it past max_members or its share
     }
 
+    public bool IsMember(string identity)
+    {
+        using var db = store.Open();
+        return db.Scalar("SELECT 1 FROM goal_members WHERE identity=$i", ("i", identity)) is not null;
+    }
+
     /// <summary>A member retires: its summary goes on the goal thread, then its identity is forgotten and the lead is woken.</summary>
     public Task<string> MemberDone(Caller c, string summary)
     {
