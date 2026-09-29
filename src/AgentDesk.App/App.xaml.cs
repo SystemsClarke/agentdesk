@@ -14,6 +14,7 @@ public partial class App : Application
     protected override async void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
+        Environment.CurrentDirectory = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile); // never the install folder: it would block the next update
         var i = Array.IndexOf(e.Args, "--thread");
         int? tid = i >= 0 && i + 1 < e.Args.Length && int.TryParse(e.Args[i + 1], out var n) ? n : null;
         var sample = e.Args.Contains("--sample"); // a sample window runs beside the real one instead of handing over to it

@@ -99,7 +99,7 @@ public static unsafe partial class Tray
         if (Environment.TickCount64 - Interlocked.Exchange(ref lastLaunch, Environment.TickCount64) < 1000) return; // Enter sends NIN_KEYSELECT twice
         var exe = new[] { AppContext.BaseDirectory, Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "AgentDeskApp", "current") }
             .Select(d => Path.Combine(d, "AgentDesk.App.exe")).FirstOrDefault(File.Exists);
-        try { if (exe is null) Log.Warn("AgentDesk.App.exe not found"); else Process.Start(exe, thread > 0 ? $"--thread {thread}" : ""); }
+        try { if (exe is null) Log.Warn("AgentDesk.App.exe not found"); else Process.Start(new ProcessStartInfo(exe, thread > 0 ? $"--thread {thread}" : "") { WorkingDirectory = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile) }); }
         catch (Exception e) { Log.Warn($"could not open AgentDesk: {e.Message}"); }
     }
 
