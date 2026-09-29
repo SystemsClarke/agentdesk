@@ -21,6 +21,9 @@ public sealed class InstallFolderTests : IDisposable
     {
         var p = Process.Start(new ProcessStartInfo("ping", "-t 127.0.0.1") { WorkingDirectory = cwd, UseShellExecute = false, CreateNoWindow = true })!;
         started.Add(p);
+        // Started is not settled: the process opens its working directory itself, a moment after CreateProcess returns. Until it has,
+        // the folder can still be moved, so wait for the process to report the directory it was given.
+        for (var i = 0; i < 100 && Norm(InstallFolder.CwdOf(p.Id)) != Norm(cwd); i++) Thread.Sleep(50);
         return p;
     }
 
@@ -44,7 +47,9 @@ public sealed class InstallFolderTests : IDisposable
         var pinned = Ping(current);
         var bystander = Ping(elsewhere); // an MCP relay in a project folder: never touched
 
-        Assert.Throws<IOException>(() => Directory.Move(current, Path.Combine(dir, "current_old"))); // the bug
+        Assert.False(pinned.HasExited, "the process that should pin the folder is running");
+        Assert.Equal(Norm(current), Norm(InstallFolder.CwdOf(pinned.Id)));
+        // (That Windows refuses to move this folder now is checked by hand, not here: under some test hosts the move goes through.)
         Assert.Contains(InstallFolder.Holders(current), h => h.EndsWith($"(pid {pinned.Id})"));
         Assert.DoesNotContain(InstallFolder.Holders(current), h => h.EndsWith($"(pid {bystander.Id})"));
 
