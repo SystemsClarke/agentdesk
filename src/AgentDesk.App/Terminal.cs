@@ -141,7 +141,24 @@ public partial class MainWindow
     IReadOnlyList<GoalRow> Goals => st?.Goals is { } g && g.Any(x => x.Standing && x.Name == "concierge") ? g
         : [.. st?.Goals ?? [], new GoalRow("concierge", "off", "Keep Work to Hire drained", "concierge-lead", "value <= 0", 0, null, 0, 3, true)];
 
+    readonly SemaphoreSlim refreshGate = new(1, 1);
+
+    /// <summary>One refresh at a time. The heartbeat, the change push and every action each start one, and they fill shared state
+    /// call by call: overlapping, an older slower run finished last and put its stale goal list back over a fresh one.</summary>
     async Task RefreshAsync()
+    {
+        await refreshGate.WaitAsync();
+        try
+        {
+            await ReadBoardAsync();
+        }
+        finally
+        {
+            refreshGate.Release();
+        }
+    }
+
+    async Task ReadBoardAsync()
     {
         foreach (var ch in Channels)
         {
@@ -158,7 +175,13 @@ public partial class MainWindow
             goal = (g.Name, await board.GoalAsync(g.Name) ?? GoalDetailOf(g.Name));
         if (screen == "adopt")
             adoptables = await board.AdoptableAsync();
+        // Re-read the open thread before dropping the cache. Clearing it first made Reader() paint "no longer on the board"
+        // for a frame (the flicker) and shrink the document, which snapped the scroll back to the top.
+        var open = screen == "read" ? readTid : null;
+        var current = open is int tid ? await board.ReadThreadAsync(tid) : null;
         threads.Clear();
+        if (open is int id && current is not null)
+            threads[id] = current;
         Title = "AgentDesk" + (openQs.Count > 0 ? $" - {openQs.Count} open question{(openQs.Count == 1 ? "" : "s")}" : "");
         Render();
     }
@@ -966,7 +989,9 @@ public partial class MainWindow
         {
             await board.ActAsync("ui:goal_create", new { name = a[0], objective = a[2], folder = a[1] });
             await RefreshAsync();
-            Sel = Goals.ToList().FindIndex(x => x.Name == a[0]);
+            if (Goals.ToList().FindIndex(x => x.Name == a[0]) is >= 0 and var at)
+                Sel = at;
+            Render(); // the selection moved after the refresh painted
             Flash($"{a[0]} is a draft. Its lead is proposing a hypothesis; A approves it.", "gr");
         }));
 
