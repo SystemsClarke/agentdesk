@@ -23,9 +23,9 @@ public sealed class DictationTests
     {
         var plugin = new Plugin(_ => JsonDocument.Parse("""{"state":"listening","text":"hello there","error":null,"progress":0.0}""").RootElement);
         var dictation = new Dictation(plugin);
-        foreach (var action in new[] { "start", "poll", "stop" })
+        foreach (var action in new[] { "start", "poll", "stop", "arm", "disarm" })
             Assert.Equal("hello there", JsonDocument.Parse(await dictation.Run(action)).RootElement.GetProperty("text").GetString());
-        Assert.Equal(["dictate.start", "dictate.poll", "dictate.stop"], plugin.Calls);
+        Assert.Equal(["dictate.start", "dictate.poll", "dictate.stop", "dictate.arm", "dictate.disarm"], plugin.Calls);
     }
 
     [Fact]

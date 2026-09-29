@@ -17,6 +17,57 @@ public partial class MainWindow
 
     internal bool Dictating => dictBox is not null;
 
+    // The pre-roll: while a box has focus (and Options' pre-roll is on) the mic keeps a 2-second rolling buffer in RAM, so
+    // Ctrl+D catches the words just before the press. The plugin host exits when idle, so a focused box re-arms every 2 minutes.
+    readonly DispatcherTimer micTimer = new() { Interval = TimeSpan.FromMinutes(2) };
+    bool micArmed;
+
+    void WireMic()
+    {
+        foreach (var box in new[] { Reply, Subject })
+        {
+            box.GotKeyboardFocus += (_, _) => ArmMic();
+            box.LostKeyboardFocus += (_, _) => DisarmMic();
+        }
+        micTimer.Tick += (_, _) => ArmMic();
+        Deactivated += (_, _) => DisarmMic();
+        Activated += (_, _) => { if (Reply.IsKeyboardFocused || Subject.IsKeyboardFocused) ArmMic(); };
+        Closed += (_, _) => DisarmMic();
+    }
+
+    internal void ArmMic() => ArmMic(Pref("preroll", true));
+
+    internal void ArmMic(bool on)
+    {
+        if (!on || Dictating)
+            return;
+        micArmed = true;
+        micTimer.Stop(); // a fresh 2 minutes from this arm
+        micTimer.Start();
+        _ = Mic("arm");
+    }
+
+    internal void DisarmMic()
+    {
+        if (!micArmed)
+            return;
+        micArmed = false;
+        micTimer.Stop();
+        _ = Mic("disarm");
+    }
+
+    /// <summary>A missing microphone or a plugin that is down is not worth a message here: Ctrl+D says so when it matters.</summary>
+    async Task Mic(string action)
+    {
+        try
+        {
+            await board.DictateAsync(action);
+        }
+        catch (Exception e) when (e is InvalidOperationException or IOException)
+        {
+        }
+    }
+
     internal void ToggleDictation()
     {
         if (Dictating)
