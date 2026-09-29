@@ -771,6 +771,8 @@ public partial class MainWindow
             L.Add(i < answers.Count ? [S("   " + Fit(label, 10), "mu"), answers[i].Length > 0 ? S(answers[i], "fg b") : S("(none)", "fa")]
                 : i == answers.Count ? [S(" ▶ " + Fit(label, 10), "ye b"), S(help, "fg")] : [S("   " + Fit(label, 10), "fa"), S(help, "fa")]);
         }
+        if (OnFolderStep)
+            L.AddRange(FolderLines(W));
         L.AddRange([[], [S(" Type in the box below and press ", "mu"), S("Enter", "ye"), S(" for the next one. ", "mu"), S("Esc", "ye"), S(" cancels.", "mu")]]);
         return L;
     }
@@ -821,15 +823,26 @@ public partial class MainWindow
         (ask, adoptNote) = (a, null);
         answers.Clear();
         Goto("ask");
+        if (a.Fields.Any(f => f.Label == "folder"))
+            _ = LoadFolders();
         Subject.Text = prefill;
         Subject.CaretIndex = prefill.Length;
     }
 
     /// <summary>Enter in the box: take this answer, then ask the next one, or go back and hand them all to Done.</summary>
-    async Task AskNext()
+    internal async Task AskNext()
     {
         var (a, text) = (ask!, Subject.Text.Trim());
         var field = a.Fields[answers.Count];
+        if (OnFolderStep)
+        {
+            if (ResolveFolder(text, FilterFolders(folderPicks, text), folderSel, Directory.Exists) is not { } folder)
+            {
+                Flash(text.Length == 0 ? "It needs a folder. Esc cancels." : $"No folder {text}, and nothing you use matches it.", "ye");
+                return;
+            }
+            text = folder;
+        }
         if (text.Length == 0 && !field.Optional)
         {
             Flash($"It needs a {field.Label}. Esc cancels.", "ye");
@@ -854,7 +867,7 @@ public partial class MainWindow
         }
     }
 
-    void NewAgent() => AskFor(new("New agent", "NEW AGENT  ·  sign up a long-lived agent  ·  it keeps one Claude conversation and hands off at 60%", "agents",
+    internal void NewAgent() => AskFor(new("New agent", "NEW AGENT  ·  sign up a long-lived agent  ·  it keeps one Claude conversation and hands off at 60%", "agents",
         [("name", "What to call it: agentdesk attach <name> and its board posts use this.", false),
          ("folder", "The folder it works in, e.g. C:\\Users\\you\\src\\repo.", false),
          ("charter", "Optional: what it is for, appended to its system prompt. Enter skips it.", true)],
@@ -1255,6 +1268,9 @@ public partial class MainWindow
             return CtrlKey(key);
         else if (key == Key.Escape)
             GoBack();
+        else if (Subject.IsKeyboardFocused && FolderKey(key))
+        {
+        }
         else if (Subject.IsKeyboardFocused)
         {
             if (key != Key.Enter)
