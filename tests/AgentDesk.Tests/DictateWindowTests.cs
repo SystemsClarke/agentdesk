@@ -41,7 +41,7 @@ public sealed class DictateWindowTests
 
     static void Scenario()
     {
-        _ = Application.Current ?? new Application();
+        _ = Application.Current ?? new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown }; // closing a window must not end the app
         var heard = "";
         var done = false;
         var board = new SampleBoard { Dictate = action => new(done ? "done" : action == "start" ? "loading" : "listening", heard, null, 0) };
@@ -89,5 +89,27 @@ public sealed class DictateWindowTests
         Assert.Equal("untouched", window2.Reply.Text);
         Assert.False(window2.Reply.IsReadOnly);
         window2.Close();
+
+        // New agent: the folder step lists what he uses (the sample board's two), ↓ moves the pick, Tab copies it into the box,
+        // and typing narrows the list. (One Application per process, so this shares the dictation scenario's thread.)
+        var window3 = new MainWindow(new SampleBoard(), null);
+        window3.Show();
+        Pump(200);
+        window3.NewAgent();
+        Assert.False(window3.OnFolderStep); // the name comes first
+        window3.Subject.Text = "alpha";
+        _ = window3.AskNext();
+        Until(() => window3.OnFolderStep && window3.folderPicks.Count == 2, "the folder step shows the suggestions");
+        var shown = string.Concat(window3.FolderLines(120).SelectMany(l => l).Select(s => s.Text));
+        Assert.Contains("agentdesk-terminal", shown);
+        Assert.Contains("fastbuild", shown);
+        Assert.True(window3.FolderKey(System.Windows.Input.Key.Down));
+        Assert.Equal(1, window3.folderSel);
+        Assert.True(window3.FolderKey(System.Windows.Input.Key.Tab));
+        Assert.Equal(window3.folderPicks[1].Path, window3.Subject.Text);
+        window3.Subject.Text = "agent";
+        Until(() => !string.Concat(window3.FolderLines(120).SelectMany(l => l).Select(s => s.Text)).Contains("fastbuild"), "typing narrows the list");
+        Assert.Equal(0, window3.folderSel);
+        window3.Close();
     }
 }

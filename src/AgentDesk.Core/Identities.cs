@@ -64,7 +64,7 @@ public sealed partial class Identities
     }
 
     /// <summary>Where Claude Code keeps transcripts: ~/.claude/projects/&lt;encoded folder&gt;/&lt;session id&gt;.jsonl.</summary>
-    static string Projects => Environment.GetEnvironmentVariable("AGENTDESK_CLAUDE_PROJECTS")
+    internal static string Projects => Environment.GetEnvironmentVariable("AGENTDESK_CLAUDE_PROJECTS")
         ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude", "projects");
 
     public Task<string> Create(string name, string folder, string? charter, string? host, bool autostart = false, string? sessionId = null, string? model = null)

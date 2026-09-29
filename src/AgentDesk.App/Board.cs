@@ -78,7 +78,12 @@ public interface IBoard
     Task<string?> ActAsync(string request, object? args = null);
     /// <summary>Ctrl+D's local speech-to-text: "start", "poll" (the words so far) or "stop".</summary>
     Task<DictationState> DictateAsync(string action);
+    /// <summary>The folders John works in, most likely first (ui:folders).</summary>
+    Task<IReadOnlyList<FolderPick>> FoldersAsync();
 }
+
+/// <summary>Who is the agents and goals that work there (up to 3); Uses counts every session and agent there, Last is the latest.</summary>
+public sealed record FolderPick(string Path, IReadOnlyList<string> Who, int Uses, DateTimeOffset Last);
 
 /// <summary>State is downloading (first use), loading, listening or done; Text is everything heard so far.</summary>
 public sealed record DictationState(string State, string Text, string? Error, double Progress);
@@ -363,6 +368,12 @@ public sealed class SampleBoard : IBoard
     public Func<string, DictationState> Dictate = _ => new("done", "", "dictation needs the core", 0);
 
     public Task<DictationState> DictateAsync(string action) => Task.FromResult(Dictate(action));
+
+    public Task<IReadOnlyList<FolderPick>> FoldersAsync() => Task.FromResult<IReadOnlyList<FolderPick>>(
+    [
+        new(@"C:\src\agentdesk", ["agentdesk-terminal"], 14, DateTimeOffset.Now.AddHours(-2)),
+        new(@"C:\src\fastbuild", ["build-speed-lead", "build-speed"], 9, DateTimeOffset.Now.AddDays(-1)),
+    ]);
 
     Task Update(int id, Action<ThreadRow, int> change)
     {

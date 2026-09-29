@@ -75,6 +75,7 @@ Task<string> Ui(string op, Args a, Caller caller, Func<string, Task> push, Cance
     "concierge" => concierge.Toggle(caller, a.BoolOrNull("on")),
     "wake" => identities.Wake(a.Int("thread_id")),
     "dictate" => dictation.Run(a.String("action")),
+    "folders" => Task.Run(() => Folders.Json(Folders.Suggest(store, Identities.Projects, DateTimeOffset.UtcNow))),
     "subscribe" => Task.FromResult(watch.Subscribe(push, gone)),
     "session_start" => sessions.Start(a.String("name"), a.String("folder"), a.StringOrNull("command")),
     "session_list" => sessions.List(),
