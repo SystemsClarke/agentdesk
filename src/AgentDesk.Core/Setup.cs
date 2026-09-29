@@ -38,7 +38,8 @@ public static class Setup
     {
         offer = ready;
         if (!Updates.IsInstalled) return; // a dev build
-        if (Updates.UpdatePendingRestart is { } pending) ready(() => Updates.ApplyUpdatesAndRestart(pending));
+        Reconcile();
+        if (Updates.UpdatePendingRestart is { } pending) ready(() => Apply(pending, false));
         using var timer = new PeriodicTimer(TimeSpan.FromMinutes(30));
         do
             try { await Check(); }
@@ -64,7 +65,7 @@ public static class Setup
             if (next is null) return false;
             await Updates.DownloadUpdatesAsync(next);
             var asset = staged = next.TargetFullRelease;
-            offer(() => Updates.ApplyUpdatesAndRestart(asset));
+            offer(() => Apply(asset, false));
             return true;
         }
         finally { Checking.Release(); }
@@ -87,11 +88,42 @@ public static class Setup
                 await Task.Delay(1000); // the reply goes out first
                 Log.Info($"restarting into {Pending()!.Version} for {source}");
                 Tray.Hide();
-                Updates.ApplyUpdatesAndRestart(Pending(), ["--background"]);
+                Apply(Pending()!, true);
             });
         state["downloaded"] = downloaded;
         state["restarting"] = restart;
         return state.ToJsonString(Wire.Indented);
+    }
+
+    static string Marker => Path.Combine(Environment.GetEnvironmentVariable("AGENTDESK_DATA")
+        ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "AgentDesk"), "update.pending");
+
+    static string InstallRoot => Path.GetDirectoryName(Environment.ProcessPath)!;
+
+    /// <summary>Frees current\ of anything of ours that pins it (the window, attach consoles), remembers what it is updating to, and
+    /// restarts into it. A window that was open comes back, whoever asked for the update.</summary>
+    static void Apply(VelopackAsset asset, bool background)
+    {
+        var reopen = InstallFolder.Release(InstallRoot, "AgentDesk.App", "agentdesk");
+        try { File.WriteAllText(Marker, asset.Version.ToString()); }
+        catch (IOException) { } // the marker only makes a failure visible
+        Updates.ApplyUpdatesAndRestart(asset, reopen || !background ? Array.Empty<string>() : ["--background"]);
+    }
+
+    /// <summary>At start: when the last update did not take, say so and who was in the way, rather than failing silently.</summary>
+    static void Reconcile()
+    {
+        try
+        {
+            if (!File.Exists(Marker)) return;
+            var target = File.ReadAllText(Marker).Trim();
+            File.Delete(Marker);
+            var now = Updates.CurrentVersion?.ToString();
+            if (now == target) { Log.Info($"updated to {now}"); return; }
+            var holders = InstallFolder.Holders(InstallRoot);
+            Log.Warn($"the update to {target} did not apply: still on {now}. Using {InstallRoot} as their working directory: {(holders.Count == 0 ? "nothing found" : string.Join(", ", holders))}");
+        }
+        catch (IOException) { }
     }
 
     static VelopackAsset? Pending() => Updates.IsInstalled ? staged ?? Updates.UpdatePendingRestart : null;
