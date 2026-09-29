@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.Json;
 using AgentDesk.Contracts;
 using AgentDesk.Core;
@@ -116,11 +117,14 @@ public sealed class UiTests : IDisposable
             db.RegisterPr(failing, "o/r", 2, "two", "builder", null);
         }
         var checker = new PrChecker(store, url => url == merged ? new() { ["state"] = "MERGED", ["title"] = "One!" } : throw new GhError("gh auth login"));
-        _ = checker.Run(TimeSpan.FromHours(1));
+        checkerRun = checker.Run(TimeSpan.FromHours(1), stopChecker.Token);
         Assert.Contains("\"ok\": true", checker.Poke());
         string? Row(string url) { using var db = store.Open(); return db.Scalar("SELECT state || '|' || COALESCE(last_error, '') FROM pull_requests WHERE url=$u AND checked_ts IS NOT NULL", ("u", url)) as string; }
         string? Notice() { using var db = store.Open(); return db.Scalar("SELECT id FROM messages WHERE thread_id=$t AND json_extract(meta, '$.kind')='pr-merged'", ("t", thread))?.ToString(); }
-        for (var i = 0; i < 200 && (Row(failing) is null || Row(merged) is null || Notice() is null); i++) await Task.Delay(50); // the two PRs finish in either order
+        // The two PRs finish in either order. Parallel test classes can starve the pool for seconds, so wait on a deadline, not a fixed
+        // count, and poke again each round: a pass that started late or was lost costs one round, not the test.
+        for (var sw = Stopwatch.StartNew(); sw.Elapsed < TimeSpan.FromSeconds(60) && (Row(failing) is null || Row(merged) is null || Notice() is null); await Task.Delay(100))
+            checker.Poke();
         Assert.Equal("merged|", Row(merged));
         Assert.Equal("open|gh auth login", Row(failing));
         using (var db = store.Open())
@@ -171,8 +175,13 @@ public sealed class UiTests : IDisposable
         await Task.Delay(600); // the watcher sees nobody left and closes its connection
     }
 
+    readonly CancellationTokenSource stopChecker = new();
+    Task? checkerRun;
+
     public void Dispose()
     {
+        stopChecker.Cancel();
+        checkerRun?.ContinueWith(_ => { }).Wait(TimeSpan.FromSeconds(30)); // no pass may still hold the board file we delete next
         foreach (var f in Directory.GetFiles(Path.GetTempPath(), Path.GetFileName(path) + "*")) File.Delete(f);
     }
 }

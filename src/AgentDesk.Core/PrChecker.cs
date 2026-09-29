@@ -25,12 +25,13 @@ public sealed class PrChecker(BoardStore store, Func<string, JsonObject>? gh = n
         return new JsonObject { ["ok"] = true }.ToJsonString(Wire.Indented);
     }
 
-    /// <summary>Checks the open PRs, the first time after <paramref name="first"/>, then every minute or when poked. Never ends.</summary>
-    public async Task Run(TimeSpan first)
+    /// <summary>Checks the open PRs, the first time after <paramref name="first"/>, then every minute or when poked. Ends, with
+    /// no pass in flight, when <paramref name="stop"/> is cancelled (a test's cleanup; the core never stops it).</summary>
+    public async Task Run(TimeSpan first, CancellationToken stop = default)
     {
         for (var wait = first; ; wait = TimeSpan.FromMinutes(1))
         {
-            await poke.WaitAsync(wait);
+            await poke.WaitAsync(wait, stop);
             try { await Task.Run(CheckDue); }
             catch (Exception e) { Log.Warn($"pr check pass failed: {e}"); } // a locked board or a misbehaving gh costs one pass, not the feature
         }
