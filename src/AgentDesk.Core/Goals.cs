@@ -28,7 +28,7 @@ public sealed partial class Goals
           measure, records the value and posts the verdict on the goal thread. Never report a measured value yourself.
         - The core wakes you with the goal's status every cadence and after every measure. Between wakes, stop.
         """;
-    static readonly TimeSpan Settle = TimeSpan.FromSeconds(1);
+    static readonly TimeSpan Settle = TimeSpan.FromMilliseconds(200);
 
     /// <summary>Measures the core answers itself from the board, with no shell: measure_cmd <c>internal:&lt;name&gt;</c>.</summary>
     static readonly Dictionary<string, string> Internal = new(StringComparer.OrdinalIgnoreCase)
@@ -63,6 +63,7 @@ public sealed partial class Goals
 
     public async Task<string> Create(string name, string objective, string folder)
     {
+        name = GoalNames.Slug(name);
         if (!NameRe().IsMatch(name)) throw new ArgumentException("a goal name is letters, digits and dashes (at most 32), starting with a letter");
         if (string.IsNullOrWhiteSpace(objective)) throw new ArgumentException("objective is required");
         if (!Directory.Exists(folder)) throw new ArgumentException($"no such folder: {folder}");

@@ -1001,12 +1001,13 @@ public partial class MainWindow
          ("objective", "What it should achieve, in a sentence. The lead turns it into a hypothesis.", false)],
         async a =>
         {
-            await board.ActAsync("ui:goal_create", new { name = a[0], objective = a[2], folder = a[1] });
+            var name = AgentDesk.Contracts.GoalNames.Slug(a[0]); // the core slugs it the same way
+            await board.ActAsync("ui:goal_create", new { name, objective = a[2], folder = a[1] });
             await RefreshAsync();
-            if (Goals.ToList().FindIndex(x => x.Name == a[0]) is >= 0 and var at)
+            if (Goals.ToList().FindIndex(x => x.Name == name) is >= 0 and var at)
                 Sel = at;
             Render(); // the selection moved after the refresh painted
-            Flash($"{a[0]} is a draft. Its lead is proposing a hypothesis; A approves it.", "gr");
+            Flash($"{name} is a draft. Its lead is proposing a hypothesis; A approves it.", "gr");
         }));
 
     /// <summary>L: attach to the goal's lead, as Enter on Agents does.</summary>

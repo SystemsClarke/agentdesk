@@ -37,6 +37,14 @@ epo"));
         Assert.Equal(home + "x", MainWindow.Tilde(home + "x"));
     }
 
+    [Theory]
+    [InlineData("Add GoCD Health", "Add-GoCD-Health")]
+    [InlineData("  build speed!  ", "build-speed")]
+    [InlineData("2027 push", "g-2027-push")]
+    [InlineData("build-speed", "build-speed")]
+    public void A_goal_name_with_spaces_is_made_a_name_not_refused(string typed, string slug) =>
+        Assert.Equal(slug, AgentDesk.Contracts.GoalNames.Slug(typed));
+
     [Fact]
     public void The_ops_console_line_hides_the_key() =>
         Assert.Equal("http://127.0.0.1:47811/", MainWindow.Unkeyed("http://127.0.0.1:47811/?k=secret"));

@@ -182,7 +182,7 @@ public sealed class IdentitiesTests : IDisposable
     }
 
     [Fact]
-    public async Task Retire_stops_the_identity_after_its_turn_and_frees_the_slot()
+    public async Task Retire_stops_the_identity_at_once_and_frees_the_slot()
     {
         var (_, ids) = Core();
         await ids.Create("done", dir, null, null);
@@ -191,19 +191,12 @@ public sealed class IdentitiesTests : IDisposable
         await ids.Start("waiting");
         var me = new Caller(sid, "done", dir, "claude-code", 1, "done");
 
-        Assert.Throws<ArgumentException>(() => { _ = ids.Retire(me with { Identity = null }); });
-        Assert.Throws<ArgumentException>(() => { _ = ids.Retire(me with { SessionId = Guid.NewGuid().ToString() }); });
+        Assert.Throws<ArgumentException>(() => { _ = ids.Retire(me with { Identity = null }); }); // no identity, no headless session
+        Assert.Throws<ArgumentException>(() => { _ = ids.Retire(me with { Identity = "waiting-not" }); }); // not an identity
 
-        await ids.Retire(me);
-        Assert.Equal("running", States(ids)["done"]); // still mid-turn
-        await ids.AfterTurn(Hook(sid), Task.FromResult("{\"decision\":\"block\"}")); // John's reply held the turn open: it goes on
-        await Task.Delay(2500);
-        Assert.Equal("running", States(ids)["done"]);
-
-        await ids.Retire(me);
-        await ids.AfterTurn(Hook(sid), Task.FromResult(""));
+        await ids.Retire(me); // no turn end needed: it is killed within a second
         for (var sw = Stopwatch.StartNew(); States(ids)["done"] != "stopped"; await Task.Delay(50))
-            Assert.True(sw.Elapsed < TimeSpan.FromSeconds(15), "never retired");
+            Assert.True(sw.Elapsed < TimeSpan.FromSeconds(5), "never retired");
         Assert.Equal("running", States(ids)["waiting"]);
         Assert.Equal(sid, Row(ids, "done").GetProperty("claude_session_id").GetString()); // stopped, not forgotten: it resumes this conversation
     }
