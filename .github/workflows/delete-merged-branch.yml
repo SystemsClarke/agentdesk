@@ -1,0 +1,18 @@
+name: delete merged branch
+# Stands in for the repo setting "Automatically delete head branches", which needs admin rights to switch on.
+on:
+  pull_request:
+    types: [closed]
+
+permissions:
+  contents: write
+
+jobs:
+  delete:
+    if: github.event.pull_request.merged == true && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref != github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete the PR's branch
+        run: gh api -X DELETE "repos/${{ github.repository }}/git/refs/heads/${{ github.event.pull_request.head.ref }}"
+        env:
+          GH_TOKEN: ${{ github.token }}
