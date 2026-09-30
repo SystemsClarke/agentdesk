@@ -72,7 +72,7 @@ public sealed class ConciergeTests : IDisposable
         var g = Json(goals.Status("concierge"));
         Assert.Equal(("running", 1, "internal:open_work", "value <= 0", "concierge-lead"), (g.GetProperty("state").GetString(), g.GetProperty("standing").GetInt32(),
             g.GetProperty("measure_cmd").GetString(), g.GetProperty("success").GetString(), g.GetProperty("lead").GetString()));
-        Assert.Equal(("stopped", "sonnet"), (State("concierge-lead"), Identity("concierge-lead")!.Value.GetProperty("model").GetString())); // nothing to do: not launched
+        Assert.Equal(("stopped", "opus"), (State("concierge-lead"), Identity("concierge-lead")!.Value.GetProperty("model").GetString())); // nothing to do: not launched
         Assert.Contains("keeps Work to Hire", Identity("concierge-lead")!.Value.GetProperty("charter").GetString());
         await concierge.Toggle(john, true); // on again: no second goal, no error
         Assert.Equal("1", Scalar("SELECT COUNT(*) FROM goals"));
