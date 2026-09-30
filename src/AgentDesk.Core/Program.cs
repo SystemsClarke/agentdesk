@@ -37,6 +37,7 @@ var identities = new Identities(store, sessions, data, Environment.GetEnvironmen
     { UsageFailing = () => Usage.Failing }; // the governor fails closed while /usage fails
 var goals = new Goals(store, identities, sessions);
 var slots = new Slots(store);
+var jobs = new Jobs(store, identities);
 var concierge = new Concierge(store, goals, python); // its lead works from the AgentDesk checkout, as the crew did
 _ = prs.Run(TimeSpan.FromSeconds(5));
 identities.Resume();
@@ -46,6 +47,7 @@ try { Tray.WebUrl = await Web.Start(data, WebCall); }
 catch (Exception e) { Log.Warn($"ops console not started: {e.Message}"); }
 _ = goals.Run(TimeSpan.FromSeconds(double.TryParse(Environment.GetEnvironmentVariable("AGENTDESK_GOAL_TICK"), out var tick) ? tick : 15));
 _ = identities.Run(TimeSpan.FromSeconds(tick > 0 ? tick : 15)); // the governor: starts what it now allows, sheds what it must
+_ = jobs.Run(TimeSpan.FromSeconds(double.TryParse(Environment.GetEnvironmentVariable("AGENTDESK_JOB_TICK"), out var jt) ? jt : 30)); // recurring jobs: fires what is due
 
 Log.Info($"core starting (pid {Environment.ProcessId})");
 await PipeServer.Run((req, push, gone) => req.Tool switch
@@ -99,6 +101,11 @@ Task<string> Ui(string op, Args a, Caller caller, Func<string, Task> push, Cance
     "goal_stop" => goals.Stop(caller, a.String("name")),
     "goal_list" => goals.List(),
     "goal_status" => goals.Status(a.String("name")),
+    "job_create" => jobs.Create(a.String("name"), a.String("folder"), a.String("prompt"), a.StringOrNull("at"), a.StringOrNull("days"), a.DoubleOrNull("every_minutes"), a.StringOrNull("model"), a.DoubleOrNull("catch_up_minutes")),
+    "job_list" => jobs.List(),
+    "job_run" => jobs.RunNow(a.String("name")),
+    "job_enable" => jobs.Enable(a.String("name"), a.Bool("on", true)),
+    "job_delete" => jobs.Delete(a.String("name")),
     "slot_list" => slots.List(),
     "slot_assign" => slots.Assign(a.Int("n"), a.StringOrNull("goal"), a.StringOrNull("persona"), a.StringOrNull("persona_icon"), a.StringOrNull("channel_id"), a.StringOrNull("channel_name")),
     "slot_clear" => slots.Clear(a.Int("n")),
@@ -111,7 +118,7 @@ Task<string> WebCall(string op, JsonElement args) => op switch
     "core" => Task.FromResult(new JsonObject { ["pid"] = Environment.ProcessId, ["started"] = started.ToString("yyyy-MM-ddTHH:mm:ssZ"), ["update"] = Setup.State() }.ToJsonString(Wire.Indented)),
     "update" => Setup.Update(new Args(args), "web"),
     "open_questions" => board.OpenQuestions(new Caller(null, null, null, "web", 0), false, null),
-    "status" or "concierge" or "governor" or "governor_enforce" or "session_list" or "log_tail" or "identity_list" or "identity_create" or "identity_start" or "identity_stop" or "identity_forget"
+    "status" or "job_list" or "concierge" or "governor" or "governor_enforce" or "session_list" or "log_tail" or "identity_list" or "identity_create" or "identity_start" or "identity_stop" or "identity_forget"
         => Ui(op, new Args(args), new Caller(null, null, null, "web", 0), _ => Task.CompletedTask, CancellationToken.None),
     _ => Task.FromResult(Tools.Error($"unknown request: {op}")),
 };

@@ -77,6 +77,21 @@ Several agents often work on this repo at once, next to John's live install. The
   `gh pr checks <n> -R SystemsClarke/agentdesk --watch`, and `gh pr merge <n> -R SystemsClarke/agentdesk --merge --delete-branch`
   once it passes. Every merge publishes a release, and John applies it with the tray's Restart to update.
 
+## Recurring jobs
+
+A recurring job is a prompt the core runs itself on a schedule, so a chore no longer waits for someone to type "go". Each run is a
+fresh session of an identity named after the job; it does the work and calls `retire`. The core does not know what a job does.
+
+```
+agentdesk job new gocd-morning-brief C:\path	o\work --at 08:00 --days weekdays --model sonnet --prompt "Read SKILL.md and follow it"
+agentdesk job new patrol C:\path --every 120 --prompt "..."       # or every N minutes
+agentdesk job list | run | enable | disable | delete <name>
+```
+
+`--at` is 24-hour local time; `--days` is daily (default), weekdays, weekends or `mon,thu`. A run due while the last is still going is
+skipped, not stacked. A run missed while the core was down fires once on the way back up if it is under `--catch-up` minutes late
+(default 240), else it is skipped and the status says so. State is the `recurring_jobs` table; `AGENTDESK_JOB_TICK` sets the check interval (30 s).
+
 ## Layout
 
 ```

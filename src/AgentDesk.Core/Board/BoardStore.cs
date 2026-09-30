@@ -92,6 +92,10 @@ public sealed partial class BoardDb : IDisposable
             created_ts TEXT NOT NULL, work_id INTEGER);
         CREATE TABLE IF NOT EXISTS slots (n INTEGER PRIMARY KEY CHECK (n BETWEEN 1 AND 10), channel_id TEXT, channel_name TEXT,
             persona_name TEXT, persona_icon TEXT, goal TEXT COLLATE NOCASE, updated_ts TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS recurring_jobs (name TEXT PRIMARY KEY COLLATE NOCASE, folder TEXT NOT NULL, prompt TEXT NOT NULL,
+            model TEXT NOT NULL DEFAULT 'sonnet', at TEXT, days TEXT NOT NULL DEFAULT 'daily', every_minutes REAL, catch_up_minutes REAL NOT NULL DEFAULT 240,
+            enabled INTEGER NOT NULL DEFAULT 1, next_run_ts TEXT, last_run_ts TEXT, last_status TEXT, runs INTEGER NOT NULL DEFAULT 0,
+            created_ts TEXT NOT NULL);
         """;
 
     const string InsertMessage = "INSERT INTO messages (ts, thread_id, author, author_kind, body, reply_to, meta) VALUES ($ts,$tid,$author,$kind,$body,$replyTo,$meta)";

@@ -9,6 +9,8 @@
 //   agentdesk start|stop|forget <name>, agentdesk list   run, stop, delete and list identities
 //   agentdesk adoptable, agentdesk adopt <session-id> <name>   make a recent Claude Code conversation an identity
 //   agentdesk update [--apply]   check for (and download) a newer release; --apply restarts the core into it and waits for it
+//   agentdesk job new <name> <folder> --prompt <text> (--at HH:mm [--days daily|weekdays|mon,thu] | --every <minutes>) [--model m] [--catch-up <minutes>]
+//   agentdesk job list, job run|enable|disable|delete <name>   recurring jobs: a prompt the core runs itself on a schedule
 //   agentdesk goal new <name> <folder> <objective...>   a goal: its lead proposes a hypothesis, a measure and a success line
 //   agentdesk goal approve <name> [--members N] [--hours H] [--cadence M], goal stop|status <name>, goal list
 using System.Text.Json;
@@ -34,6 +36,24 @@ switch (args)
         break;
     case ["wait", var thread]:
         Console.WriteLine(await core.Call("wait", JsonSerializer.SerializeToElement(int.Parse(thread), CliJson.Default.Int32)));
+        break;
+    case ["job", "new", var name, var folder, .. var opts]:
+        Console.WriteLine(await core.Call("ui:job_create", Attach.Json(new()
+        {
+            ["name"] = name, ["folder"] = Path.GetFullPath(folder), ["prompt"] = Opt(opts, "--prompt"), ["at"] = Opt(opts, "--at"), ["days"] = Opt(opts, "--days"),
+            ["every_minutes"] = Opt(opts, "--every") is { } e ? double.Parse(e, System.Globalization.CultureInfo.InvariantCulture) : null,
+            ["model"] = Opt(opts, "--model"),
+            ["catch_up_minutes"] = Opt(opts, "--catch-up") is { } cu ? double.Parse(cu, System.Globalization.CultureInfo.InvariantCulture) : null,
+        })));
+        break;
+    case ["job", "list"]:
+        Console.WriteLine(await core.Call("ui:job_list"));
+        break;
+    case ["job", ("run" or "delete") and var verb, var name]:
+        Console.WriteLine(await core.Call($"ui:job_{verb}", Attach.Json(new() { ["name"] = name })));
+        break;
+    case ["job", ("enable" or "disable") and var verb, var name]:
+        Console.WriteLine(await core.Call("ui:job_enable", Attach.Json(new() { ["name"] = name, ["on"] = verb == "enable" })));
         break;
     case ["goal", "new", var name, var folder, .. var objective] when objective.Length > 0:
         Console.WriteLine(await core.Call("ui:goal_create", Attach.Json(new() { ["name"] = name, ["folder"] = Path.GetFullPath(folder), ["objective"] = string.Join(' ', objective) })));
