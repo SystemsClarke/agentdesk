@@ -44,7 +44,10 @@ public sealed class InstallFolderTests : IDisposable
         var pinned = Ping(current);
         var bystander = Ping(elsewhere); // an MCP relay in a project folder: never touched
 
-        Assert.Throws<IOException>(() => Directory.Move(current, Path.Combine(dir, "current_old"))); // the bug
+        // The bug. Whether Windows refuses the move varies by build (and by how soon the process has entered the folder), so
+        // this only records it; what must hold everywhere is that Holders finds the process and Release frees the folder.
+        try { Directory.Move(current, Path.Combine(dir, "current_old")); Directory.Move(Path.Combine(dir, "current_old"), current); }
+        catch (IOException) { }
         Assert.Contains(InstallFolder.Holders(current), h => h.EndsWith($"(pid {pinned.Id})"));
         Assert.DoesNotContain(InstallFolder.Holders(current), h => h.EndsWith($"(pid {bystander.Id})"));
 
