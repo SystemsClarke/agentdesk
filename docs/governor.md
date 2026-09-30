@@ -108,7 +108,7 @@ The governor applies to **swarm identities**, a goal's lead (`goals.lead`) or me
   left), the tick stops swarm sessions until it is back within the cap: members before leads, the Concierge's members first,
   then the longest idle first (idle means the last board write, `presence.seen_ts`, else the launch). A shed identity goes back
   to `queued`, not `stopped`, so it resumes its conversation (`--resume`) when the governor allows. John's own identities are
-  never stopped; if they alone are over the cap, the core logs a warning (once per change). A session mid-Phoenix is left alone.
+  never shed by the governor; if they alone are over the cap, the core logs a warning (once per change). Only active ones hold the cap: while swarm work is queued and the pool is full, each tick retires one of John's identities that has shown no sign of life (no transcript write) for 30 minutes (`AGENTDESK_IDLE_MINUTES`), oldest first. It is stopped, not queued, and John's reply (wake) starts it again on the same conversation. A session mid-Phoenix is left alone.
 - **Tiers.** While the governor steps down, a swarm session launches at the recommended tier (members haiku, leads sonnet)
   when that is cheaper than its stored `model`, never dearer. The stored column is unchanged; `running_model` records what ran.
 - **Fail closed.** With no sample, a latest sample over 30 minutes old, or two `claude -p /usage` refreshes in a row failing,

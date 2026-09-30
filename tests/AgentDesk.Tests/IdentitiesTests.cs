@@ -202,6 +202,27 @@ public sealed class IdentitiesTests : IDisposable
     }
 
     [Fact]
+    public async Task An_idle_identity_of_johns_is_named_to_give_up_its_slot_and_a_busy_one_is_not()
+    {
+        var (_, ids) = Core();
+        await ids.Create("idle", dir, null, null);
+        await ids.Create("busy", dir, null, null);
+        var idleSid = Json(ids.Start("idle")).GetProperty("claude_session_id").GetString()!;
+        var busySid = Json(ids.Start("busy")).GetProperty("claude_session_id").GetString()!;
+        var folder = Directory.CreateDirectory(Path.Combine(projects, "C--x")).FullName;
+        File.WriteAllText(Path.Combine(folder, idleSid + ".jsonl"), "{}");
+        File.WriteAllText(Path.Combine(folder, busySid + ".jsonl"), "{}");
+        File.SetLastWriteTimeUtc(Path.Combine(folder, idleSid + ".jsonl"), DateTime.UtcNow.AddHours(-2)); // quiet for 2 hours
+        ids.IdleAfter = TimeSpan.FromMinutes(30);
+        using var db = store.Open();
+        var later = DateTimeOffset.UtcNow.AddHours(1); // past both identities' launch times
+        // busy wrote just now, so it is not idle even an hour on only if its transcript is newer than the threshold allows
+        File.SetLastWriteTimeUtc(Path.Combine(folder, busySid + ".jsonl"), later.UtcDateTime.AddMinutes(-5));
+        Assert.Equal(["idle"], ids.IdleJohns(db, later));
+        Assert.Empty(ids.IdleJohns(db, DateTimeOffset.UtcNow)); // nothing is idle at launch
+    }
+
+    [Fact]
     public async Task Adoptable_lists_recent_transcripts_and_adopt_resumes_one()
     {
         var id = Guid.NewGuid().ToString();

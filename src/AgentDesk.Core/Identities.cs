@@ -425,6 +425,23 @@ public sealed partial class Identities
         return v.Enforce ? want : null;
     }
 
+    /// <summary>How long an identity of John's may show no sign of life (a transcript write, else its launch) before it counts as idle:
+    /// AGENTDESK_IDLE_MINUTES, default 30.</summary>
+    public TimeSpan IdleAfter = TimeSpan.FromMinutes(double.TryParse(Environment.GetEnvironmentVariable("AGENTDESK_IDLE_MINUTES"), CultureInfo.InvariantCulture, out var m) && m > 0 ? m : 30);
+
+    /// <summary>John's own running identities (neither a goal's lead nor a member) quiet for <see cref="IdleAfter"/>, longest idle first.</summary>
+    public List<string> IdleJohns(BoardDb db, DateTimeOffset now) =>
+        [.. db.Rows("SELECT name, claude_session_id, updated_ts FROM identities WHERE state='running' AND pid IS NOT NULL "
+                + "AND name NOT IN (SELECT identity FROM goal_members) AND name NOT IN (SELECT lead FROM goals)")
+            .Select(r =>
+            {
+                var last = DateTimeOffset.TryParse(r["updated_ts"]?.ToString(), CultureInfo.InvariantCulture, out var t) ? t : now;
+                if (r["claude_session_id"]?.ToString() is { } sid && Transcript(sid) is { } file)
+                    last = new[] { last, new DateTimeOffset(File.GetLastWriteTimeUtc(file), TimeSpan.Zero) }.Max();
+                return (Name: r["name"]!.ToString()!, Last: last);
+            })
+            .Where(x => now - x.Last >= IdleAfter).OrderBy(x => x.Last).Select(x => x.Name)];
+
     /// <summary>Every <paramref name="every"/>: <see cref="Tick"/>.</summary>
     public async Task Run(TimeSpan every, CancellationToken ct = default)
     {
@@ -437,7 +454,8 @@ public sealed partial class Identities
     /// <summary>Starts what the governor now allows (Drain), then sheds: when the recommended total is below the number running,
     /// swarm sessions stop, members before leads, the Concierge's members first, then the longest idle (last board write, else
     /// launch) first. A shed identity goes back to queued, so it resumes its conversation when the governor allows. John's own
-    /// identities are never stopped: the core only warns about them. Advisory, it only logs what it would have shed.</summary>
+    /// identities are never shed, only warned about; but while swarm work waits for room, an idle one (<see cref="IdleAfter"/>) is
+    /// retired to make it. Advisory, it only logs what it would have shed.</summary>
     public async Task Tick()
     {
         var shed = new List<string>();
@@ -450,6 +468,14 @@ public sealed partial class Identities
             var v = Judge(db);
             var pool = Budget.Read(db, MaxSessions(data), v);
             var running = pool.Running;
+            // Only active identities hold the cap: while swarm work waits for room, John's idle ones give a slot up (one per tick).
+            if (held.Count > 0 && running >= pool.Ceiling)
+                foreach (var name in IdleJohns(db, DateTimeOffset.UtcNow).Take(running - pool.Ceiling + 1))
+                {
+                    Mark(db, name, "stopped"); // not queued: John's reply (wake) starts it again on the same conversation
+                    Log.Info($"idle: {name} gave up its session (nothing for {IdleAfter.TotalMinutes:0} min) so queued swarm work can start");
+                    shed.Add(name);
+                }
             var excess = v.Fresh ? Math.Max(0, running - pool.Governed) : 0; // stale: nothing to shed on
             var victims = excess == 0 ? [] : db.Rows(ShedOrder).Select(r => r["name"]!.ToString()).Take(excess).ToList();
             if (excess > victims.Count)
