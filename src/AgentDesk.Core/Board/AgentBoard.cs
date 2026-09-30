@@ -134,12 +134,22 @@ public sealed partial class AgentBoard(BoardStore store, IPythonPlugins plugins,
 
     /// <summary>The Slack bridge's heartbeat, the usage meter, the governor and the merge list: ui:status without the parts the
     /// core adds itself (Program.cs: the Concierge, sessions, the bridge's supervision, goals).</summary>
-    public Task<string> Heartbeats(string data) => Run(db => new JsonObject
+    public Task<string> Heartbeats(string data, bool governor = true) => Run(db =>
     {
-        ["slack"] = Load(Path.Combine(data, "slack_bridge.state")),
-        ["usage"] = Usage.Report(Path.Combine(data, "claude_usage.json"), DateTimeOffset.UtcNow), ["governor"] = Governor.Report(db, data, DateTimeOffset.UtcNow),
-        ["prs"] = BoardDb.Arr(db.Rows("SELECT * FROM pull_requests ORDER BY id DESC LIMIT 200")),
+        var beats = new JsonObject
+        {
+            ["slack"] = Load(Path.Combine(data, "slack_bridge.state")),
+            ["usage"] = Usage.Report(Path.Combine(data, "claude_usage.json"), DateTimeOffset.UtcNow),
+        };
+        if (governor) // ui:status asks for its own (with enforcement merged in), so computing it here too was the same 50 ms twice
+            beats["governor"] = Governor.Report(db, data, DateTimeOffset.UtcNow);
+        beats["prs"] = BoardDb.Arr(db.Rows("SELECT * FROM pull_requests ORDER BY id DESC LIMIT 200"));
+        return beats;
     });
+
+    /// <summary>ui:threads: list_threads for the window, without each thread's last message body (it never shows it).</summary>
+    public Task<string> ListThreadsBrief(string? channel, string? status, int limit, bool includeArchived) =>
+        Run(db => new JsonObject { ["threads"] = BoardDb.Arr(db.ListThreads(channel, status, limit, includeArchived, lastBody: false)) });
 
     internal static JsonObject? Load(string file) { try { return JsonNode.Parse(File.ReadAllText(file)) as JsonObject; } catch (Exception) { return null; } }
 

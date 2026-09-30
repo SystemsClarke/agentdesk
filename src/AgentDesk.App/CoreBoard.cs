@@ -61,7 +61,8 @@ public sealed class CoreBoard : IBoard, IDisposable
     static Post ToPost(JsonElement m) => new(Str(m, "author") ?? "", Ts(m, "ts"), Int(m, "thread_id"), Str(m, "subject") ?? "",
         Str(m, "channel") ?? "", Kind: Meta(m, "kind"), Via: Meta(m, "via"));
 
-    async Task<List<ThreadRow>> List(object args) => [.. (await Call("list_threads", args)).GetProperty("threads").EnumerateArray().Select(Row)];
+    // ui:threads is list_threads without each thread's last message body, which Row never reads and which was most of the bytes.
+    async Task<List<ThreadRow>> List(object args) => [.. (await Call("ui:threads", args)).GetProperty("threads").EnumerateArray().Select(Row)];
 
     public async Task<IReadOnlyList<ThreadRow>> ListThreadsAsync(string channel) =>
         await List(new { channel, limit = 300, include_archived = true });
@@ -94,13 +95,19 @@ public sealed class CoreBoard : IBoard, IDisposable
 
     public async Task<BoardStatus> StatusAsync()
     {
-        var recent = (await Call("recent_messages", new { limit = 60 })).GetProperty("messages").EnumerateArray()
+        // Five independent reads: ask for all of them at once (the core answers each on its own thread) instead of one after another.
+        var recentCall = Call("recent_messages", new { limit = 60 });
+        var biosCall = List(new { channel = "discussion", limit = 300 });
+        var filedCall = List(new { channel = "question", status = "archived", limit = 1 });
+        var beatCall = Call("ui:status");
+        await Task.WhenAll(recentCall, biosCall, filedCall, beatCall);
+        var recent = (await recentCall).GetProperty("messages").EnumerateArray()
             .Where(m => Meta(m, "kind") is not ("ack" or "ack-note")).Select(ToPost).ToList();
         var john = recent.FirstOrDefault(p => p.Author == "john");
-        var bios = (await List(new { channel = "discussion", limit = 300 })).Where(t => t.Subject.StartsWith("bio: "))
+        var bios = (await biosCall).Where(t => t.Subject.StartsWith("bio: "))
             .GroupBy(t => t.Subject[5..].Trim()).ToDictionary(g => g.Key, g => g.First().Id);
-        var filed = (await List(new { channel = "question", status = "archived", limit = 1 })).FirstOrDefault();
-        var beat = await Call("ui:status");
+        var filed = (await filedCall).FirstOrDefault();
+        var beat = await beatCall;
         var concierge = beat.GetProperty("concierge");
         var sessions = beat.GetProperty("sessions");
         var slack = beat.GetProperty("slack") is { ValueKind: JsonValueKind.Object } s ? s : default;

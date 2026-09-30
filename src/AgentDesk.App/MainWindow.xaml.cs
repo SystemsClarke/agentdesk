@@ -19,12 +19,19 @@ namespace AgentDesk.App;
 public partial class MainWindow : Window
 {
     static readonly string[] PaletteKeys = ["bg", "panel", "line", "fg", "mu", "fa", "rule", "pk", "or", "ye", "gr", "cy", "pu", "on_bar", "textsel"];
-    static readonly Dictionary<string, (string Label, bool Dark, string Colors)> Palettes = new()
+    // Mono themes (e-ink, grayscale) have one ink for every hue, so the hue tags (pk, or, ye, pu) are told apart by weight, underline and
+    // slant instead (ToRun); the bar colours (ye, cy) are the ink itself, which makes the selected row and the bars pure inverse video.
+    static readonly Dictionary<string, (string Label, bool Dark, bool Mono, string Colors)> Palettes = new()
     {
-        ["monokai-pro"] = ("Monokai Pro", true,
+        ["monokai-pro"] = ("Monokai Pro", true, false,
             "#221f22 #2d2a2e #403e41 #fcfcfa #939293 #727072 #5b595c #ff6188 #fc9867 #ffd866 #a9dc76 #78dce8 #ab9df2 #221f22 #5b595c"),
-        ["monokai-pro-light"] = ("Monokai Pro Light", false,
+        ["monokai-pro-light"] = ("Monokai Pro Light", false, false,
             "#faf4f2 #ede7e5 #e0dad9 #29242a #706b6e #918c8e #d3cdcc #e14775 #e16032 #cc7a0a #269d69 #1c8ca8 #7058be #faf4f2 #d3cdcc"),
+        // Paper: black ink on white, every text pair at 7:1 or better, for an e-ink panel (few grays, no colour, nothing animated).
+        ["grayscale"] = ("Grayscale (paper)", false, true,
+            "#ffffff #eeeeee #d4d4d4 #000000 #3a3a3a #595959 #8c8c8c #000000 #000000 #000000 #000000 #000000 #000000 #ffffff #b8b8b8"),
+        ["grayscale-dark"] = ("Grayscale (ink)", true, true,
+            "#000000 #121212 #2e2e2e #ffffff #c4c4c4 #9e9e9e #6e6e6e #ffffff #ffffff #ffffff #ffffff #ffffff #ffffff #000000 #5c5c5c"),
     };
     static readonly string[] ThemeOrder = [.. Palettes.Keys];
     static readonly string SettingsPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "AgentDesk", "settings.json");
@@ -152,6 +159,8 @@ public partial class MainWindow : Window
             var t = s.Tags.Split(' ');
             var fg = t.Contains("rcpt") ? "fa" : t.Contains("cur") || t.Contains("bar") || t.Contains("barcy") ? "on_bar"
                 : t.FirstOrDefault(x => x.Length == 2 || x is "rule");
+            if (Palettes[Theme].Mono && fg is "pk" or "or" or "ye" or "pu") // no hue to carry it: pk (a problem) bold and underlined, or/ye bold, pu slanted
+                t = [.. t, .. fg switch { "pk" => new[] { "b", "u" }, "pu" => new[] { "i" }, _ => new[] { "b" } }];
             var bg = t.Contains("cur") ? "ye" : t.Contains("inv") ? "line" : t.Contains("barcy") ? "cy" : t.Contains("bar") ? "ye" : t.Contains("pnl") ? "panel" : null;
             looks[s.Tags] = look = (fg is null ? null : (Brush)Resources[fg], bg is null ? null : (Brush)Resources[bg], t.Contains("b") || t.Contains("cur"), t);
         }
@@ -166,6 +175,8 @@ public partial class MainWindow : Window
             run.FontStyle = FontStyles.Italic;
         if (look.T.Contains("s"))
             run.TextDecorations = TextDecorations.Strikethrough;
+        else if (look.T.Contains("u"))
+            run.TextDecorations = TextDecorations.Underline;
         if (look.T.FirstOrDefault(x => x is "hd1" or "hd2" or "hd3") is { } hd) // the Tk app's heading sizes: +3, +2, +1 pt
             run.FontSize = FontSize * (Pref("font_size", 11) + '4' - hd[2]) / Pref("font_size", 11);
         if (look.T.FirstOrDefault(x => x.StartsWith("href:")) is not { } href || !Uri.TryCreate(href[5..], UriKind.Absolute, out var uri) || uri.Scheme is not ("http" or "https"))

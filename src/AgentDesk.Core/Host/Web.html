@@ -7,6 +7,21 @@
 <title>AgentDesk ops</title>
 <style>
 :root { --bg:#221f22; --panel:#2d2a2e; --line:#403e41; --fg:#fcfcfa; --dim:#939293; --red:#ff6188; --orange:#fc9867; --yellow:#ffd866; --green:#a9dc76; --blue:#78dce8; --purple:#ab9df2; }
+/* Grayscale (paper and ink) for e-ink: one ink, every text pair 7:1 or better, no gradient, no transition, no animation.
+   Colour never carries meaning: state words stay text, and a problem is bold and underlined. The page follows the window's theme. */
+:root[data-theme="grayscale"] { --bg:#fff; --panel:#eee; --line:#8c8c8c; --fg:#000; --dim:#595959; --red:#000; --orange:#000; --yellow:#000; --green:#000; --blue:#000; --purple:#000; }
+:root[data-theme="grayscale-dark"] { --bg:#000; --panel:#121212; --line:#6e6e6e; --fg:#fff; --dim:#9e9e9e; --red:#fff; --orange:#fff; --yellow:#fff; --green:#fff; --blue:#fff; --purple:#fff; }
+:root[data-theme^="grayscale"] * { transition:none !important; animation:none !important; scroll-behavior:auto !important; }
+:root[data-theme^="grayscale"] section { border:2px solid var(--line); border-radius:0; }
+:root[data-theme^="grayscale"] h1, :root[data-theme^="grayscale"] h2 { text-decoration:none; border-bottom:2px solid var(--fg); padding-bottom:.15rem; }
+:root[data-theme^="grayscale"] button, :root[data-theme^="grayscale"] input, :root[data-theme^="grayscale"] textarea, :root[data-theme^="grayscale"] select { border:2px solid var(--fg); border-radius:0; }
+:root[data-theme^="grayscale"] button.danger { border-style:dashed; text-decoration:underline; }
+:root[data-theme^="grayscale"] button:focus-visible, :root[data-theme^="grayscale"] input:focus-visible, :root[data-theme^="grayscale"] textarea:focus-visible, :root[data-theme^="grayscale"] a:focus-visible { outline:4px solid var(--fg); }
+:root[data-theme^="grayscale"] a { text-decoration:underline; }
+:root[data-theme^="grayscale"] .running, :root[data-theme^="grayscale"] .up, :root[data-theme^="grayscale"] .queued { font-weight:bold; }
+:root[data-theme^="grayscale"] .stopped, :root[data-theme^="grayscale"] .down { font-weight:bold; text-decoration:underline; }
+:root[data-theme^="grayscale"] .meter { border:2px solid var(--fg); border-radius:0; } :root[data-theme^="grayscale"] .meter span { background:var(--fg); }
+:root[data-theme^="grayscale"] dialog { border:3px solid var(--fg); border-radius:0; } :root[data-theme^="grayscale"] dialog::backdrop { background:var(--bg); opacity:.85; }
 * { box-sizing:border-box; }
 body { margin:0 auto; max-width:60rem; padding:.75rem; overflow-wrap:anywhere; background:var(--bg); color:var(--fg); font:15px/1.4 "Cascadia Mono","Cascadia Code","JetBrains Mono",Consolas,monospace; }
 h1 { font-size:1.2rem; color:var(--yellow); margin:.25rem 0 .75rem; }
@@ -95,6 +110,7 @@ async function act(op, args, done) {
 let states = null;
 function renderCore(c) {
   const u = c.update;
+  if (c.theme && document.documentElement.dataset.theme !== c.theme) document.documentElement.dataset.theme = c.theme;
   show('core', `<dl><dt>Version</dt><dd>${esc(u.current)}${u.installed ? '' : ' <span class="dim">(dev build, not installed)</span>'}</dd>
     <dt>Pid</dt><dd>${c.pid}</dd><dt>Uptime</dt><dd>${ago(c.started)}</dd>
     <dt>Latest</dt><dd>${esc(u.latest ?? 'not checked yet')}</dd><dt>Update</dt><dd>${u.pending ? `${esc(u.pending)} ready to restart into` : 'none pending'}</dd></dl>`);
