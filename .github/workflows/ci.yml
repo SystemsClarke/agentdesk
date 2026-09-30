@@ -1,7 +1,12 @@
 name: ci
+# Pull requests only: main is built and tested again by cd, and a branch with no PR needs no run.
 on:
-  push:
   pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true # a newer push makes the older run pointless
 
 jobs:
   build:
@@ -11,6 +16,10 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 10.0.x
-      - name: Build and test
-        run: ./build.ps1 -Test
+      - uses: actions/cache@v4
+        with:
+          path: ~\.nuget\packages # includes the Native AOT compiler package, the biggest download
+          key: nuget-${{ hashFiles('**/*.csproj', 'Directory.Build.props', 'dotnet-tools.json') }}
+          restore-keys: nuget-
+      - run: ./build.ps1 -Test
         shell: pwsh

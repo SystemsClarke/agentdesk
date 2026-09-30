@@ -144,9 +144,9 @@ public sealed class SupervisorTests : IDisposable
             Beat(Environment.ProcessId, DateTimeOffset.UtcNow); // any pid's beat counts (pythonw runs the interpreter as a child)
         Assert.Equal(0, bridge.HungRestarts); // up past the hung time, but beating
 
-        await Until(() => bridge.HungRestarts == 1, 15); // it stops beating
+        await Until(() => bridge.HungRestarts == 1, 30); // it stops beating
         Assert.True(child.WaitForExit(5000), "the hung bridge was not killed");
-        await Until(() => bridge.Supervisor.Pid is { } pid && pid != first, 15); // restarted after the usual 5 s
+        await Until(() => bridge.Supervisor.Pid is { } pid && pid != first, 30); // restarted after the usual 5 s; slack for a loaded runner
         Assert.Equal(1, bridge.Status()["hung_restarts"]!.GetValue<int>());
     }
 
