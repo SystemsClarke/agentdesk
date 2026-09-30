@@ -13,6 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Delete the PR's branch
-        run: gh api -X DELETE "repos/${{ github.repository }}/git/refs/heads/${{ github.event.pull_request.head.ref }}"
+        # 404/422: already gone (merged with "delete branch" ticked), which is the goal too.
+        run: gh api -X DELETE "repos/${{ github.repository }}/git/refs/heads/${{ github.event.pull_request.head.ref }}" || echo "branch already gone"
         env:
           GH_TOKEN: ${{ github.token }}

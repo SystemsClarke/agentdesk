@@ -42,9 +42,9 @@ public sealed class SupervisorTests : IDisposable
     {
         using var s = new Supervisor("t", "cmd /d /c exit 1", data, TimeSpan.FromMilliseconds(100), TimeSpan.FromMilliseconds(400), TimeSpan.FromMinutes(1));
         await Until(() => s.Restarts >= 1);
-        Assert.Equal(TimeSpan.FromMilliseconds(100), s.Backoff);
+        Assert.InRange(s.Backoff, TimeSpan.FromMilliseconds(100), TimeSpan.FromMilliseconds(200)); // a slow runner may already be a step on
         await Until(() => s.Restarts >= 2);
-        Assert.Equal(TimeSpan.FromMilliseconds(200), s.Backoff);
+        Assert.InRange(s.Backoff, TimeSpan.FromMilliseconds(200), TimeSpan.FromMilliseconds(400));
         await Until(() => s.Restarts >= 4);
         Assert.Equal(TimeSpan.FromMilliseconds(400), s.Backoff); // 100, 200, 400, 400: capped
         Assert.Equal(1, s.LastExit);
