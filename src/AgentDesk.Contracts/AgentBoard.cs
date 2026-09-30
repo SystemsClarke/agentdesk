@@ -13,7 +13,8 @@ public sealed record Caller(
     string? Cwd,         // the agent's working directory
     string? Harness,     // e.g. "claude-code"
     int Pid,             // the shim's own pid: lives exactly as long as the agent session
-    string? Identity = null); // AGENTDESK_IDENTITY: set when the core launched this session for an identity
+    string? Identity = null, // AGENTDESK_IDENTITY: set when the core launched this session for an identity
+    string? Headless = null); // AGENTDESK_HEADLESS: the name of a plain session the core hosts (a window's New session)
 
 /// <summary>
 /// The agent-facing board: one method per MCP tool, same names and arguments as
