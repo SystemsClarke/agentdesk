@@ -7,10 +7,10 @@ namespace AgentDesk.Core;
 /// <summary>One `/usage` reading: weekly and 5-hour percentages, their resets, and how many identity sessions ran then.</summary>
 public sealed record UsageSample(DateTimeOffset Ts, double WeeklyPct, DateTimeOffset? WeeklyReset, double? FiveHourPct, DateTimeOffset? FiveHourReset, int SwarmSessions);
 
-/// <summary>settings.json's governor_* keys. The defaults are conservative: they assume John is busy and sessions are expensive
+/// <summary>settings.json's governor_* keys (governor_ramp and governor_floor shape the week: see <see cref="Governor.Pace"/>). The defaults are conservative: they assume John is busy and sessions are expensive
 /// until the samples say otherwise.</summary>
 public sealed record GovernorSettings(double K = 2, double Margin = 2, double DefaultRate = 0.3, double DefaultSigma = 0.5,
-    double DefaultSessionRate = 3, int MaxSessions = 12, int MaxMembers = 4, int MaxSwarms = 10, bool Enforce = false)
+    double DefaultSessionRate = 3, int MaxSessions = 12, int MaxMembers = 4, int MaxSwarms = 10, bool Enforce = false, double Ramp = 1, double Floor = 0.3)
 {
     public static GovernorSettings From(JsonObject? s)
     {
@@ -19,7 +19,8 @@ public sealed record GovernorSettings(double K = 2, double Margin = 2, double De
         var g = new GovernorSettings();
         return new(D("governor_k", g.K), D("governor_margin", g.Margin), D("governor_default_rate", g.DefaultRate), D("governor_default_sigma", g.DefaultSigma),
             D("governor_default_session_rate", g.DefaultSessionRate), I("governor_max_sessions", g.MaxSessions), I("governor_max_members", g.MaxMembers),
-            I("governor_max_swarms", g.MaxSwarms), s?["governor_enforce"]?.ToString().Equals("true", StringComparison.OrdinalIgnoreCase) == true);
+            I("governor_max_swarms", g.MaxSwarms), s?["governor_enforce"]?.ToString().Equals("true", StringComparison.OrdinalIgnoreCase) == true,
+            D("governor_ramp", g.Ramp), Math.Min(1, D("governor_floor", g.Floor)));
     }
 }
 
@@ -62,7 +63,7 @@ public sealed class BurnModel
 /// <summary>What the governor recommends now. Identities enforces it when settings.json's governor_enforce is true (milestone 7).</summary>
 public sealed record Advice(double Used, double Remaining, double ResetInHours, double Baseline, double Sigma, double Reserve, double Spendable,
     double AllowedRate, double SessionRate, int Running, int TotalSessions, int NewSessions, int Swarms, int MembersPerSwarm, double FiveHourPct,
-    bool StepDown, string LeadModel, string MemberModel, double ProjectedEnd, string Reason);
+    bool StepDown, string LeadModel, string MemberModel, double ProjectedEnd, string Reason, double Pace = 1, double WeekElapsed = 0);
 
 /// <summary>
 /// The usage governor (docs/GOAL.md milestone 3, advisory): records `/usage` samples, forecasts John's own burn until the weekly
@@ -98,6 +99,17 @@ public static class Governor
     /// <summary>The formula, floored at 0.</summary>
     public static double Spendable(double remaining, double baseline, double sigma, double hours, double k) =>
         Math.Max(0, remaining - baseline - k * sigma * Math.Sqrt(Math.Max(0, hours)));
+
+    /// <summary>How much of an even spread of the spendable % the governor allows per hour at <paramref name="t"/> (0 the week's start,
+    /// 1 its reset): <paramref name="floor"/> at the start, climbing to 1 at the reset. Spendable is recomputed from what is really
+    /// left every time, so what early hours did not spend (the cushion) is spent later, harder: the end-of-week push. A ramp of 0 is the old
+    /// flat spread; a bigger one holds back longer. m = (q+1) t^q (1-t) / (1-t^(q+1)) is 0 at the start and 1 at the reset.</summary>
+    public static double Pace(double t, double ramp, double floor)
+    {
+        t = Math.Clamp(t, 0, 0.999);
+        var m = ramp <= 0 ? 1 : (ramp + 1) * Math.Pow(t, ramp) * (1 - t) / (1 - Math.Pow(t, ramp + 1));
+        return floor + (1 - floor) * Math.Min(1, m);
+    }
 
     /// <summary>Monday 00:00 UTC is 0.</summary>
     public static int HourOfWeek(DateTimeOffset t) => (int)(((t.ToUnixTimeSeconds() / 3600 + 72) % 168 + 168) % 168);
@@ -186,7 +198,9 @@ public static class Governor
         var sigma = m.Sigma(s);
         var reserve = Math.Min(s.K * sigma * Math.Sqrt(hours), Math.Min(MaxReserve, remaining));
         var spendable = Math.Max(0, remaining - s.Margin - baseline - reserve);
-        var rate = spendable / hours;
+        var elapsed = Math.Clamp((now - reset.AddDays(-7)).TotalHours / 168, 0, 1);
+        var pace = Pace(elapsed, s.Ramp, s.Floor);
+        var rate = spendable / hours * pace;
         var per = m.PerSession(s);
         var five = latest.FiveHourReset is { } f && f <= now ? 0 : latest.FiveHourPct ?? 0;
         var affordable = rate / per;
@@ -195,14 +209,14 @@ public static class Governor
         string reason;
         if (five >= 90) { (total, newSessions) = (0, 0); reason = $"the 5-hour window is at {five:0}%: no swarm sessions (shed them) until it resets"; }
         else if (spendable <= 0) reason = $"nothing spendable: John's forecast {baseline:0.#}% plus a {reserve:0.#}% reserve covers the {remaining:0.#}% left";
-        else if (total == 0) reason = $"{spendable:0.#}% spendable over {Usage.Span(hours * 3600)} funds {affordable:0.00} sessions at {per:0.##}%/session-hour; the reserve shrinks as the reset nears";
-        else reason = $"{spendable:0.#}% spendable over {Usage.Span(hours * 3600)}: {rate:0.00}%/h funds {total} sessions at {per:0.##}%/session-hour"
+        else if (total == 0) reason = $"{spendable:0.#}% spendable over {Usage.Span(hours * 3600)} ({pace * 100:0}% of an even spread this far into the week) funds {affordable:0.00} sessions at {per:0.##}%/session-hour; the reserve shrinks as the reset nears";
+        else reason = $"{spendable:0.#}% spendable over {Usage.Span(hours * 3600)}, {pace * 100:0}% of an even spread this far into the week: {rate:0.00}%/h funds {total} sessions at {per:0.##}%/session-hour"
             + (total == s.MaxSessions && affordable >= s.MaxSessions + 1 ? " (held at governor_max_sessions)" : "");
         var members = total <= 1 ? 0 : Math.Min(s.MaxMembers, total - 1);
         var swarms = total == 0 ? 0 : Math.Min(s.MaxSwarms, total / (1 + members));
         var stepDown = affordable < 1 || five >= 75; // tight: members drop to haiku and leads to sonnet
         return new(used, remaining, hours, baseline, sigma, reserve, spendable, rate, per, running, total, newSessions, swarms, members, five,
-            stepDown, stepDown ? "sonnet" : "opus", stepDown ? "haiku" : "sonnet", Math.Min(100, used + baseline + Math.Min(spendable, total * per * hours)), reason);
+            stepDown, stepDown ? "sonnet" : "opus", stepDown ? "haiku" : "sonnet", Math.Min(100, used + baseline + Math.Min(spendable, total * per * hours)), reason, pace, elapsed);
     }
 
     // ---- the board
@@ -296,8 +310,14 @@ public static class Governor
         var m = Train(samples, s);
         var a = Advise(m, samples[^1], Running(db), now, s);
         static double R(double v) => Math.Round(v, 2);
+        var path = PlanPath(m, samples[^1], now, s);
+        var trend = TrendEnd(samples, now, a);
+        var plan = path.Count > 0 ? path[^1] : Math.Min(100, a.Used + a.Baseline + a.Spendable);
         return new()
         {
+            ["plan_end_pct"] = R(plan), ["trend_end_pct"] = trend is { } te ? R(te) : null, ["pace"] = R(a.Pace), ["week_elapsed_pct"] = R(a.WeekElapsed * 100),
+            ["unused_pct"] = R(Math.Max(0, 100 - Math.Max(plan, trend ?? 0))), ["status"] = Status(plan, trend),
+            ["forecast"] = new JsonArray([.. path.Select(x => (JsonNode?)R(x))]),
             ["samples"] = samples.Count, ["baseline_hours"] = m.BaselineHours, ["session_hours"] = m.SessionN,
             ["estimated_hours"] = m.EstN, ["baseline_source"] = m.Source,
             ["sample_age_minutes"] = R((now - samples[^1].Ts).TotalMinutes),
@@ -314,6 +334,38 @@ public static class Governor
                 + $" · members {a.MemberModel}{(a.StepDown ? " (step down)" : "")}" + (a.FiveHourPct >= 90 ? " · 5h guard" : ""),
         };
     }
+
+    /// <summary>The plan, hour by hour to the reset: John's expected burn plus the governor's allowed rate, with the allowance recomputed
+    /// from what would then be left. It lands near 100% less the margin because the cushion is released as the reset nears.</summary>
+    public static List<double> PlanPath(BurnModel m, UsageSample latest, DateTimeOffset now, GovernorSettings s)
+    {
+        var (used, reset) = (latest.WeeklyPct, latest.WeeklyReset ?? now.AddDays(7));
+        while (reset <= now) (used, reset) = (0, reset.AddDays(7));
+        var path = new List<double>();
+        for (var t = now; t < reset && path.Count < 170; t = t.AddHours(1))
+        {
+            var a = Advise(m, new UsageSample(t, used, reset, null, null, 0), 0, t, s);
+            used = Math.Min(100, used + m.Rate(HourOfWeek(t), s) + a.AllowedRate);
+            path.Add(used);
+        }
+        return path;
+    }
+
+    /// <summary>Where the week ends if the last six hours' real pace simply continued; null with under an hour of readings in this week.</summary>
+    public static double? TrendEnd(IReadOnlyList<UsageSample> samples, DateTimeOffset now, Advice a)
+    {
+        var last = samples[^1];
+        var first = samples.FirstOrDefault(x => x.Ts >= last.Ts.AddHours(-6) && SameWeek(x, last) && x.WeeklyPct <= last.WeeklyPct);
+        if (first is null || (last.Ts - first.Ts).TotalHours < 1) return null;
+        return Math.Min(100, a.Used + (last.WeeklyPct - first.WeeklyPct) / (last.Ts - first.Ts).TotalHours * a.ResetInHours);
+    }
+
+    /// <summary>One line on how the week is going.</summary>
+    public static string Status(double plan, double? trend) =>
+        trend is not { } t ? "too few readings to tell yet"
+        : t >= 100 ? $"on course to hit the limit before the reset ({t:0}%)"
+        : t >= plan - 2 ? $"on pace: ends near {t:0}%"
+        : $"behind: at this pace the week ends near {t:0}% and {Math.Max(0, 100 - t):0}% goes unused; the work queue should spin up";
 
     /// <summary>ui:governor's "series", for the window's budget chart: weekly % over the last 7 days, the last reading of each hour, oldest first.</summary>
     public static JsonArray Series(IEnumerable<UsageSample> samples, DateTimeOffset now) =>

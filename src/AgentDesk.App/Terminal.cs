@@ -677,7 +677,10 @@ public partial class MainWindow
             [S("Today's allowance: ", "mu"), S(N(b.Sessions, "session"), "fg b"), S(" · ", "mu"), S($"{N(b.Swarms, "swarm")} x {N(b.Members, "member")}")],
             [S(b.Reason, "fa")],
             .. b.Pool.Length > 0 ? [[S("Session pool: ", "mu"), S(b.Pool)]] : new List<Line>(),
+            .. b.Status.Length > 0 ? [[S("Pace: ", "mu"), S(b.Status, b.Status.StartsWith("behind") ? "ye" : b.Status.StartsWith("on course to hit") ? "pk" : "gr"),
+                .. If(b.PlanEnd > 0, S($" · the plan lands at {b.PlanEnd:0}%", "fa"))]] : new List<Line>(),
             .. b.Series.Count > 1 ? [[S("This week  ", "mu"), .. Spark(b.Series, "cy", "%", W - 36)]] : new List<Line>(),
+            .. b.Forecast is { Count: > 1 } f ? [[S("To the reset ", "mu"), .. Spark(f, "gr", "%", W - 38)]] : new List<Line>(),
         ];
     }
 

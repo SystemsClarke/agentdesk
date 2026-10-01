@@ -13,6 +13,8 @@ namespace AgentDesk.Core;
 public sealed class Concierge(BoardStore store, Goals goals, string folder)
 {
     public const string Name = "concierge", Lead = Name + "-lead";
+    /// <summary>Workers at once while the week is on pace; the Dispatcher lifts it while the week is behind.</summary>
+    public const int BaseMembers = 3;
 
     const string Charter = """
         You are the AgentDesk Concierge's lead. The core's dispatcher already starts a worker for every ordinary open Work to Hire item,
@@ -27,7 +29,7 @@ public sealed class Concierge(BoardStore store, Goals goals, string folder)
 
     readonly Goals.StandingGoal spec = new(Name, "Keep Work to Hire drained: every open item claimed, worked by a small swarm, and completed with a report on its thread.",
         folder, Charter, "opus", "The core dispatches every ordinary open item itself, and the lead splits the rest, so the queue empties.", "internal:open_triage", "value <= 0",
-        MaxMembers: 3, CadenceMinutes: 10);
+        MaxMembers: BaseMembers, CadenceMinutes: 10);
 
     /// <summary>ui:concierge. With <paramref name="on"/> (John only) it turns the Concierge on (creating or approving the goal) or
     /// off (the goal stops: members forgotten, the lead stopped, held items back on the queue). Returns the state either way.</summary>

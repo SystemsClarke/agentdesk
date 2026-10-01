@@ -21,6 +21,35 @@ public sealed class GovernorTests(ITestOutputHelper output)
     }
 
     [Fact]
+    public void The_allowance_ramps_up_through_the_week_so_the_cushion_is_spent_at_the_end()
+    {
+        Assert.Equal(S.Floor, Governor.Pace(0, S.Ramp, S.Floor), 6);
+        Assert.Equal(1, Governor.Pace(0.999999, S.Ramp, S.Floor), 2);
+        var paces = new[] { 0, 0.1, 0.3, 0.5, 0.7, 0.9, 0.99 }.Select(t => Governor.Pace(t, S.Ramp, S.Floor)).ToList();
+        Assert.Equal(paces.Order().ToList(), paces); // never eases off
+        Assert.Equal(1, Governor.Pace(0.2, 0, S.Floor)); // a ramp of 0 is the old flat spread
+
+        // The same plan with the same % left funds fewer sessions per hour early in the week than late in it.
+        var reset = Mon.AddDays(7);
+        var model = new BurnModel();
+        double Rate(double hoursIn) => Governor.Advise(model, new(Mon.AddHours(hoursIn), 20, reset, 0, null, 0), 0, Mon.AddHours(hoursIn), S).AllowedRate;
+        Assert.True(Rate(2) < Rate(80) && Rate(80) < Rate(160), "the allowance rises through the week");
+    }
+
+    [Fact]
+    public void The_plan_path_runs_to_the_reset_and_lands_near_the_top_of_the_plan()
+    {
+        var reset = Mon.AddDays(7);
+        var path = Governor.PlanPath(new BurnModel(), new(Mon, 0, reset, 0, null, 0), Mon, S);
+        Assert.Equal(168, path.Count);
+        Assert.Equal(path.Order().ToList(), path); // only goes up
+        Assert.InRange(path[^1], 90, 100); // it tries to use the week, less the margin
+        Assert.Contains("behind", Governor.Status(98, 70));
+        Assert.Contains("on pace", Governor.Status(98, 97));
+        Assert.Contains("limit", Governor.Status(98, 100));
+    }
+
+    [Fact]
     public void Reserve_shrinks_to_nothing_as_the_reset_nears()
     {
         var reserves = new[] { 168.0, 72, 24, 4, 1, 0.1, 0 }.Select(h => 60 - Governor.Spendable(60, 5, 1, h, 2)).ToList();

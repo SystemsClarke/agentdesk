@@ -9,12 +9,12 @@ namespace AgentDesk.Core;
 /// The Concierge's hands (docs/DISPATCH.md): while the Concierge is on, open Work to Hire items are claimed and handed to a
 /// worker by plain code, in priority order, with no LLM deciding. The lead (concierge-lead) is woken only for items marked
 /// `triage` (a vague or large one) and ones that failed three times. Order: meta.priority (0 urgent .. 4 whenever, default 2),
-/// then id. An item waits for its meta.after (ids that must be done), and an `eager` item only runs while the week's forecast
-/// leaves room (projected end below <see cref="EagerBelow"/> percent), which is how spare budget gets spent.
+/// then id. An item waits for its meta.after (ids that must be done), and an `eager` item only runs while the week is behind its
+/// plan (the governor's trend ends under its plan), which is how spare budget gets spent; being behind also lifts the cap on workers
+/// to what the governor can afford.
 /// </summary>
 public sealed class Dispatcher(BoardStore store, Goals goals, string data)
 {
-    public const double EagerBelow = 90;
     const int MaxAttempts = 3;
     static readonly string[] Mechanical = ["rename", "typo", "docstring", "changelog", "summar", "lookup", "format", "list "];
     public static readonly Caller AsLead = new(null, Concierge.Lead, null, "claude-code", 0, Concierge.Lead);
@@ -65,11 +65,17 @@ public sealed class Dispatcher(BoardStore store, Goals goals, string data)
         using (var db = store.Open())
         {
             if (db.Rows("SELECT max_members FROM goals WHERE name=$n AND state='running'", ("n", Concierge.Name)).FirstOrDefault() is not { } g) return started;
-            var room = (long)g["max_members"]! - (long)db.Scalar("SELECT COUNT(*) FROM goal_members WHERE goal=$n", ("n", Concierge.Name))!;
+            var members = (long)db.Scalar("SELECT COUNT(*) FROM goal_members WHERE goal=$n", ("n", Concierge.Name))!;
+            // Behind the plan (the week is on course to end with budget unspent): the queue is where it goes, so allow as many workers as
+            // the governor says it can afford, beyond the usual few. On pace, back to the usual few.
+            var (behind, spare) = Spend(db, now ?? DateTimeOffset.UtcNow);
+            var cap = behind ? Math.Max(Concierge.BaseMembers, members + spare) : Concierge.BaseMembers;
+            if (cap != (long)g["max_members"]!) db.Exec("UPDATE goals SET max_members=$m WHERE name=$n", ("m", cap), ("n", Concierge.Name));
+            var room = cap - members;
             // A member still queued for a session is a worker already waiting: more would only pile up claimed items.
             var waiting = (long)db.Scalar("SELECT COUNT(*) FROM goal_members m JOIN identities i ON i.name=m.identity WHERE m.goal=$n AND i.state<>'running'", ("n", Concierge.Name))!;
             if (room <= 0 || waiting > 0) return started;
-            var eagerOk = Projected(db, now ?? DateTimeOffset.UtcNow) is { } p && p < EagerBelow;
+            var eagerOk = behind;
             Renew(db, now ?? DateTimeOffset.UtcNow);
             var open = db.Rows("SELECT id, subject, meta FROM threads WHERE channel='work' AND status='open'");
             picks = [.. open.Select(t => (Id: (long)t["id"]!, Item: t, Meta: Meta(t)))
@@ -105,9 +111,13 @@ public sealed class Dispatcher(BoardStore store, Goals goals, string data)
         return started;
     }
 
-    /// <summary>The week's forecast at its reset (the governor's projected_end_pct), or null with no usage samples.</summary>
-    double? Projected(BoardDb db, DateTimeOffset now) =>
-        Governor.Report(db, data, now)["projected_end_pct"] is JsonValue v && v.TryGetValue<double>(out var d) ? d : null;
+    /// <summary>Whether the week is running behind its plan (its last six hours' pace would end under the plan's landing), and how many more sessions the governor says are affordable.</summary>
+    (bool Behind, int Spare) Spend(BoardDb db, DateTimeOffset now)
+    {
+        var r = Governor.Report(db, data, now);
+        var behind = r["trend_end_pct"] is JsonValue t && r["plan_end_pct"] is JsonValue p && t.TryGetValue<double>(out var trend) && p.TryGetValue<double>(out var plan) && trend < plan - 2;
+        return (behind, r["caps"]?["new_sessions"] is JsonValue n && n.TryGetValue<int>(out var spare) ? spare : 0);
+    }
 
     static bool Due(JsonObject meta, DateTimeOffset now) => Str(meta, "due") is not { } d || DateTimeOffset.Parse(d, CultureInfo.InvariantCulture) <= now;
 
