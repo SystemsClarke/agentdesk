@@ -72,6 +72,7 @@ Task<string> Ui(string op, Args a, Caller caller, Func<string, Task> push, Cance
     "post" => board.JohnPosts(a.String("channel"), a.String("subject", ""), a.String("body")),
     "unarchive" => board.Unarchive(a.Int("thread_id")),
     "status" => Status(),
+    "threads" => board.ListThreadsBrief(a.StringOrNull("channel"), a.StringOrNull("status"), a.Int("limit", 50), a.Bool("include_archived", true)),
     "governor" => identities.GovernorUi(),
     "governor_enforce" => identities.Enforce(caller, a.BoolOrNull("on") ?? throw new ArgumentException("on is required (true or false)")),
     "check_prs" => Task.FromResult(prs.Poke()),
@@ -115,7 +116,8 @@ Task<string> Ui(string op, Args a, Caller caller, Func<string, Task> push, Cance
 // The ops console (Host/Web.cs): the requests its page needs, answered by the same objects as the window's.
 Task<string> WebCall(string op, JsonElement args) => op switch
 {
-    "core" => Task.FromResult(new JsonObject { ["pid"] = Environment.ProcessId, ["started"] = started.ToString("yyyy-MM-ddTHH:mm:ssZ"), ["update"] = Setup.State() }.ToJsonString(Wire.Indented)),
+    "core" => Task.FromResult(new JsonObject { ["pid"] = Environment.ProcessId, ["started"] = started.ToString("yyyy-MM-ddTHH:mm:ssZ"), ["update"] = Setup.State(),
+        ["theme"] = AgentBoard.Load(Path.Combine(data, "settings.json"))?["theme"]?.ToString() }.ToJsonString(Wire.Indented)),
     "update" => Setup.Update(new Args(args), "web"),
     "open_questions" => board.OpenQuestions(new Caller(null, null, null, "web", 0), false, null),
     "status" or "job_list" or "concierge" or "governor" or "governor_enforce" or "session_list" or "log_tail" or "identity_list" or "identity_create" or "identity_start" or "identity_stop" or "identity_forget"
@@ -125,7 +127,7 @@ Task<string> WebCall(string op, JsonElement args) => op switch
 
 async Task<string> Status()
 {
-    var s = JsonNode.Parse(await board.Heartbeats(data))!;
+    var s = JsonNode.Parse(await board.Heartbeats(data, governor: false))!;
     s["bridge"] = bridge?.Status() ?? new JsonObject { ["enabled"] = false };
     s["goals"] = goals.Summaries();
     s["concierge"] = concierge.State();

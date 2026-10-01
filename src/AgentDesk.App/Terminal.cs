@@ -160,25 +160,33 @@ public partial class MainWindow
 
     async Task ReadBoardAsync()
     {
-        foreach (var ch in Channels)
-        {
-            var all = await board.ListThreadsAsync(ch);
-            rows[ch] = ch != "question" ? all
-                : [.. all.Where(r => (r.Status == "archived") == showArchived).OrderBy(r => showArchived || r.Waiting ? 0 : 1)];
-        }
-        openQs = await board.OpenQuestionsAsync();
-        st = await board.StatusAsync();
-        agents = await board.IdentitiesAsync();
-        webUrl = await board.WebUrlAsync();
-        slots = await board.SlotsAsync();
-        if (screen == "goal" && goal is { } g)
-            goal = (g.Name, await board.GoalAsync(g.Name) ?? GoalDetailOf(g.Name));
-        if (screen == "adopt")
-            adoptables = await board.AdoptableAsync();
+        // Every read is independent, so start them all and wait once: a refresh costs the slowest call, not the sum of a dozen
+        // pipe round trips (measured on the live board: 366 ms one after another).
+        var listed = Channels.Select(ch => board.ListThreadsAsync(ch)).ToList();
+        var openQsCall = board.OpenQuestionsAsync();
+        var stCall = board.StatusAsync();
+        var agentsCall = board.IdentitiesAsync();
+        var webUrlCall = board.WebUrlAsync();
+        var slotsCall = board.SlotsAsync();
+        var goalCall = screen == "goal" && goal is { } g ? board.GoalAsync(g.Name) : null;
+        var adoptCall = screen == "adopt" ? board.AdoptableAsync() : null;
         // Re-read the open thread before dropping the cache. Clearing it first made Reader() paint "no longer on the board"
         // for a frame (the flicker) and shrink the document, which snapped the scroll back to the top.
         var open = screen == "read" ? readTid : null;
-        var current = open is int tid ? await board.ReadThreadAsync(tid) : null;
+        var currentCall = open is int tid ? board.ReadThreadAsync(tid) : null;
+        await Task.WhenAll([.. listed, openQsCall, stCall, agentsCall, webUrlCall, slotsCall, .. new Task?[] { goalCall, adoptCall, currentCall }.OfType<Task>()]);
+        for (var i = 0; i < Channels.Length; i++)
+        {
+            var (ch, all) = (Channels[i], await listed[i]);
+            rows[ch] = ch != "question" ? all
+                : [.. all.Where(r => (r.Status == "archived") == showArchived).OrderBy(r => showArchived || r.Waiting ? 0 : 1)];
+        }
+        (openQs, st, agents, webUrl, slots) = (await openQsCall, await stCall, await agentsCall, await webUrlCall, await slotsCall);
+        if (goalCall is not null && goal is { } cur)
+            goal = (cur.Name, await goalCall ?? GoalDetailOf(cur.Name));
+        if (adoptCall is not null)
+            adoptables = await adoptCall;
+        var current = currentCall is null ? null : await currentCall;
         threads.Clear();
         if (open is int id && current is not null)
             threads[id] = current;

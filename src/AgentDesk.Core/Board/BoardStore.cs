@@ -101,8 +101,13 @@ public sealed partial class BoardDb : IDisposable
     const string InsertMessage = "INSERT INTO messages (ts, thread_id, author, author_kind, body, reply_to, meta) VALUES ($ts,$tid,$author,$kind,$body,$replyTo,$meta)";
     const string MessageWithThread = "SELECT m.*, t.subject, t.channel FROM messages m JOIN threads t ON t.id = m.thread_id";
 
+    const string LastBodySql = " (SELECT body FROM messages WHERE thread_id=t.id ORDER BY id DESC LIMIT 1) AS last_body,";
+
+    /// <summary>The window's list rows: the same columns minus last_body, which it never shows and which was most of the bytes.</summary>
+    static readonly string ListThreadsBriefSql = ListThreadsSql.Replace(LastBodySql, "");
+
     const string ListThreadsSql = "SELECT t.*, COUNT(m.id) AS message_count,"
-        + " (SELECT body FROM messages WHERE thread_id=t.id ORDER BY id DESC LIMIT 1) AS last_body,"
+        + LastBodySql
         + " (SELECT author FROM messages WHERE thread_id=t.id AND COALESCE(CASE WHEN json_valid(meta)"
         + " THEN json_extract(meta,'$.kind') END,'') NOT IN ('ack','ack-note','read-receipt') ORDER BY id DESC LIMIT 1) AS last_author,"
         + " (SELECT COALESCE(CASE WHEN a.state='posted' THEN 'picked-up' END, d.state,"
@@ -122,7 +127,8 @@ public sealed partial class BoardDb : IDisposable
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path))!);
         db = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = path, Pooling = false, DefaultTimeout = 30 }.ToString());
         db.Open();
-        Exec("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=30000; PRAGMA foreign_keys=ON");
+        // journal_mode=WAL is stored in the database file, so InitDb sets it once; asserting it on every open (every tool call) took a lock each time.
+        Exec("PRAGMA busy_timeout=30000; PRAGMA foreign_keys=ON");
     }
 
     public void Dispose() => db.Dispose();
@@ -180,6 +186,7 @@ public sealed partial class BoardDb : IDisposable
 
     public void InitDb()
     {
+        Exec("PRAGMA journal_mode=WAL");
         Exec(Schema);
         Exec("DROP VIEW IF EXISTS open_questions;");  // so an edited view definition reaches boards that already have one
         Exec(OpenQuestionsView);
@@ -419,13 +426,13 @@ public sealed partial class BoardDb : IDisposable
         return new() { ["thread"] = t, ["messages"] = Arr(Rows("SELECT * FROM messages WHERE thread_id=$id ORDER BY id", ("id", id))) };
     }
 
-    public List<JsonObject> ListThreads(string? channel, string? status, int limit, bool includeArchived = true)
+    public List<JsonObject> ListThreads(string? channel, string? status, int limit, bool includeArchived = true, bool lastBody = true)
     {
         var where = new List<string>();
         if (!string.IsNullOrEmpty(channel)) where.Add("t.channel = $channel");
         if (!string.IsNullOrEmpty(status)) where.Add("t.status = $status");
         if (!includeArchived && status != "archived") where.Add("t.status <> 'archived'");  // an explicit status='archived' wins
-        return Rows(ListThreadsSql + (where.Count > 0 ? " WHERE " + string.Join(" AND ", where) : "") + " GROUP BY t.id ORDER BY t.updated_ts DESC LIMIT $limit",
+        return Rows((lastBody ? ListThreadsSql : ListThreadsBriefSql) + (where.Count > 0 ? " WHERE " + string.Join(" AND ", where) : "") + " GROUP BY t.id ORDER BY t.updated_ts DESC LIMIT $limit",
             ("channel", channel), ("status", status), ("limit", limit));
     }
 
