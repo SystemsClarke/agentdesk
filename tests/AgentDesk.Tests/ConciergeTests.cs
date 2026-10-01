@@ -71,6 +71,29 @@ public sealed class ConciergeTests : IDisposable
         Assert.Equal(1.0, Goals.MeasureInternal(store.Open(), "internal:open_triage"));
     }
 
+    [Fact]
+    public async Task A_recurring_item_runs_when_due_and_posts_its_next_occurrence_when_done()
+    {
+        await concierge.Toggle(john, true);
+        var dispatcher = new Dispatcher(store, goals, dir);
+        long Work(string subject, string every) => JsonDocument.Parse(board.PostWork(new Caller("s1", "poster", dir, "claude-code", 1), subject, "do it", null, "auto", every: every).Result)
+            .RootElement.GetProperty("thread_id").GetInt64();
+        Assert.Contains("every is HH:MM", await board.PostWork(new Caller("s1", "poster", dir, "claude-code", 1), "x", "y", null, "auto", every: "tomorrow"));
+        var (hourly, morning) = (Work("hourly job", "60"), Work("morning job", "23:59"));
+
+        Assert.Equal([hourly], await dispatcher.Tick()); // an interval starts at once; a daily time waits for it
+        var worker = Scalar("SELECT json_extract(meta, '$.assignee') FROM threads WHERE id=$i", ("i", hourly))!;
+        using (var db = store.Open()) Assert.True(db.CompleteTask(hourly, worker));
+        Assert.Empty(await dispatcher.Tick()); // done: the next one is posted, an hour away
+        var next = Scalar("SELECT MAX(id) FROM threads WHERE channel='work'")!;
+        Assert.NotEqual(hourly.ToString(), next);
+        Assert.Equal(next, Scalar("SELECT json_extract(meta, '$.renewed') FROM threads WHERE id=$i", ("i", hourly)));
+        Assert.True(DateTimeOffset.Parse(Scalar("SELECT json_extract(meta, '$.due') FROM threads WHERE id=$i", ("i", long.Parse(next)))!) > DateTimeOffset.UtcNow.AddMinutes(55));
+        Assert.Equal("open", Scalar("SELECT status FROM threads WHERE id=$i", ("i", morning)));
+        Assert.Empty(await dispatcher.Tick()); // and it is not renewed twice
+        Assert.Equal("3", Scalar("SELECT COUNT(*) FROM threads WHERE channel='work'"));
+    }
+
     string? Scalar(string sql, params (string, object?)[] args) { using var db = store.Open(); return db.Scalar(sql, args)?.ToString(); }
 
     static async Task Until(Func<bool> ok, string what)

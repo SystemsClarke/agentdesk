@@ -30,6 +30,33 @@ public sealed class Dispatcher(BoardStore store, Goals goals, string data)
             catch (Exception e) { Log.Warn($"dispatcher tick failed: {e.Message}"); }
     }
 
+    /// <summary>When a recurring item (meta.recur) has not come round yet, and the next one once it is done. recur is "HH:MM" (every day at that
+    /// local time) or N minutes / "Nh" (that long after the last finished): the "run every morning" job.</summary>
+    public static class Recur
+    {
+        public static bool Valid(string recur) => Parse(recur) is not null;
+
+        static (TimeSpan? Every, TimeOnly? At)? Parse(string r)
+        {
+            r = r.Trim();
+            if (TimeOnly.TryParseExact(r, "HH:mm", CultureInfo.InvariantCulture, DateTimeStyles.None, out var at)) return (null, at);
+            var unit = r.EndsWith('h') ? 60.0 : 1.0;
+            return double.TryParse(r.TrimEnd('m', 'h'), CultureInfo.InvariantCulture, out var n) && n >= 1 ? (TimeSpan.FromMinutes(n * unit), null) : null;
+        }
+
+        /// <summary>The first run: a daily time waits for its next occurrence; an interval starts at once.</summary>
+        public static DateTimeOffset First(string recur, DateTimeOffset now) => Next(recur, now, first: true);
+
+        public static DateTimeOffset Next(string recur, DateTimeOffset from, bool first = false)
+        {
+            var (every, at) = Parse(recur)!.Value;
+            if (every is { } e) return first ? from : from + e;
+            var local = from.ToLocalTime();
+            var due = new DateTimeOffset(local.Date + at!.Value.ToTimeSpan(), local.Offset);
+            return due > local ? due : due.AddDays(1);
+        }
+    }
+
     /// <summary>Dispatches while there is room; returns the item ids it started a worker for.</summary>
     public async Task<List<long>> Tick(DateTimeOffset? now = null)
     {
@@ -43,9 +70,10 @@ public sealed class Dispatcher(BoardStore store, Goals goals, string data)
             var waiting = (long)db.Scalar("SELECT COUNT(*) FROM goal_members m JOIN identities i ON i.name=m.identity WHERE m.goal=$n AND i.state<>'running'", ("n", Concierge.Name))!;
             if (room <= 0 || waiting > 0) return started;
             var eagerOk = Projected(db, now ?? DateTimeOffset.UtcNow) is { } p && p < EagerBelow;
+            Renew(db, now ?? DateTimeOffset.UtcNow);
             var open = db.Rows("SELECT id, subject, meta FROM threads WHERE channel='work' AND status='open'");
             picks = [.. open.Select(t => (Id: (long)t["id"]!, Item: t, Meta: Meta(t)))
-                .Where(x => Str(x.Meta, "claim") != "anyone" && x.Meta["triage"]?.GetValue<bool>() != true && (eagerOk || x.Meta["eager"]?.GetValue<bool>() != true) && Ready(db, x.Meta))
+                .Where(x => Str(x.Meta, "claim") != "anyone" && x.Meta["triage"]?.GetValue<bool>() != true && (eagerOk || x.Meta["eager"]?.GetValue<bool>() != true) && Ready(db, x.Meta) && Due(x.Meta, now ?? DateTimeOffset.UtcNow))
                 .OrderBy(x => Priority(x.Meta)).ThenBy(x => x.Id).Take((int)room)
                 .Select(x => (x.Id, x.Item, ModelFor(x.Meta, Str(x.Item, "subject") ?? "")))];
         }
@@ -80,6 +108,25 @@ public sealed class Dispatcher(BoardStore store, Goals goals, string data)
     /// <summary>The week's forecast at its reset (the governor's projected_end_pct), or null with no usage samples.</summary>
     double? Projected(BoardDb db, DateTimeOffset now) =>
         Governor.Report(db, data, now)["projected_end_pct"] is JsonValue v && v.TryGetValue<double>(out var d) ? d : null;
+
+    static bool Due(JsonObject meta, DateTimeOffset now) => Str(meta, "due") is not { } d || DateTimeOffset.Parse(d, CultureInfo.InvariantCulture) <= now;
+
+    /// <summary>A finished recurring item posts its next occurrence, once: a fresh open item, due when the schedule says.</summary>
+    static void Renew(BoardDb db, DateTimeOffset now)
+    {
+        foreach (var t in db.Rows("SELECT id, subject, opened_by, meta FROM threads WHERE channel='work' AND status='done' AND json_valid(meta) "
+                                  + "AND json_extract(meta, '$.recur') IS NOT NULL AND json_extract(meta, '$.renewed') IS NULL"))
+        {
+            var meta = Meta(t);
+            var next = new JsonObject();
+            foreach (var k in new[] { "claim", "priority", "model", "eager", "after", "recur" }) if (meta[k] is { } v) next[k] = v.DeepClone();
+            next["due"] = Recur.Next(Str(meta, "recur")!, now).ToString("o", CultureInfo.InvariantCulture);
+            var body = (string?)db.Scalar("SELECT body FROM messages WHERE thread_id=$t ORDER BY id LIMIT 1", ("t", (long)t["id"]!)) ?? "";
+            var id = db.StartThread("work", Str(t, "subject")!, Str(t, "opened_by")!, BoardDb.Agent, body, next);
+            meta["renewed"] = id;
+            db.Exec("UPDATE threads SET meta=$m WHERE id=$i", ("m", Py.Dumps(meta)), ("i", (long)t["id"]!));
+        }
+    }
 
     static JsonObject Meta(JsonObject t) { try { return Str(t, "meta") is { } m && JsonNode.Parse(m) is JsonObject o ? o : []; } catch (System.Text.Json.JsonException) { return []; } }
     static string? Str(JsonObject o, string k) => o[k]?.ToString();

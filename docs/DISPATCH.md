@@ -1,6 +1,6 @@
 # Dispatch: one queue, one operator, mostly SQL
 
-Status: steps 1 (reply wakes asker, #46) and 2-3 (dispatcher with priority, `after`, model choice, eager) are built; 4-6 are not. Replaces the separate goal / Concierge / identity-wake paths with one mechanism.
+Status: steps 1 (reply wakes asker, #46) 2-3 (dispatcher with priority, `after`, model choice, eager) and 4 (recurring items) are built; 5-6 are not. Replaces the separate goal / Concierge / identity-wake paths with one mechanism.
 
 ## The idea
 
@@ -58,6 +58,10 @@ post_work / John / a goal's lead / a schedule
 Concierge's max_members and never while a worker is still waiting for a session. A worker that retires without completing returns the item;
 after 3 attempts it is marked `triage` and the lead (now woken only by `internal:open_triage`) splits it. `post_work` takes `priority`,
 `model`, `eager`, `after`, `triage`. Model: given, else haiku for mechanical subjects, else sonnet.
+
+Recurring: `post_work every="07:00"` (daily at that local time; first run at the next one) or `every="30"` / `"2h"` (first run now, then that long
+after each finishes). When a worker completes it, the dispatcher posts the next occurrence once (`meta.renewed` marks the old one) with its `due`.
+This is the "run every morning" job.
 
 ## Build order (each step shippable, cuts code)
 

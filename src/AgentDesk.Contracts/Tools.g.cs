@@ -187,13 +187,16 @@ The core's dispatcher starts auto items in order: `priority` 0 (urgent) to 4
 chosen from the subject). `after` is work item ids, comma separated, that must be
 done first. `eager` items run only while the week's budget forecast leaves
 room, so use it for work that should soak up spare allowance. `triage` leaves
-the item to the Concierge's lead to split instead of one worker.
+the item to the Concierge's lead to split instead of one worker. `every` makes
+it recurring: "HH:MM" (daily, local time; first run at the next one) or minutes
+like "30" or "2h" (first run now, then that long after each finishes); when a
+worker completes it, the next occurrence is posted.
 
 There is deliberately no way to reserve an item for one named agent: this
 board cannot promise a particular agent will look, and an item reserved for
 someone who never comes would sit open for ever.
 """, """
-{"type": "object", "properties": {"subject": {"type": "string"}, "body": {"type": "string"}, "author": {"type": "string"}, "claim": {"type": "string", "default": "auto"}, "priority": {"type": "integer", "default": 2}, "model": {"type": "string"}, "eager": {"type": "boolean", "default": false}, "after": {"type": "string"}, "triage": {"type": "boolean", "default": false}}, "required": ["subject", "body"]}
+{"type": "object", "properties": {"subject": {"type": "string"}, "body": {"type": "string"}, "author": {"type": "string"}, "claim": {"type": "string", "default": "auto"}, "priority": {"type": "integer", "default": 2}, "model": {"type": "string"}, "eager": {"type": "boolean", "default": false}, "after": {"type": "string"}, "triage": {"type": "boolean", "default": false}, "every": {"type": "string"}}, "required": ["subject", "body"]}
 """),
         new("list_work", """
 List the work queue, newest first, each with its message count and last
@@ -322,7 +325,7 @@ you did first; call retire last, then stop.
             "search_vault" => b.SearchVault(a.String("query"), a.Int("k", 8), a.Int("full", 0)),
             "recent_messages" => b.RecentMessages(a.Int("limit", 30)),
             "list_mentions" => b.ListMentions(c, a.StringOrNull("name"), a.Int("limit", 50)),
-            "post_work" => b.PostWork(c, a.String("subject"), a.String("body"), a.StringOrNull("author"), a.String("claim", "auto"), a.Int("priority", 2), a.StringOrNull("model"), a.Bool("eager", false), a.StringOrNull("after"), a.Bool("triage", false)),
+            "post_work" => b.PostWork(c, a.String("subject"), a.String("body"), a.StringOrNull("author"), a.String("claim", "auto"), a.Int("priority", 2), a.StringOrNull("model"), a.Bool("eager", false), a.StringOrNull("after"), a.Bool("triage", false), a.StringOrNull("every")),
             "list_work" => b.ListWork(a.StringOrNull("status"), a.Int("limit", 100)),
             "claim_work" => b.ClaimWork(c, a.Int("thread_id"), a.StringOrNull("author")),
             "complete_work" => b.CompleteWork(c, a.Int("thread_id"), a.String("note"), a.StringOrNull("author")),
