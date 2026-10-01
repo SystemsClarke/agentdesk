@@ -35,7 +35,7 @@ public interface IAgentBoard
     Task<string> SearchVault(string query, int k, int full);
     Task<string> RecentMessages(int limit);
     Task<string> ListMentions(Caller caller, string? name, int limit);
-    Task<string> PostWork(Caller caller, string subject, string body, string? author, string claim);
+    Task<string> PostWork(Caller caller, string subject, string body, string? author, string claim, int priority = 2, string? model = null, bool eager = false, string? after = null, bool triage = false);
     Task<string> ListWork(string? status, int limit);
     Task<string> ClaimWork(Caller caller, int threadId, string? author);
     Task<string> CompleteWork(Caller caller, int threadId, string note, string? author);

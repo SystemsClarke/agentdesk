@@ -36,6 +36,9 @@ public sealed partial class Goals
         // Work to Hire items waiting for a dispatcher: open, and not reserved for a deliberate claim_work (claim=anyone).
         ["internal:open_work"] = "SELECT COUNT(*) FROM threads WHERE channel='work' AND status='open' "
             + "AND COALESCE(CASE WHEN json_valid(meta) THEN json_extract(meta, '$.claim') END, 'auto') <> 'anyone'",
+        // The ones the Dispatcher leaves to the Concierge's lead: marked triage (vague or large), or that failed three times.
+        ["internal:open_triage"] = "SELECT COUNT(*) FROM threads WHERE channel='work' AND status='open' AND json_valid(meta) AND json_extract(meta, '$.triage') = 1 "
+            + "AND COALESCE(json_extract(meta, '$.claim'), 'auto') <> 'anyone'",
     };
 
     static bool IsInternal(string? cmd) => cmd is not null && Internal.ContainsKey(cmd.Trim());

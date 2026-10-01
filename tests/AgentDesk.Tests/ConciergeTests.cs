@@ -47,8 +47,29 @@ public sealed class ConciergeTests : IDisposable
 
     Caller As(string name) => new(Identity(name)!.Value.GetProperty("claude_session_id").GetString(), name, dir, "claude-code", 1, name);
 
-    long Post(string subject, string claim = "auto") => JsonDocument.Parse(board.PostWork(new Caller("s1", "poster", dir, "claude-code", 1), subject, "please do " + subject, null, claim).Result)
+    long Post(string subject, string claim = "auto", bool triage = false) => JsonDocument.Parse(board.PostWork(new Caller("s1", "poster", dir, "claude-code", 1), subject, "please do " + subject, null, claim, 2, null, false, null, triage).Result)
         .RootElement.GetProperty("thread_id").GetInt64();
+
+    [Fact]
+    public async Task The_dispatcher_starts_workers_by_priority_and_leaves_eager_triage_and_blocked_items()
+    {
+        await concierge.Toggle(john, true);
+        var dispatcher = new Dispatcher(store, goals, dir);
+        long Work(string subject, string? after = null, int priority = 2, bool eager = false, bool triage = false) =>
+            JsonDocument.Parse(board.PostWork(new Caller("s1", "poster", dir, "claude-code", 1), subject, "do it", null, "auto", priority, null, eager, after, triage).Result)
+                .RootElement.GetProperty("thread_id").GetInt64();
+        var (low, normal, urgent) = (Work("later", priority: 4), Work("normal"), Work("now", priority: 0));
+        var (blocked, eager, split) = (Work("blocked", after: urgent.ToString()), Work("spare", eager: true), Work("vague", triage: true));
+
+        var started = await dispatcher.Tick();
+        Assert.Equal([urgent, normal, low], started); // 3 members at most, most urgent first; blocked, eager and triage wait
+        foreach (var id in new[] { blocked, eager, split }) Assert.Equal("open", Scalar("SELECT status FROM threads WHERE id=$i", ("i", id)));
+        Assert.Equal("claimed", Scalar("SELECT status FROM threads WHERE id=$i", ("i", urgent)));
+        Assert.Equal(1.ToString(), Scalar("SELECT json_extract(meta, '$.attempts') FROM threads WHERE id=$i", ("i", urgent)));
+        Assert.Equal("1", Scalar("SELECT COUNT(*) FROM goal_members WHERE work_id=$i", ("i", urgent)));
+        Assert.Equal(1.ToString(), Scalar("SELECT COUNT(*) FROM threads WHERE channel='work' AND status='open' AND json_extract(meta, '$.triage') = 1")); // what the lead is measured on
+        Assert.Equal(1.0, Goals.MeasureInternal(store.Open(), "internal:open_triage"));
+    }
 
     string? Scalar(string sql, params (string, object?)[] args) { using var db = store.Open(); return db.Scalar(sql, args)?.ToString(); }
 
@@ -70,15 +91,15 @@ public sealed class ConciergeTests : IDisposable
         var on = Json(concierge.Toggle(john, true));
         Assert.True(on.GetProperty("on").GetBoolean());
         var g = Json(goals.Status("concierge"));
-        Assert.Equal(("running", 1, "internal:open_work", "value <= 0", "concierge-lead"), (g.GetProperty("state").GetString(), g.GetProperty("standing").GetInt32(),
+        Assert.Equal(("running", 1, "internal:open_triage", "value <= 0", "concierge-lead"), (g.GetProperty("state").GetString(), g.GetProperty("standing").GetInt32(),
             g.GetProperty("measure_cmd").GetString(), g.GetProperty("success").GetString(), g.GetProperty("lead").GetString()));
         Assert.Equal(("stopped", "opus"), (State("concierge-lead"), Identity("concierge-lead")!.Value.GetProperty("model").GetString())); // nothing to do: not launched
-        Assert.Contains("keeps Work to Hire", Identity("concierge-lead")!.Value.GetProperty("charter").GetString());
+        Assert.Contains("only get the ones it cannot route", Identity("concierge-lead")!.Value.GetProperty("charter").GetString());
         await concierge.Toggle(john, true); // on again: no second goal, no error
         Assert.Equal("1", Scalar("SELECT COUNT(*) FROM goals"));
 
-        Post("tidy the readme");
-        await goals.Tick(); // an open item: the lead is started with the goal's status
+        Post("tidy the readme", triage: true);
+        await goals.Tick(); // an item for triage: the lead is started with the goal's status
         Assert.Equal("running", State("concierge-lead"));
         var lead = As("concierge-lead");
         var item = Post("fix the build");
@@ -136,14 +157,14 @@ public sealed class ConciergeTests : IDisposable
 
         // Off its line the lead is woken, once per change of value rather than every tick.
         using (var db = store.Open()) db.Exec("UPDATE goals SET started_ts='2000-01-01T00:00:00+00:00'"); // a normal goal would be exhausted by now
-        Post("first");
+        Post("first", triage: true); // the lead is woken for what the dispatcher leaves it
         await goals.Tick();
         Assert.Equal("running", State("concierge-lead"));
         var woke = Scalar("SELECT woke_ts FROM goals");
         await Task.Delay(1100);
         await goals.Tick(); // same value, cadence not due: no second wake
         Assert.Equal(woke, Scalar("SELECT woke_ts FROM goals"));
-        Post("second");
+        Post("second", triage: true);
         await goals.Tick(); // the value changed: woken again
         Assert.NotEqual(woke, Scalar("SELECT woke_ts FROM goals"));
         Assert.Equal("running", Scalar("SELECT state FROM goals"));
