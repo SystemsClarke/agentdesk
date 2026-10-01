@@ -5,12 +5,13 @@ using AgentDesk.Core.Board;
 namespace AgentDesk.Core;
 
 /// <summary>One `/usage` reading: weekly and 5-hour percentages, their resets, and how many identity sessions ran then.</summary>
-public sealed record UsageSample(DateTimeOffset Ts, double WeeklyPct, DateTimeOffset? WeeklyReset, double? FiveHourPct, DateTimeOffset? FiveHourReset, int SwarmSessions);
+public sealed record UsageSample(DateTimeOffset Ts, double WeeklyPct, DateTimeOffset? WeeklyReset, double? FiveHourPct, DateTimeOffset? FiveHourReset, int SwarmSessions,
+    int Haiku = 0, int Sonnet = 0, int Opus = 0);
 
 /// <summary>settings.json's governor_* keys (governor_ramp and governor_floor shape the week: see <see cref="Governor.Pace"/>). The defaults are conservative: they assume John is busy and sessions are expensive
 /// until the samples say otherwise.</summary>
 public sealed record GovernorSettings(double K = 2, double Margin = 2, double DefaultRate = 0.3, double DefaultSigma = 0.5,
-    double DefaultSessionRate = 3, int MaxSessions = 12, int MaxMembers = 4, int MaxSwarms = 10, bool Enforce = false, double Ramp = 1, double Floor = 0.3)
+    double DefaultSessionRate = 3, int MaxSessions = 12, int MaxMembers = 4, int MaxSwarms = 10, bool Enforce = false, double Ramp = 1, double Floor = 0.3, bool Learn = true)
 {
     public static GovernorSettings From(JsonObject? s)
     {
@@ -20,7 +21,7 @@ public sealed record GovernorSettings(double K = 2, double Margin = 2, double De
         return new(D("governor_k", g.K), D("governor_margin", g.Margin), D("governor_default_rate", g.DefaultRate), D("governor_default_sigma", g.DefaultSigma),
             D("governor_default_session_rate", g.DefaultSessionRate), I("governor_max_sessions", g.MaxSessions), I("governor_max_members", g.MaxMembers),
             I("governor_max_swarms", g.MaxSwarms), s?["governor_enforce"]?.ToString().Equals("true", StringComparison.OrdinalIgnoreCase) == true,
-            D("governor_ramp", g.Ramp), Math.Min(1, D("governor_floor", g.Floor)));
+            D("governor_ramp", g.Ramp), Math.Min(1, D("governor_floor", g.Floor)), s?["governor_learn"]?.ToString().Equals("false", StringComparison.OrdinalIgnoreCase) != true);
     }
 }
 
@@ -32,6 +33,8 @@ public sealed class BurnModel
     public readonly double[] Mean = new double[168], Var = new double[168];
     public readonly int[] N = new int[168];
     public double GlobalMean, GlobalVar, SessionRate, EstMean, EstVar, Slope;
+    /// <summary>What the learned model (<see cref="Learner"/>) found, trusted only when <see cref="Learned.Ok"/>.</summary>
+    public Learned? Learned;
     public int GlobalN, SessionN, BaselineHours, EstN;
     /// <summary>The session count varied enough over the long memory to regress the hourly rate on it (<see cref="Slope"/>).</summary>
     public bool SlopeOk;
@@ -167,6 +170,7 @@ public static class Governor
             }
         var varX = sw > 0 ? sxx / sw - sx / sw * (sx / sw) : 0;
         (m.SlopeOk, m.Slope) = (hours.Count >= 6 && varX >= 0.25, varX > 0 ? (sxy / sw - sx / sw * (sy / sw)) / varX : 0);
+        m.Learned = s.Learn ? Learner.Fit(samples) : null;
         foreach (var (_, h) in hours)
             if (h.Dt >= 0.5)
                 Ewma(ref m.EstMean, ref m.EstVar, ref m.EstN, Math.Max(0, h.Delta / h.Dt - h.SessionHours / h.Dt * m.PerSession(s)), LongAlpha);
@@ -201,7 +205,7 @@ public static class Governor
         var elapsed = Math.Clamp((now - reset.AddDays(-7)).TotalHours / 168, 0, 1);
         var pace = Pace(elapsed, s.Ramp, s.Floor);
         var rate = spendable / hours * pace;
-        var per = m.PerSession(s);
+        var per = m.Learned is { Ok: true } learned ? Math.Clamp(learned.Blend(latest), 0.05, 20) : m.PerSession(s);
         var five = latest.FiveHourReset is { } f && f <= now ? 0 : latest.FiveHourPct ?? 0;
         var affordable = rate / per;
         var total = (int)Math.Min(s.MaxSessions, Math.Floor(affordable + 1e-9));
@@ -234,7 +238,8 @@ public static class Governor
     public static List<UsageSample> Load(BoardDb db, DateTimeOffset since) =>
         [.. db.Rows("SELECT * FROM usage_samples WHERE ts >= $since ORDER BY ts", ("since", Iso(since))).Select(r => new UsageSample(
             Time(r["ts"])!.Value, r["weekly_pct"]!.GetValue<double>(), Time(r["weekly_reset_ts"]), r["five_hour_pct"]?.GetValue<double>(),
-            Time(r["five_hour_reset_ts"]), (int)r["swarm_sessions"]!.GetValue<long>()))];
+            Time(r["five_hour_reset_ts"]), (int)r["swarm_sessions"]!.GetValue<long>(), (int)r["haiku_sessions"]!.GetValue<long>(),
+            (int)r["sonnet_sessions"]!.GetValue<long>(), (int)r["opus_sessions"]!.GetValue<long>()))];
 
     static int Running(BoardDb db) => Convert.ToInt32(db.Scalar("SELECT COUNT(*) FROM identities WHERE state='running'"), Inv);
 
@@ -318,6 +323,11 @@ public static class Governor
             ["plan_end_pct"] = R(plan), ["trend_end_pct"] = trend is { } te ? R(te) : null, ["pace"] = R(a.Pace), ["week_elapsed_pct"] = R(a.WeekElapsed * 100),
             ["unused_pct"] = R(Math.Max(0, 100 - Math.Max(plan, trend ?? 0))), ["status"] = Status(plan, trend),
             ["forecast"] = new JsonArray([.. path.Select(x => (JsonNode?)R(x))]),
+            ["learned"] = m.Learned is { } l ? new JsonObject
+            {
+                ["ok"] = l.Ok, ["hours"] = l.Hours, ["rmse_net"] = R(l.RmseNet), ["rmse_linear"] = R(l.RmseLinear), ["rmse_mean"] = R(l.RmseMean),
+                ["haiku"] = R(l.Haiku), ["sonnet"] = R(l.Sonnet), ["opus"] = R(l.Opus), ["note"] = l.Note,
+            } : null,
             ["samples"] = samples.Count, ["baseline_hours"] = m.BaselineHours, ["session_hours"] = m.SessionN,
             ["estimated_hours"] = m.EstN, ["baseline_source"] = m.Source,
             ["sample_age_minutes"] = R((now - samples[^1].Ts).TotalMinutes),
@@ -345,7 +355,7 @@ public static class Governor
         for (var t = now; t < reset && path.Count < 170; t = t.AddHours(1))
         {
             var a = Advise(m, new UsageSample(t, used, reset, null, null, 0), 0, t, s);
-            used = Math.Min(100, used + m.Rate(HourOfWeek(t), s) + a.AllowedRate);
+            used = Math.Min(100, used + Math.Min(1, (reset - t).TotalHours) * (m.Rate(HourOfWeek(t), s) + a.AllowedRate)); // the last step may be a part hour
             path.Add(used);
         }
         return path;

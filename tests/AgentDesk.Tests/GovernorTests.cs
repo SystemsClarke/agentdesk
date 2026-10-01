@@ -9,7 +9,7 @@ namespace AgentDesk.Tests;
 /// backtest that follows its caps through synthetic weeks.</summary>
 public sealed class GovernorTests(ITestOutputHelper output)
 {
-    static readonly GovernorSettings S = new();
+    static readonly GovernorSettings S = new(Learn: false); // the learned model has its own tests (LearnerTests); here it would retrain every simulated hour
     static readonly DateTimeOffset Mon = new(2026, 9, 21, 0, 0, 0, TimeSpan.Zero); // a Monday, 00:00 UTC
 
     [Fact]

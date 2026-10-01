@@ -137,7 +137,8 @@ public sealed class CoreBoard : IBoard, IDisposable
         return new(Int(g, "samples"), Num(g, "remaining") ?? 0, Num(g, "reset_in_hours") ?? 0, Num(g, "projected_end_pct") ?? 0, Cap("total_sessions"),
             Cap("swarms"), Cap("members_per_swarm"), Str(g, "reason") ?? "", Str(g, "summary") ?? "", [.. Arr(g, "series").Select(v => v.GetDouble())], mode,
             g.TryGetProperty("pool", out var p) && p.ValueKind == JsonValueKind.Object ? Str(p, "summary") ?? "" : "",
-            Str(g, "status") ?? "", Num(g, "plan_end_pct") ?? 0, [.. Arr(g, "forecast").Select(v => v.GetDouble())]);
+            Str(g, "status") ?? "", Num(g, "plan_end_pct") ?? 0, [.. Arr(g, "forecast").Select(v => v.GetDouble())],
+            g.TryGetProperty("learned", out var l) && l.ValueKind == JsonValueKind.Object ? Str(l, "note") ?? "" : "");
     }
 
     static GoalRow ToGoal(JsonElement g) => new(Str(g, "name") ?? "", Str(g, "state") ?? "draft", Str(g, "objective") ?? "", Str(g, "lead") ?? "",
