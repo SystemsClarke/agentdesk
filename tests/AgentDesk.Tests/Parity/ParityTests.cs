@@ -12,6 +12,7 @@ namespace AgentDesk.Tests.Parity;
 public class ParityTests
 {
     static string Words(int n) => string.Join(" ", Enumerable.Repeat("word", n));
+    static string Ask(int n) => Words(n - 1) + " ok?"; // n words, and it asks something
 
     [Fact]
     public void PostReadReplyAndReceipts() => Run([
@@ -39,8 +40,9 @@ public class ParityTests
         Step("open_questions", "alpha"),                                                                   // John had the last word on #3
         Step("ask_human", "alpha", new { subject = "Restart?", body = "Can I restart @builder's host? Ünïcode ✓",
             meta = new { kind = "sneaky", priority = 2, ratio = 1.5, whole = 1.0, tags = new[] { "a", "ü" }, mentions = new[] { "x" } } }), // kind stripped, Python json.dumps text
-        Step("ask_human", "beta", new { subject = "Too long", body = Words(401) }),                        // over the limit
-        Step("ask_human", "beta", new { subject = "Just fits", body = Words(400) }),                       // at the limit; delivers beta's seed ack
+        Step("ask_human", "beta", new { subject = "Too long", body = Ask(501) }),                          // over the limit
+        Step("ask_human", "beta", new { subject = "Just fits", body = Ask(500) }),                         // at the limit; delivers beta's seed ack
+        Step("ask_human", "beta", new { subject = "Just news", body = "Build 12 finished green." }),       // not a question: refused
         Step("open_questions", "alpha"),
         Step("open_questions", "alpha", new { include_archived = true }),
         Step("list_threads", "alpha", new { channel = "question", include_archived = false }),
@@ -51,10 +53,11 @@ public class ParityTests
         Step("list_threads", "alpha", new { channel = "question" }),                                       // delivery 'pending'
         Step("read_thread", "alpha", new { thread_id = 5 }),                                               // reading is not a write: no ack yet
         Step("answer_thread", "alpha", new { thread_id = 5, body = "Done, restarted." }),                  // reply, then the ack
-        Step("open_questions", "alpha"),                                                                   // the agent re-asked: waiting again
+        Step("open_questions", "alpha"),                                                                   // answered is settled: its "Done." does not make it wait again
+        Step("answer_thread", "alpha", new { thread_id = 5, body = "One more thing." }),                   // one closing note only: a continued thread is refused
         Step("list_threads", "alpha", new { channel = "question" }),                                       // delivery 'picked-up', last_author skips the ack
-        Step("answer_thread", "alpha", new { thread_id = 6, body = Words(401) }),                          // limit applies to question-thread replies
-        Step("post_message", "alpha", new { channel = "discussion", subject = "", body = Words(401), thread_id = 6 }), // Python checks the passed channel, not the thread's
+        Step("answer_thread", "alpha", new { thread_id = 6, body = Words(501) }),                          // limit applies to question-thread replies
+        Step("post_message", "alpha", new { channel = "discussion", subject = "", body = Words(501), thread_id = 6 }), // Python checks the passed channel, not the thread's
         JohnReply(6, "No."),
         Step("open_questions", "beta")]);
 

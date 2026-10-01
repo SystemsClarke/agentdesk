@@ -78,6 +78,7 @@ public sealed partial class AgentBoard(BoardStore store, IPythonPlugins plugins,
         var who = Who(author, caller);
         return RunAsync(async db =>
         {
+            if (threadId is { } existing) db.EnforceClosedQuestion(existing);
             var tid = db.StartThread(channel, subject, who, Agent, body, threadId: threadId);
             DeliverAcks(db, who, caller);
             var result = Ok(("thread_id", tid));
@@ -93,6 +94,9 @@ public sealed partial class AgentBoard(BoardStore store, IPythonPlugins plugins,
         foreach (var (k, v) in meta ?? [])
             if (k != "kind")  // a caller-set kind could hide the question from John
                 m[k] = v is JsonElement e ? JsonNode.Parse(e.GetRawText()) : v is null ? null : JsonValue.Create(v.ToString());
+        if (!body.Contains('?'))
+            return Error("a question has to ask something: John answers questions, he does not read updates. Say what you need decided and end it with the question "
+                + "(it must contain a '?'). If it is only news, post it to discussion instead.");
         return Run(db =>
         {
             var tid = db.StartThread("question", subject, who, Agent, body, m);
@@ -189,6 +193,7 @@ public sealed partial class AgentBoard(BoardStore store, IPythonPlugins plugins,
         return Run(db =>
         {
             db.GetThread(threadId);  // a clean "no such thread" beats a foreign-key error
+            db.EnforceClosedQuestion(threadId);
             var mid = db.Reply(threadId, who, Agent, body);
             DeliverAcks(db, who, caller);
             return Ok(("thread_id", threadId), ("message_id", mid));
