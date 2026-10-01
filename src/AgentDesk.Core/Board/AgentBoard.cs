@@ -198,7 +198,7 @@ public sealed partial class AgentBoard(BoardStore store, IPythonPlugins plugins,
         return Run(db => new JsonObject { ["mentions"] = BoardDb.Arr(db.ListMentions(who, limit)) });
     }
 
-    public Task<string> PostWork(Caller caller, string subject, string body, string? author, string claim, int priority = 2, string? model = null, bool eager = false, string? after = null, bool triage = false)
+    public Task<string> PostWork(Caller caller, string subject, string body, string? author, string claim, int priority = 2, string? model = null, bool eager = false, string? after = null, bool triage = false, string? every = null)
     {
         if (claim is not ("auto" or "anyone")) return Error($"claim must be one of ['auto', 'anyone'], got {Py.Repr(claim)}");
         if (priority is < 0 or > 4) return Error($"priority is 0 (urgent) to 4 (whenever), got {priority}");
@@ -206,7 +206,9 @@ public sealed partial class AgentBoard(BoardStore store, IPythonPlugins plugins,
         var ids = new JsonArray();
         foreach (var part in (after ?? "").Split([',', ' '], StringSplitOptions.RemoveEmptyEntries))
             if (long.TryParse(part, out var n)) ids.Add((JsonNode?)JsonValue.Create(n)); else return Error($"after is work item ids separated by commas, got {Py.Repr(after)}");
+        if (every is not null && !Dispatcher.Recur.Valid(every)) return Error($"every is HH:MM (daily, local time) or minutes like 30 or 2h, got {Py.Repr(every)}");
         var meta = new JsonObject { ["claim"] = claim };
+        if (every is not null) (meta["recur"], meta["due"]) = (every.Trim(), Dispatcher.Recur.First(every, DateTimeOffset.UtcNow).ToString("o", CultureInfo.InvariantCulture));
         if (priority != 2) meta["priority"] = priority;
         if (model is not null) meta["model"] = model;
         if (eager) meta["eager"] = true;
