@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Text.Json;
 using AgentDesk.Contracts;
 using AgentDesk.Core;
@@ -156,6 +157,8 @@ public sealed class GoalsTests : IDisposable
         Assert.Equal(["toy-b", "toy-c"], Json(goals.Status("toy")).GetProperty("members").EnumerateArray().Select(m => m.GetProperty("identity").GetString()).Order());
     }
 
+    static readonly string Esc = ((char)27).ToString(), Bel = ((char)7).ToString();
+
     [Fact]
     public async Task The_cadence_wakes_the_lead()
     {
@@ -167,9 +170,11 @@ public sealed class GoalsTests : IDisposable
             return Task.CompletedTask;
         }, gone.Token);
         _ = goals.Run(TimeSpan.FromMilliseconds(200), gone.Token);
-        int Wakes() { lock (seen) return seen.ToString().Split("got: [AgentDesk goal wake] Goal toy (running)").Length - 1; }
+        // The console wraps and repaints what it shows, on a slow runner in the middle of a phrase: compare with escapes and spaces removed.
+        string Plain() { lock (seen) return Regex.Replace(Regex.Replace(seen.ToString(), Esc + @"(\[[0-9;?]*[ -/]*[@-~]|\][^" + Bel + "]*" + Bel + ")", ""), @"\s+", ""); }
+        int Wakes() => Plain().Split("got:[AgentDeskgoalwake]Goaltoy(running)").Length - 1;
         await Until(() => Wakes() >= 2, "two wakes");
-        lock (seen) Assert.Contains("Hypothesis: halving works", seen.ToString());
+        Assert.Contains("Hypothesis:halvingworks", Plain());
     }
 
     [Fact]
