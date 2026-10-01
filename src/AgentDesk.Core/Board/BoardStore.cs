@@ -25,8 +25,9 @@ public sealed partial class BoardDb : IDisposable
 
     const string JohnHasLastWord = "COALESCE((SELECT m.author_kind FROM messages m WHERE m.thread_id = t.id"
         + " AND COALESCE(json_extract(m.meta, '$.kind'), '') NOT IN ('ack', 'ack-note', 'read-receipt') ORDER BY m.id DESC LIMIT 1), 'human') = 'human'";
-    /// <summary>"Waiting on John": a live question whose newest non-receipt message is not his.</summary>
-    public const string WaitingSql = "(t.channel = 'question' AND t.status IN ('open', 'answered') AND NOT (" + JohnHasLastWord + "))";
+    /// <summary>"Waiting on John": a question still open (nobody has answered it) whose newest non-receipt message is not his. Once John
+    /// answers, the question is settled for good: an agent's "Done." or any later post never makes it wait again (one question, one answer).</summary>
+    public const string WaitingSql = "(t.channel = 'question' AND t.status = 'open' AND NOT (" + JohnHasLastWord + "))";
 
     /// <summary>For messages f on threads t: f is the question's opener following up after John's latest reply (not an ack
     /// or receipt). The #373 problem: an agent's "Done." after John's yes read like any other post.</summary>
@@ -215,9 +216,25 @@ public sealed partial class BoardDb : IDisposable
     static void EnforceQuestionLength(string channel, string kind, string body)
     {
         var words = Py.Words(body);
-        if (channel != "question" || kind != Agent || words <= 400) return;
-        throw new BoardError($"this question is {words} words; John asked for questions and replies in a question thread to stay under 400. "
+        if (channel != "question" || kind != Agent || words <= QuestionWords) return;
+        throw new BoardError($"this question is {words} words; John asked for questions and replies in a question thread to stay under {QuestionWords}. "
             + "State the decision you need in a few sentences and put any supporting detail in a linked discussion thread or document instead of in the question itself.");
+    }
+
+    /// <summary>The most words an agent may put in one message in a question thread.</summary>
+    public const int QuestionWords = 500;
+
+    /// <summary>A question is one question and one answer. After John has answered, an agent may add one closing note (its "got it" or
+    /// "done"); anything more is refused, and it asks a new question if it needs John again. Before he answers, it may still add context.</summary>
+    public void EnforceClosedQuestion(long threadId)
+    {
+        if (Rows("SELECT channel FROM threads WHERE id=$id", ("id", threadId)).FirstOrDefault() is not { } t || Str(t["channel"]) != "question") return;
+        if (Scalar("SELECT MAX(id) FROM messages WHERE thread_id=$t AND author_kind='human'", ("t", threadId)) is not long john) return;
+        var since = Scalar("SELECT COUNT(*) FROM messages WHERE thread_id=$t AND id>$j AND author_kind<>'human' "
+            + "AND COALESCE(CASE WHEN json_valid(meta) THEN json_extract(meta,'$.kind') END,'') NOT IN ('ack','ack-note','read-receipt','phoenix','pr-request')", ("t", threadId), ("j", john));
+        if (since is long n && n >= 1)
+            throw new BoardError("John already answered this question and you have had your closing note: a question is one question and one answer. "
+                + "If you need something else from him, ask a new question with ask_human.");
     }
 
     // "@" must start the token, so e-mail addresses are not mentions; fenced code is ignored. [\p{L}\p{N}_] is Python's \w.

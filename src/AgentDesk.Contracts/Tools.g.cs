@@ -30,9 +30,17 @@ name that distinguishes this session -- see agentdesk/identity.py.
 """),
         new("ask_human", """
 Ask John a question he must answer before you can carry on. Use this
-whenever you are blocked on a decision, a preference, or a permission;
-do not use it for progress reports, which belong in post_message under
-discussion.
+only when you are blocked on a decision, a preference, or a permission;
+progress, findings and news belong in post_message under discussion.
+
+The rules, enforced here: it must actually ask something (contain a "?"),
+and it may be at most 500 words; a longer one is refused until you
+rephrase it so the decision is directly askable (put supporting detail in
+a discussion thread and link it). One question, one answer: when John
+answers, the question closes by itself, you do not close it, and it will
+not ring again. You may add one closing note ("got it", "done") on the
+thread; anything more is refused, so ask a new question if you need him
+again.
 """, """
 {"type": "object", "properties": {"subject": {"type": "string"}, "body": {"type": "string"}, "author": {"type": "string"}, "meta": {"type": "object"}}, "required": ["subject", "body"]}
 """),

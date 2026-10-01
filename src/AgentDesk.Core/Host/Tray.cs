@@ -182,7 +182,7 @@ static partial class Tray // safe, so it can await
                 var followedUp = follows.Select(f => (long)f["thread_id"]!).ToHashSet();
                 List<JsonObject> fresh = seen is null ? [] : open.Where(q => !seen.Contains((long)q["thread_id"]!) && !followedUp.Contains((long)q["thread_id"]!)).Reverse().ToList();
                 seen = ids;
-                foreach (var f in follows) Toast((long)f["thread_id"]!, $"{((string)f["mark"]! == "done" ? "Done" : "Follow-up")} from {f["author"]}", FollowUpText(f));
+                foreach (var f in follows.Where(f => (string)f["mark"]! == "done")) Toast((long)f["thread_id"]!, $"{((string)f["mark"]! == "done" ? "Done" : "Follow-up")} from {f["author"]}", FollowUpText(f));
                 foreach (var q in fresh) Toast((long)q["thread_id"]!, $"New question from {q["opened_by"]}", (string)q["subject"]!);
                 if (fresh.Count > 0 || open.Count == 0) reminded = DateTime.UtcNow;
                 else if (DateTime.UtcNow - reminded >= Remind)
