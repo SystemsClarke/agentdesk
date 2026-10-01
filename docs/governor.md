@@ -172,3 +172,20 @@ The aim is to finish each week near 100%, with the Work to Hire queue as where t
   `pace`, `week_elapsed_pct`, and `forecast` (the plan path, a sparkline in the window's budget panel).
 - **The queue soaks it up.** The Dispatcher treats the week as *behind* when `trend_end_pct` is more than 2 under `plan_end_pct`. Then it runs `eager`
   Work to Hire items and lifts the Concierge's worker cap from 3 to what the governor can afford (`caps.new_sessions`), as many workers as the pool allows. On pace, back to 3 and no eager items.
+
+## The learned cost per session (Learner.cs)
+
+A small network (a linear part plus four tanh units, trained by backpropagation) learns, from the governor's own readings, the weekly-% burn per
+hour given the haiku, sonnet and opus sessions running and the hour of the day. It retrains whenever a new reading arrives, which is the loop:
+predict, see the real spend, adjust. One more session of each tier costs the difference between two predictions.
+
+It does not change the governor until it has earned it: it trains on the older three quarters of the hours and is scored on the newest quarter, and
+it is used only if its error there is under 0.9 x the plain average's (and there are 48+ hours). Until then `ui:governor`'s `learned.note` says why
+not, and the budget panel shows it. Once trusted, the governor's per-session cost is the learned cost weighted by the tiers running.
+
+Honest limit, on 2026-10-01's data: 118 usable hours, a meter that moves in whole percents, sessions that barely vary (about 4, plus or minus 2) and
+haiku never used. There it is off by 1.04%/h against 0.69 for the plain average, so it is not trusted. It needs a few weeks with real variety (some
+hours with many opus workers, some with none). The upgrade that would help most is feeding it tokens per tier from the session transcripts instead of session counts.
+
+Also: when the week is behind its plan, the Dispatcher's spare workers are the larger of the governor's `new_sessions` and the headroom between the
+plan's allowed rate and the week's real recent burn, divided by the cost per session.

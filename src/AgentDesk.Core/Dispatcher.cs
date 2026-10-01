@@ -116,7 +116,17 @@ public sealed class Dispatcher(BoardStore store, Goals goals, string data)
     {
         var r = Governor.Report(db, data, now);
         var behind = r["trend_end_pct"] is JsonValue t && r["plan_end_pct"] is JsonValue p && t.TryGetValue<double>(out var trend) && p.TryGetValue<double>(out var plan) && trend < plan - 2;
-        return (behind, r["caps"]?["new_sessions"] is JsonValue n && n.TryGetValue<int>(out var spare) ? spare : 0);
+        var spare = r["caps"]?["new_sessions"] is JsonValue n && n.TryGetValue<int>(out var ns) ? ns : 0;
+        // The sessions running now may burn far less than the allowance (idle ones cost little): the headroom between what the week is
+        // really burning and what the plan allows buys more workers, at the governor's cost per session. It is re-read every tick, so as the
+        // workers burn, the headroom closes.
+        double Num(string k) => r[k] is JsonValue v && v.TryGetValue<double>(out var x) ? x : 0;
+        if (behind && Num("reset_in_hours") > 0)
+        {
+            var trendRate = (Num("trend_end_pct") - Num("used")) / Num("reset_in_hours");
+            spare = Math.Max(spare, (int)Math.Floor(Math.Max(0, Num("allowed_rate") - trendRate) / Math.Max(0.05, Num("session_rate"))));
+        }
+        return (behind, spare);
     }
 
     static bool Due(JsonObject meta, DateTimeOffset now) => Str(meta, "due") is not { } d || DateTimeOffset.Parse(d, CultureInfo.InvariantCulture) <= now;
