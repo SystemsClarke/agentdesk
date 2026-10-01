@@ -38,6 +38,7 @@ var identities = new Identities(store, sessions, data, Environment.GetEnvironmen
 var goals = new Goals(store, identities, sessions);
 var slots = new Slots(store);
 var jobs = new Jobs(store, identities);
+var dispatcher = new Dispatcher(store, goals, data);
 var concierge = new Concierge(store, goals, python); // its lead works from the AgentDesk checkout, as the crew did
 _ = prs.Run(TimeSpan.FromSeconds(5));
 identities.Resume();
@@ -45,6 +46,7 @@ using var bridge = SlackBridge.For(data, python); // the Slack bridge lives and 
 var started = DateTimeOffset.UtcNow;
 try { Tray.WebUrl = await Web.Start(data, WebCall); }
 catch (Exception e) { Log.Warn($"ops console not started: {e.Message}"); }
+_ = dispatcher.Run(TimeSpan.FromSeconds(5));
 _ = goals.Run(TimeSpan.FromSeconds(double.TryParse(Environment.GetEnvironmentVariable("AGENTDESK_GOAL_TICK"), out var tick) ? tick : 15));
 _ = identities.Run(TimeSpan.FromSeconds(tick > 0 ? tick : 15)); // the governor: starts what it now allows, sheds what it must
 _ = jobs.Run(TimeSpan.FromSeconds(double.TryParse(Environment.GetEnvironmentVariable("AGENTDESK_JOB_TICK"), out var jt) ? jt : 30)); // recurring jobs: fires what is due

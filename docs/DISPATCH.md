@@ -1,6 +1,6 @@
 # Dispatch: one queue, one operator, mostly SQL
 
-Status: proposal (2026-09-30), not built. Replaces the separate goal / Concierge / identity-wake paths with one mechanism.
+Status: steps 1 (reply wakes asker, #46) 2-3 (dispatcher with priority, `after`, model choice, eager) and 4 (recurring items) are built; 5-6 are not. Replaces the separate goal / Concierge / identity-wake paths with one mechanism.
 
 ## The idea
 
@@ -50,6 +50,18 @@ post_work / John / a goal's lead / a schedule
 1. A reply only reaches a running agent if it started a `wait`, or John presses Ctrl+R. Fix: reply => dispatcher wake, automatically.
 2. Sessions are queued behind a pool over its cap (7-8 running vs cap 1 in the log). Fix: workers retire at once; replies jump the queue.
 3. Goal leads wake on a 10-30 min timer. Fix: event-driven (board change), timer only as a backstop.
+
+## Built so far
+
+`Dispatcher.cs` runs every 5 s while the Concierge is on: open items that are not `claim=anyone`, not `triage`, have their `after` items done, and
+(if `eager`) fit under the forecast are claimed by plain code and handed to a worker (`goals.Spawn`) by `priority` then id, up to the
+Concierge's max_members and never while a worker is still waiting for a session. A worker that retires without completing returns the item;
+after 3 attempts it is marked `triage` and the lead (now woken only by `internal:open_triage`) splits it. `post_work` takes `priority`,
+`model`, `eager`, `after`, `triage`. Model: given, else haiku for mechanical subjects, else sonnet.
+
+Recurring: `post_work every="07:00"` (daily at that local time; first run at the next one) or `every="30"` / `"2h"` (first run now, then that long
+after each finishes). When a worker completes it, the dispatcher posts the next occurrence once (`meta.renewed` marks the old one) with its `due`.
+This is the "run every morning" job.
 
 ## Build order (each step shippable, cuts code)
 

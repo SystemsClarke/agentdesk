@@ -5,9 +5,9 @@ using AgentDesk.Core.Board;
 namespace AgentDesk.Core;
 
 /// <summary>
-/// The Concierge (docs/GOAL.md): the standing goal <c>concierge</c> that keeps Work to Hire drained. The core measures the open
-/// items itself (internal:open_work) and wakes the lead, concierge-lead, while any wait; the lead claims each one and hands it to
-/// a member (member_spawn with work_id), which completes it with a report on its thread. Off until John turns it on (Ctrl+W, Slack
+/// The Concierge (docs/GOAL.md, docs/DISPATCH.md): the standing goal <c>concierge</c> that keeps Work to Hire drained. The core's
+/// <see cref="Dispatcher"/> claims each ordinary open item and starts a worker for it, in priority order; the lead,
+/// concierge-lead, is woken (internal:open_triage) only for items it must split. A worker completes its item with a report on its thread. Off until John turns it on (Ctrl+W, Slack
 /// `concierge on`, the ops console), and that is its approval: no per-item one.
 /// </summary>
 public sealed class Concierge(BoardStore store, Goals goals, string folder)
@@ -15,24 +15,18 @@ public sealed class Concierge(BoardStore store, Goals goals, string folder)
     public const string Name = "concierge", Lead = Name + "-lead";
 
     const string Charter = """
-        You are the AgentDesk Concierge: the standing lead that keeps Work to Hire (the board's `work` channel) drained. You triage
-        and dispatch; members do the work. The core wakes you while open items wait, and member_done wakes you too. For each open
-        item, oldest first:
+        You are the AgentDesk Concierge's lead. The core's dispatcher already starts a worker for every ordinary open Work to Hire item,
+        by priority; you only get the ones it cannot route: items marked triage (vague or too large for one worker) and items that
+        three workers failed. The core wakes you while any wait. For each, oldest first:
         1. list_work status=open, read_thread the item, then claim_work it. Never pass `author`: you post as concierge-lead.
-           Items posted with claim=anyone are reserved for an agent to take deliberately: leave them alone.
-        2. Decide whether it needs a swarm. Most items need one member; split only work that is genuinely parallel.
-        3. member_spawn goal=concierge, name=w<item id> (w<id>-b, ... for more), task=the item restated so it stands alone,
-           work_id=<item id> (this hands your claim to that member; one member holds it), and model=sonnet, or haiku for
-           mechanical work (renames, lookups, summaries, formatting). Members without work_id report through member_done.
-        4. The member completes the item with complete_work (its report lands on the item's thread) and retires with member_done.
-           One that retires without completing hands the item back to you: re-dispatch it, or complete_work it yourself saying
-           why it could not be done.
-        At most max_members run at once; more queue and start as members finish, so dispatch only what you have claimed. A decision only John can make goes to
-        ask_human, never a guess. Between wakes, stop.
+        2. Split it into small, self-contained items with post_work (priority 0-4, model haiku for mechanical work, `after` for order),
+           or if it can be done directly, do it. A decision only John can make goes to ask_human, never a guess.
+        3. complete_work the original with a note saying what became of it (the new item ids).
+        Between wakes, stop.
         """;
 
     readonly Goals.StandingGoal spec = new(Name, "Keep Work to Hire drained: every open item claimed, worked by a small swarm, and completed with a report on its thread.",
-        folder, Charter, "opus", "A lead that triages each open item into a small swarm keeps the queue empty.", "internal:open_work", "value <= 0",
+        folder, Charter, "opus", "The core dispatches every ordinary open item itself, and the lead splits the rest, so the queue empties.", "internal:open_triage", "value <= 0",
         MaxMembers: 3, CadenceMinutes: 10);
 
     /// <summary>ui:concierge. With <paramref name="on"/> (John only) it turns the Concierge on (creating or approving the goal) or
