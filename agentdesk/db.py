@@ -293,7 +293,7 @@ JOHN_HAS_LAST_WORD_SQL = (
     " ORDER BY m.id DESC LIMIT 1), 'human') = 'human'")
 
 WAITING_SQL = ("(t.channel = 'question'"
-               " AND t.status IN ('open', 'answered')"
+               " AND t.status = 'open'"
                " AND NOT (" + JOHN_HAS_LAST_WORD_SQL + "))")
 
 
