@@ -10,7 +10,7 @@ concurrency:
 
 jobs:
   build:
-    runs-on: windows-latest
+    runs-on: blacksmith-4vcpu-windows-2025
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
