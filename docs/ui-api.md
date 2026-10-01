@@ -174,20 +174,20 @@ the ops console's address without its key (`ui:web_url`); **Enter** on it, or **
 ![Agents, sample data](ui-agents.png)
 ![Adopt, sample data](ui-adopt.png)
 
-## The window's Goals screen
+## The window's Agents & goals screen
 
-**E** on the main menu opens Goals: one row per goal (`ui:status`'s `goals`, which is `ui:goal_list`) with its state, its Slack slot
+**A** on the main menu opens one list (there is no separate Goals screen): first one row per goal (`ui:status`'s `goals`, which is `ui:goal_list`) with its state, its Slack slot
 (`ui:slot_list`), its last value against its success line, experiments, members of its maximum, and its lead with the lead's
-generation (`ui:identity_list`). The Concierge is among them as a standing goal, shown `off` before it is first turned on. Above the
+generation (`ui:identity_list`); then the agents, except a goal's lead, which is on its goal's row. On a goal's row **A** approves, **X** stops, **L** attaches to the lead and **Enter** reads it; on an agent's row **S**, **F** and **Enter** act on the agent, **A** adopts a session, **N** signs up an agent and **G** starts a goal. The Concierge is among the goals as a standing goal, shown `off` before it is first turned on. Above the
 list, the budget panel shows `ui:status`'s `governor`: the week's % left, the time to the reset, the forecast at the reset, the
 mode (`advisory`, or `enforcing` once the governor enforces), today's allowance (sessions, swarms x members) with its reason, the session pool (`pool.summary`), and
 `series` as a sparkline. SysOp shows the same governor in one line, and the top line shows the week's % left where it fits.
 
 **Enter** opens the goal reader (`ui:goal_status`): objective, hypothesis, measure, success line and budget; the measured history
 as a sparkline; the last 10 experiments (n, change, owner, value, verdict); the members; and the summary its agents are woken with.
-On both screens **A** approves (`ui:goal_approve`; for the Concierge, `ui:concierge` with `on: true`), **X** stops after a Y/N
-(`ui:goal_stop`, or the Concierge off), **L** opens a console running `agentdesk attach <goal>-lead` as Agents' Enter does, and
-**N** asks for a name, a folder and an objective (`ui:goal_create`).
+In the goal reader **A** approves (`ui:goal_approve`; for the Concierge, `ui:concierge` with `on: true`), **X** stops after a Y/N
+(`ui:goal_stop`, or the Concierge off), **L** opens a console running `agentdesk attach <goal>-lead` as Enter on an agent does, and
+**G** (on the list) asks for a name, a folder and an objective (`ui:goal_create`).
 
 ![Goals, sample data](ui-goals.png)
 ![The goal reader, sample data](ui-goal-reader.png)

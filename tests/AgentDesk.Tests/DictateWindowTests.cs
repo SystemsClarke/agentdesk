@@ -8,7 +8,7 @@ namespace AgentDesk.Tests;
 /// read-only meanwhile, a second press keeps them, Esc restores the box, and a failure leaves it as it was.</summary>
 public sealed class DictateWindowTests
 {
-    static void Pump(int ms)
+    internal static void Pump(int ms)
     {
         var frame = new DispatcherFrame();
         var t = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(ms) };
@@ -128,5 +128,17 @@ public sealed class DictateWindowTests
         Until(() => !string.Concat(window3.FolderLines(120).SelectMany(l => l).Select(s => s.Text)).Contains("fastbuild"), "typing narrows the list");
         Assert.Equal(0, window3.folderSel);
         window3.Close();
+
+        // Agents & goals is one list: goals first, then the agents that are not a goal's lead.
+        var window5 = new MainWindow(new SampleBoard(), null);
+        window5.Show();
+        Pump(300);
+        var list = window5.AgentsScreen(110).Select(l => string.Concat(l.Select(s => s.Text))).ToList();
+        window5.Close();
+        Assert.Contains(list, l => l.Contains("GOAL") && l.Contains("LEAD"));
+        Assert.Contains(list, l => l.Contains("AGENT") && l.Contains("MODEL"));
+        Assert.Contains(list, l => l.Contains("build-speed") && l.Contains("running"));
+        Assert.Contains(list, l => l.Contains("app-dev") && l.Contains("sonnet"));
+        Assert.DoesNotContain(list, l => l.TrimStart().StartsWith("build-speed-lead") && l.Contains("windows")); // its lead is on the goal's row
     }
 }
