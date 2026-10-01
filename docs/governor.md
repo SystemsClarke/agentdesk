@@ -159,3 +159,16 @@ dotnet test --filter Backtest_on_recorded_samples --logger "console;verbosity=de
 It replays the copy's swarm-free hours as John's own burn, hour of week for hour of week, puts the simulated swarm on top,
 and prints each week's ending %. Without `AGENTDESK_BACKTEST_DB` the test does nothing. `claude_usage.json` holds only the
 latest reading, so history starts when the core starts recording samples.
+
+## The end-of-week push (2026-10)
+
+The aim is to finish each week near 100%, with the Work to Hire queue as where the spare budget goes.
+
+- **Pace.** The even spread `spendable / hours left` is multiplied by `Governor.Pace`: `governor_floor` (default 0.3) at the start of the week,
+  rising to 1 at the reset (`governor_ramp`, default 1; 0 is the old flat spread). Spendable is recomputed from what is really left each time, so
+  the cushion held back early is spent later, harder. More cushion early, a push at the end.
+- **Tracking.** `ui:governor` gains `plan_end_pct` (where the plan lands, from `PlanPath`: John's expected burn plus the allowance, hour by hour to the
+  reset), `trend_end_pct` (where the last six hours' real pace would end the week), `unused_pct`, `status` (on pace / behind / on course to hit the limit),
+  `pace`, `week_elapsed_pct`, and `forecast` (the plan path, a sparkline in the window's budget panel).
+- **The queue soaks it up.** The Dispatcher treats the week as *behind* when `trend_end_pct` is more than 2 under `plan_end_pct`. Then it runs `eager`
+  Work to Hire items and lifts the Concierge's worker cap from 3 to what the governor can afford (`caps.new_sessions`), as many workers as the pool allows. On pace, back to 3 and no eager items.

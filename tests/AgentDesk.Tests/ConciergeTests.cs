@@ -21,7 +21,7 @@ public sealed class ConciergeTests : IDisposable
 
     public ConciergeTests()
     {
-        File.WriteAllText(Path.Combine(dir, "settings.json"), """{"max_sessions": 6}""");
+        File.WriteAllText(Path.Combine(dir, "settings.json"), """{"max_sessions": 6, "governor_default_session_rate": 0.05}""");
         var script = Path.Combine(dir, "standin.ps1");
         File.WriteAllText(script, "\"ready $env:AGENTDESK_AUTHOR\"\nwhile ($null -ne ($l = [Console]::In.ReadLine())) { \"got: $l\" }\n");
         store = new BoardStore(Path.Combine(dir, "agentdesk.db"));
@@ -92,6 +92,26 @@ public sealed class ConciergeTests : IDisposable
         Assert.Equal("open", Scalar("SELECT status FROM threads WHERE id=$i", ("i", morning)));
         Assert.Empty(await dispatcher.Tick()); // and it is not renewed twice
         Assert.Equal("3", Scalar("SELECT COUNT(*) FROM threads WHERE channel='work'"));
+    }
+
+    [Fact]
+    public async Task A_week_behind_its_plan_lifts_the_worker_cap_and_runs_eager_items()
+    {
+        await concierge.Toggle(john, true);
+        var now = DateTimeOffset.UtcNow;
+        using (var db = store.Open()) // a slow week: 10% used, creeping 0.1% an hour, two days to the reset, so it will end far under its plan
+            for (var i = 7; i >= 0; i--)
+                Governor.Insert(db, new UsageSample(now.AddHours(-i), 10 + 0.1 * (7 - i), now.AddDays(2), 0, null, 0));
+        var dispatcher = new Dispatcher(store, goals, dir);
+        long Work(string subject, bool eager = false) => JsonDocument.Parse(board.PostWork(new Caller("s1", "poster", dir, "claude-code", 1), subject, "do it", null, "auto", eager: eager).Result)
+            .RootElement.GetProperty("thread_id").GetInt64();
+        var items = Enumerable.Range(1, 6).Select(i => Work($"job {i}")).ToList();
+        var spare = Work("spare job", eager: true);
+
+        var started = await dispatcher.Tick();
+        Assert.True(started.Count > Concierge.BaseMembers, $"started {started.Count}");
+        Assert.Contains(spare, started); // eager work runs only because the week is behind
+        Assert.True(long.Parse(Scalar("SELECT max_members FROM goals WHERE name='concierge'")!) > Concierge.BaseMembers);
     }
 
     string? Scalar(string sql, params (string, object?)[] args) { using var db = store.Open(); return db.Scalar(sql, args)?.ToString(); }
