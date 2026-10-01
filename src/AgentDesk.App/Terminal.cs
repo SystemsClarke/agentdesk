@@ -213,7 +213,7 @@ public partial class MainWindow
         {
             "main" => "Main menu", "list" => Titles[channel], "prs" => "Pull Requests", "sysop" => "SysOp console", "who" => "Who's on",
             "options" => "Options", "compose" => $"New post in {Titles[channel]}", "agents" => "Agents", "adopt" => "Adopt a session",
-            "goals" => "Goals", "goal" => $"Goal {goal?.Name}", "ask" => ask?.Title ?? "", _ => $"Reading #{readTid}",
+            "goal" => $"Goal {goal?.Name}", "ask" => ask?.Title ?? "", _ => $"Reading #{readTid}",
         };
         Line left = [S("AgentDesk", "ye b"), S($" · {title}", "mu")];
         var held = HeldRow;
@@ -236,7 +236,7 @@ public partial class MainWindow
         var q = channel == "question";
         return screen switch
         {
-            "main" => [.. K("Q D W J", "message bases"), .. K("P", "PRs"), .. K("S", "SysOp"), .. K("B", "who's on"), .. K("A", "agents"), .. K("E", "goals"), .. K("O", "options"),
+            "main" => [.. K("Q D W J", "message bases"), .. K("P", "PRs"), .. K("S", "SysOp"), .. K("B", "who's on"), .. K("A", "agents & goals"), .. K("O", "options"),
                 .. K("G", "hang up")],
             "list" => [.. K("↑↓", "move"), .. K("↵", "read"), .. K("N", "new post"),
                 .. If(q, [.. K("H", showArchived ? "active" : "archived"), .. K("Ctrl+R", "wake agent")]), .. K("Esc", "main menu")],
@@ -248,12 +248,10 @@ public partial class MainWindow
             "who" => [.. K("↑↓", "pick a caller"), .. K("↵", "read bio"), .. K("P", "page them"), .. K("Esc", "menu")],
             "options" => [.. K("↑↓", "move"), .. K("↵", "change"), .. K("←→", "adjust"), .. K("C", "ops console"), .. K("Esc", "menu")],
             "compose" => [.. K("↵", "subject → body"), .. K("Ctrl+↵", "post"), .. K("Ctrl+D", "dictate"), .. K("Esc", "cancel")],
-            "agents" => [.. K("↑↓", "move"), .. K("↵", "attach"), .. K("S", "start/stop"), .. K("N", "new agent"), .. K("F", "forget"),
-                .. K("A", "adopt a session"), .. K("Esc", "menu")],
+            "agents" => [.. K("↑↓", "move"), .. K("↵", "attach / read"), .. K("S", "start/stop"), .. K("N", "new agent"), .. K("G", "new goal"),
+                .. K("A", "adopt / approve"), .. K("X", "stop goal"), .. K("L", "goal's lead"), .. K("F", "forget"), .. K("Esc", "menu")],
             "adopt" => [.. K("↑↓", "move"), .. K("↵", "adopt"), .. K("Esc", "agents")],
-            "goals" => [.. K("↑↓", "move"), .. K("↵", "read"), .. K("A", "approve"), .. K("X", "stop"), .. K("N", "new goal"), .. K("L", "attach to lead"),
-                .. K("Esc", "menu")],
-            "goal" => [.. K("A", "approve"), .. K("X", "stop"), .. K("L", "attach to lead"), .. K("↑↓", "scroll"), .. K("Esc", "goals")],
+            "goal" => [.. K("A", "approve"), .. K("X", "stop"), .. K("L", "attach to lead"), .. K("↑↓", "scroll"), .. K("Esc", "agents")],
             "ask" => [.. K("↵", "next"), .. K("Esc", "cancel")],
             _ => [],
         };
@@ -342,10 +340,8 @@ public partial class MainWindow
             ("S", "SysOp console", sysop),
             ("B", "Who's on", S($"{N(agents, "agent")} today", "pu")),
             ("O", "Options", S(Palettes[Theme].Label + (screech ? " · screech on" : ""), "ye")),
-            ("A", "Agents", this.agents.Count == 0 ? S("none signed up", "mu")
-                : S($"{this.agents.Count(a => a.State == "running")} running · {this.agents.Count(a => a.State == "queued")} queued", "gr")),
-            ("E", "Goals", Goals.Count(g => g.State == "running") is var on and > 0 ? S($"{on} running", "gr")
-                : S("none running", "mu")),
+            ("A", "Agents & goals", this.agents.Count == 0 && Goals.Count == 0 ? S("none signed up", "mu")
+                : S($"{this.agents.Count(a => a.State == "running")} running · {this.agents.Count(a => a.State == "queued")} queued · {Goals.Count(g => g.State == "running")} goals", "gr")),
             ("G", "Hang up", S("to the tray", "mu")),
         ];
         static Line Item((string Key, string Label, Seg Val) it) =>
@@ -621,18 +617,29 @@ public partial class MainWindow
     internal static Line AdoptRow(Adoptable a, int folderW, int msgW) =>
         [S("  " + Fit(Tilde(a.Folder), folderW), "cy"), S(" " + Fit(When(a.LastActivity), 11), "fa"), S(Fit(a.FirstMessage, msgW))];
 
-    List<Line> AgentsScreen(int W)
+    /// <summary>The one list: every goal (the Concierge among them), then every agent that is not a goal's lead (its lead is on the goal's row).</summary>
+    IReadOnlyList<(GoalRow? Goal, Identity? Agent)> Entries =>
+    [
+        .. Goals.Select(g => ((GoalRow?)g, (Identity?)null)),
+        .. agents.Where(a => !Goals.Any(g => string.Equals(g.Lead, a.Name, StringComparison.OrdinalIgnoreCase))).Select(a => ((GoalRow?)null, (Identity?)a)),
+    ];
+
+    internal List<Line> AgentsScreen(int W)
     {
-        var folderW = Math.Max(20, W - 57);
-        var L = Rows(Bar("AGENTS  ·  the switchboard  ·  long-lived agents, one line each, and Phoenix keeps them going"),
-            "  " + Fit("NAME", 20) + Fit("STATE", 9) + Fit("GEN", 5) + Fit("HOST", 13) + Fit("MODEL", 8) + "FOLDER", agents.Count,
-            i => AgentRow(agents[i], folderW),
-            [S("   No agents yet. ", "mu"), S("N", "ye"), S(" signs one up; ", "mu"), S("A", "ye"), S(" adopts a live Claude session.", "mu")], adoptNote is null ? 11 : 15);
+        var (es, gs) = (Entries, Goals);
+        var (folderW, leadW) = (Math.Max(20, W - 57), Math.Max(16, W - 67));
+        var budget = Box("Budget · the usage governor", BudgetLines(st?.Budget, W - 4), W);
+        var L = Rows(Bar("AGENTS & GOALS  ·  the switchboard  ·  long-lived agents, and the swarms working toward a line"), null, es.Count,
+            i => es[i].Goal is { } g ? GoalLine(g, SlotOf(g.Name), LeadOf(g), leadW) : AgentRow(es[i].Agent!, folderW),
+            [S("   Nothing yet. ", "mu"), S("N", "ye"), S(" signs up an agent; ", "mu"), S("G", "ye"), S(" starts a goal.", "mu")], 16 + budget.Count,
+            before: i => i == 0 && gs.Count > 0 ? [S("  " + Fit("GOAL", 18) + Fit("STATE", 10) + Fit("SLOT", 5) + Fit("LAST · LINE", 20) + Fit("EXP", 5) + Fit("CREW", 7) + "LEAD", "mu")]
+                : i == gs.Count && i < es.Count ? [S("  " + Fit("AGENT", 20) + Fit("STATE", 9) + Fit("GEN", 5) + Fit("HOST", 13) + Fit("MODEL", 8) + "FOLDER", "mu")] : null,
+            head: budget);
         L.Add([S($" {agents.Count(a => a.State == "running")} running", "gr"), S(" · "), S($"{agents.Count(a => a.State == "queued")} queued", "ye"), S(" · "),
-            S($"{agents.Count(a => a.State == "stopped")} stopped", "fa"), S($" · at most {Pref("max_sessions", 3)} at once (Options)", "mu"),
+            S($"{agents.Count(a => a.State == "stopped")} stopped", "fa"), S($" · {gs.Count(g => g.State == "draft")} draft goals", "ye"), S($" · at most {Pref("max_sessions", 3)} at once (Options)", "mu"),
             .. If(window.Count > window.Visible, S($" · rows {window.Top + 1}–{window.End} of {window.Count}", "fa"))]);
-        L.AddRange([[], [S(" ↵", "ye"), S(" opens a console attached to it (", "mu"), S("agentdesk attach <name>", "cy"), S("). Ctrl+] detaches; it keeps running.", "mu")],
-            [S(" A", "ye"), S(" adopts a Claude Code conversation from the desktop app, so it runs here instead.", "mu")]]);
+        L.AddRange([[], [S(" ↵", "ye"), S(" on an agent attaches (", "mu"), S("agentdesk attach <name>", "cy"), S("; Ctrl+] detaches); on a goal it reads it. ", "mu"),
+                S("A", "ye"), S(" adopts a Claude session, or approves a goal; ", "mu"), S("X", "ye"), S(" stops one.", "mu")]]);
         if (adoptNote != null)
             L.AddRange([[], .. Box("Adopted", [[S(adoptNote, "ye")]], W)]);
         return L;
@@ -745,24 +752,6 @@ public partial class MainWindow
     int? SlotOf(string goal) => slots.FirstOrDefault(s => string.Equals(s.Goal, goal, StringComparison.OrdinalIgnoreCase))?.N;
     Identity? LeadOf(GoalRow g) => agents.FirstOrDefault(a => string.Equals(a.Name, g.Lead, StringComparison.OrdinalIgnoreCase));
 
-    List<Line> GoalsScreen(int W)
-    {
-        var gs = Goals;
-        var leadW = Math.Max(16, W - 67);
-        var budget = Box("Budget · the usage governor", BudgetLines(st?.Budget, W - 4), W);
-        var L = Rows(Bar("GOALS  ·  the war room  ·  each swarm is a hypothesis, a measure and a line to cross"),
-            "  " + Fit("GOAL", 18) + Fit("STATE", 10) + Fit("SLOT", 5) + Fit("LAST · LINE", 20) + Fit("EXP", 5) + Fit("CREW", 7) + "LEAD", gs.Count,
-            i => GoalLine(gs[i], SlotOf(gs[i].Name), LeadOf(gs[i]), leadW),
-            [S("   No goals yet. ", "mu"), S("N", "ye"), S(" starts one.", "mu")], 12 + budget.Count, head: budget);
-        L.Add([S($" {gs.Count(g => g.State == "running")} running", "gr"), S(" · "), S($"{gs.Count(g => g.State == "draft")} draft", "ye"), S(" · "),
-            S($"{slots.Count(s => s.Goal != null)} of {Math.Max(10, slots.Count)} Slack slots in use", "cy"),
-            .. If(window.Count > window.Visible, S($" · rows {window.Top + 1}–{window.End} of {window.Count}", "fa"))]);
-        L.AddRange([[], [S(" ↵", "ye"), S(" reads a goal. ", "mu"), S("A", "ye"), S(" approves a proposed draft (or starts a stopped one); ", "mu"), S("X", "ye"),
-                S(" stops it.", "mu")],
-            [S(" N", "ye"), S(" starts a goal: its lead proposes a hypothesis, a measure and a line, and waits for your A.", "mu")]]);
-        return L;
-    }
-
     GoalDetail? GoalDetailOf(string name) => Goals.FirstOrDefault(g => g.Name == name) is { } r
         ? new(r, null, r.Standing ? "internal:open_work" : null, 0, 10, null, [], [], [], r.State == "off" ? "Off. A (or Ctrl+W) turns the Concierge on." : "")
         : null;
@@ -823,7 +812,7 @@ public partial class MainWindow
             Reply.Clear();
         if (screen == "agents")
             adoptNote = null;
-        Goto(screen switch { "read" => readBack, "compose" => "list", "ask" => ask!.Back, "adopt" => "agents", "goal" => "goals", _ => "main" });
+        Goto(screen switch { "read" => readBack, "compose" => "list", "ask" => ask!.Back, "adopt" or "goal" => "agents", _ => "main" });
     }
 
     void AskFor(Ask a, string prefill = "")
@@ -926,9 +915,11 @@ public partial class MainWindow
 
     async void StartStop()
     {
-        if (agents.Count == 0)
+        if (SelAgent is not { } a)
+        {
+            Flash("S starts or stops an agent. A goal starts with A and stops with X.", "ye");
             return;
-        var a = agents[Sel];
+        }
         var stop = a.State != "stopped";
         Flash(stop ? $"Stopping {a.Name}..." : $"Starting {a.Name}...", "ye");
         try
@@ -951,9 +942,9 @@ public partial class MainWindow
 
     void Forget()
     {
-        if (agents.Count == 0)
+        if (SelAgent is not { } who)
             return;
-        var name = agents[Sel].Name;
+        var name = who.Name;
         confirm = ($"Forget {name}? It stops and leaves the list; its Claude conversation stays on disk.", async () =>
         {
             await board.ActAsync("ui:identity_forget", new { name });
@@ -964,7 +955,10 @@ public partial class MainWindow
     }
 
     /// <summary>The goal under the cursor, or the one open in the reader.</summary>
-    GoalRow? SelGoal => screen == "goal" ? goal?.Detail?.Row : Goals.Count > 0 ? Goals[Math.Min(Sel, Goals.Count - 1)] : null;
+    GoalRow? SelGoal => screen == "goal" ? goal?.Detail?.Row : screen == "agents" && Entries is { Count: > 0 } es ? es[Math.Min(Sel, es.Count - 1)].Goal : null;
+
+    /// <summary>The agent under the cursor on the combined list (null on a goal's row).</summary>
+    Identity? SelAgent => screen == "agents" && Entries is { Count: > 0 } es ? es[Math.Min(Sel, es.Count - 1)].Agent : null;
 
     /// <summary>A: John approves a proposed goal (ui:goal_approve), or starts a stopped one; the Concierge is turned on as Ctrl+W does.</summary>
     async void Approve()
@@ -1003,7 +997,7 @@ public partial class MainWindow
         Render();
     }
 
-    void NewGoal() => AskFor(new("New goal", "NEW GOAL  ·  start a swarm  ·  its lead proposes a hypothesis, a measure and a line, then you approve", "goals",
+    void NewGoal() => AskFor(new("New goal", "NEW GOAL  ·  start a swarm  ·  its lead proposes a hypothesis, a measure and a line, then you approve", "agents",
         [("name", "A short name: its lead is <name>-lead, and Slack's swarm slot uses it too.", false),
          ("folder", "The folder the lead works and measures in, e.g. C:\\Users\\you\\src\\repo.", false),
          ("objective", "What it should achieve, in a sentence. The lead turns it into a hypothesis.", false)],
@@ -1049,8 +1043,8 @@ public partial class MainWindow
 
     int ItemCount() => screen switch
     {
-        "list" => rows[channel].Count, "prs" => Prs.Count, "who" => Callers.Count, "options" => OptionItems().Count, "agents" => agents.Count,
-        "adopt" => adoptables?.Count ?? 0, "goals" => Goals.Count, _ => 0,
+        "list" => rows[channel].Count, "prs" => Prs.Count, "who" => Callers.Count, "options" => OptionItems().Count, "agents" => Entries.Count,
+        "adopt" => adoptables?.Count ?? 0, _ => 0,
     };
 
     void Move(int delta)
@@ -1078,15 +1072,15 @@ public partial class MainWindow
         }
         else if (screen == "options")
             ChangeOption(0);
-        else if (screen == "agents" && agents.Count > 0)
-            Attach(agents[Sel]);
-        else if (screen == "adopt")
-            Adopt();
-        else if (screen == "goals" && Goals.Count > 0)
+        else if (screen == "agents" && SelAgent is { } agent)
+            Attach(agent);
+        else if (screen == "agents" && SelGoal is { } g)
         {
-            goal = (Goals[Sel].Name, null);
+            goal = (g.Name, null);
             Goto("goal");
         }
+        else if (screen == "adopt")
+            Adopt();
     }
 
     void ChangeOption(int delta)
@@ -1403,14 +1397,13 @@ public partial class MainWindow
             Page();
         else if (s == "options" && ch == 'c')
             OpenConsole();
-        else if (s == "agents" && ch is 's' or 'n' or 'f' or 'a')
-            ((Action)(ch switch { 's' => StartStop, 'n' => NewAgent, 'f' => Forget, _ => () => Goto("adopt") }))();
-        else if (s is "goals" or "goal" && ch is 'a' or 'x' or 'n' or 'l')
-            ((Action)(ch switch { 'a' => Approve, 'x' => StopGoal, 'n' => NewGoal, _ => AttachLead }))();
+        else if (s is "agents" or "goal" && ch is 'a' or 'x' or 'l' || s == "agents" && ch is 's' or 'n' or 'f' or 'g')
+            ((Action)(ch switch
+            {
+                'a' => SelGoal is null ? () => Goto("adopt") : Approve, 'x' => StopGoal, 'l' => AttachLead, 'g' => NewGoal, 's' => StartStop, 'n' => NewAgent, _ => Forget,
+            }))();
         else if (ch == 'a')
             Goto("agents");
-        else if (ch == 'e')
-            Goto("goals");
         else if (ch is 'p' or 's' or 'b' or 'o' or 'm')
             Goto(ch switch { 'p' => "prs", 's' => "sysop", 'b' => "who", 'o' => "options", _ => "main" });
         else if (ch == 't')
