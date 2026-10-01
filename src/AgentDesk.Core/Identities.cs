@@ -32,6 +32,7 @@ public sealed partial class Identities
     readonly string data, claude;
     readonly Lock gate = new();
     readonly Dictionary<string, string> prompts = new(StringComparer.OrdinalIgnoreCase); // first messages for their next launch (Start)
+    readonly HashSet<string> urgent = new(StringComparer.OrdinalIgnoreCase); // started with a message (a reply, a wake): first in line for a slot, under gate
 
     /// <summary>More for a Phoenix successor's first prompt, given the identity's name (its goal's status: Goals).</summary>
     public Func<string, string?>? Context;
@@ -96,7 +97,7 @@ public sealed partial class Identities
         lock (gate)
         {
             using var db = store.Open();
-            if (prompt is not null) prompts[name] = prompt;
+            if (prompt is not null) (prompts[name], _) = (prompt, urgent.Add(name));
             if (Need(db, name)["state"]?.ToString() is "stopped") Mark(db, name, "queued");
             if (Drain(db).TryGetValue(name, out var why)) throw new ArgumentException(why);
             var row = Get(db, name)!;
@@ -242,6 +243,20 @@ public sealed partial class Identities
         }
     }
 
+    /// <summary>John just replied on <paramref name="threadId"/>: if the identity that asked has not already been handed the reply (its
+    /// `wait` returned, or a hook injected it), <see cref="Wake"/> it now, so nothing waits for John to press Ctrl+R. Only identities are woken:
+    /// an agent that merely asked from its own terminal is left alone, as Wake would otherwise adopt it.</summary>
+    public async Task AutoWake(int threadId)
+    {
+        using (var db = store.Open())
+        {
+            if (db.Rows("SELECT opened_by FROM threads WHERE id=$id", ("id", threadId)).FirstOrDefault() is not { } t || Get(db, t["opened_by"]!.ToString()!) is null) return;
+            if (db.Rows("SELECT id FROM messages WHERE thread_id=$t AND author_kind='human' ORDER BY id DESC LIMIT 1", ("t", threadId)) is not [var m]) return;
+            if (db.Scalar("SELECT 1 FROM deliveries WHERE message_id=$m", ("m", (long)m["id"]!)) is not null) return; // it already has it
+        }
+        await Wake(threadId);
+    }
+
     /// <summary>Claude Code sessions touched in the last 24 hours that someone typed in, newest first: candidates for <see cref="Adopt"/>.</summary>
     public static Task<string> Adoptable()
     {
@@ -371,7 +386,7 @@ public sealed partial class Identities
         var failed = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         var hard = MaxSessions(data);
         Governor.Verdict? v = null;
-        foreach (var next in db.Rows("SELECT * FROM identities WHERE state='queued' ORDER BY updated_ts, name"))
+        foreach (var next in db.Rows("SELECT * FROM identities WHERE state='queued' ORDER BY updated_ts, name").OrderBy(r => urgent.Contains(r["name"]!.ToString()!) ? 0 : 1))
         {
             v ??= Judge(db);
             var pool = Budget.Read(db, hard, v);
@@ -554,6 +569,7 @@ public sealed partial class Identities
     void Launch(BoardDb db, JsonObject row, string? prompt = null, string? model = null)
     {
         if (prompt is null && prompts.Remove(row["name"]!.ToString(), out var queued)) prompt = queued;
+        urgent.Remove(row["name"]!.ToString()!);
         var (name, folder, host) = (row["name"]!.ToString(), row["folder"]!.ToString(), row["host"]!.ToString());
         var wsl = host.StartsWith("wsl:");
         Func<string, string> quote = wsl ? Sh : Win;

@@ -223,6 +223,27 @@ public sealed class IdentitiesTests : IDisposable
     }
 
     [Fact]
+    public async Task Johns_reply_starts_a_stopped_asker_unless_it_already_has_it_or_is_no_identity()
+    {
+        var (_, ids) = Core();
+        await ids.Create("asker", dir, null, null);
+        await ids.Create("quiet", dir, null, null);
+        long Reply(string agent)
+        {
+            using var db = store.Open();
+            var tid = db.StartThread("question", $"from {agent}", agent, BoardDb.Agent, "which one?");
+            var mid = db.JohnReplies(tid, "that one");
+            if (agent == "quiet") db.Exec("INSERT INTO deliveries(message_id, method, state, ts) VALUES($m, 'watcher', 'woke', $ts)", ("m", mid), ("ts", db.NowIso()));
+            return tid;
+        }
+        await ids.AutoWake((int)Reply("asker"));
+        await ids.AutoWake((int)Reply("quiet")); // its wait already returned the reply
+        await ids.AutoWake((int)Reply("stranger")); // not an identity: never adopted by a reply
+        var states = States(ids);
+        Assert.Equal(("running", "stopped", false), (states["asker"], states["quiet"], states.ContainsKey("stranger")));
+    }
+
+    [Fact]
     public async Task Adoptable_lists_recent_transcripts_and_adopt_resumes_one()
     {
         var id = Guid.NewGuid().ToString();

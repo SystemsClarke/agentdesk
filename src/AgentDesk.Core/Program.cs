@@ -66,7 +66,7 @@ await PipeServer.Run((req, push, gone) => req.Tool switch
 // AgentDesk's window (docs/ui-api.md).
 Task<string> Ui(string op, Args a, Caller caller, Func<string, Task> push, CancellationToken gone) => op switch
 {
-    "reply" => board.JohnReplies(a.Int("thread_id"), a.String("body")),
+    "reply" => ReplyAndWake(a.Int("thread_id"), a.String("body")),
     "thread" => board.PeekThread(a.Int("thread_id")),
     "close" => board.CloseQuestion(a.Int("thread_id")),
     "post" => board.JohnPosts(a.String("channel"), a.String("subject", ""), a.String("body")),
@@ -122,6 +122,21 @@ Task<string> WebCall(string op, JsonElement args) => op switch
         => Ui(op, new Args(args), new Caller(null, null, null, "web", 0), _ => Task.CompletedTask, CancellationToken.None),
     _ => Task.FromResult(Tools.Error($"unknown request: {op}")),
 };
+
+// John's reply goes to the agent that asked: after a few seconds, so a `wait` that is polling (every 2 s) gets it first, the core types it
+// into the asker's session or starts the asker (Identities.AutoWake). settings.json's "auto_wake": false turns it off.
+async Task<string> ReplyAndWake(int threadId, string body)
+{
+    var reply = await board.JohnReplies(threadId, body);
+    if (AgentBoard.Load(Path.Combine(data, "settings.json"))?["auto_wake"]?.GetValue<bool>() != false)
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(TimeSpan.FromSeconds(5));
+            try { await identities.AutoWake(threadId); }
+            catch (Exception e) { Log.Warn($"auto wake for #{threadId} failed: {e.Message}"); }
+        });
+    return reply;
+}
 
 async Task<string> Status()
 {
