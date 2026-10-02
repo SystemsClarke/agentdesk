@@ -90,6 +90,10 @@ public sealed class GoalsTests : IDisposable
             run.GetProperty("max_hours").GetDouble(), run.GetProperty("cadence_minutes").GetDouble(), run.GetProperty("samples").GetInt32()));
         Assert.Equal("running", Json(goals.List()).GetProperty("goals")[0].GetProperty("state").GetString());
         Assert.Equal("toy", goals.Summaries()[0]!["name"]!.ToString());
+        await Assert.ThrowsAsync<ArgumentException>(() => goals.Approve(john, "toy", null, null, null)); // already running, nothing to change
+        var more = Json(goals.Approve(john, "toy", 8, null, null)); // John raises a running goal's budget
+        Assert.Equal(("running", 8, 1.5, 5.0), (more.GetProperty("state").GetString(), more.GetProperty("max_members").GetInt32(),
+            more.GetProperty("max_hours").GetDouble(), more.GetProperty("cadence_minutes").GetDouble()));
     }
 
     [Fact]

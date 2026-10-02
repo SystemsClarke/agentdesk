@@ -101,6 +101,7 @@ Task<string> Ui(string op, Args a, Caller caller, Func<string, Task> push, Cance
     "goal_create" => goals.Create(a.String("name"), a.String("objective"), a.String("folder")),
     "goal_propose" => GoalTool("goal_propose", caller, a),
     "goal_approve" => goals.Approve(caller, a.String("name"), a.IntOrNull("max_members"), a.DoubleOrNull("max_hours"), a.DoubleOrNull("cadence_minutes")),
+    "goal_budget" => goals.SetBudget(caller, a.String("name"), a.IntOrNull("max_members"), a.DoubleOrNull("max_hours"), a.DoubleOrNull("cadence_minutes")),
     "goal_stop" => goals.Stop(caller, a.String("name")),
     "goal_list" => goals.List(),
     "goal_status" => goals.Status(a.String("name")),

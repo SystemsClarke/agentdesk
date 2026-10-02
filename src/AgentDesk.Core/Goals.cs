@@ -104,12 +104,27 @@ public sealed partial class Goals
         return Ok(Need(db, name));
     }
 
+    /// <summary>John changes a goal's budget from the window or the CLI: how many members it may run, its hours, its wake cadence. Only the numbers given change.</summary>
+    public Task<string> SetBudget(Caller c, string name, int? maxMembers, double? maxHours, double? cadence)
+    {
+        if (!John(c)) throw new ArgumentException("only John changes a goal's budget");
+        using var db = store.Open();
+        var g = Need(db, name);
+        if (Str(g, "state") is "succeeded" or "stopped") throw new ArgumentException($"goal {name} is {Str(g, "state")}");
+        db.Exec("UPDATE goals SET max_members=COALESCE($m, max_members), max_hours=COALESCE($h, max_hours), cadence_minutes=COALESCE($c, cadence_minutes), updated_ts=$ts WHERE name=$n",
+            ("m", maxMembers is { } m ? Math.Max(m, 1) : null), ("h", maxHours), ("c", cadence), ("ts", db.NowIso()), ("n", name));
+        g = Need(db, name);
+        db.Reply(Long(g, "thread_id"), Author, BoardDb.Agent, $"**Budget changed by John.** Now {g["max_members"]} members, {g["max_hours"]} h; the lead wakes every {g["cadence_minutes"]} min.");
+        return Ok(g);
+    }
+
     public Task<string> Approve(Caller c, string name, int? maxMembers, double? maxHours, double? cadence)
     {
         if (!John(c)) throw new ArgumentException("only John approves a goal");
         using var db = store.Open();
         var g = Need(db, name);
         if (Str(g, "measure_cmd") is null) throw new ArgumentException($"goal {name} has no proposal yet (goal_propose)");
+        if (Str(g, "state") == "running" && (maxMembers, maxHours, cadence) != (null, null, null)) return SetBudget(c, name, maxMembers, maxHours, cadence);
         if (Str(g, "state") is "running" or "succeeded") throw new ArgumentException($"goal {name} is already {Str(g, "state")}");
         db.Exec("UPDATE goals SET state='running', started_ts=$ts, woke_ts=NULL, updated_ts=$ts, max_members=COALESCE($m, max_members), "
                 + "max_hours=COALESCE($h, max_hours), cadence_minutes=COALESCE($c, cadence_minutes) WHERE name=$n",
