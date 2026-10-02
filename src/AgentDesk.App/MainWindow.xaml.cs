@@ -37,6 +37,8 @@ public partial class MainWindow : Window
     static readonly string SettingsPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "AgentDesk", "settings.json");
 
     readonly IBoard board;
+    /// <summary>What "hang up" does after its flash; tests swap it so the window stays up.</summary>
+    internal Action hide;
     readonly JsonObject prefs = LoadPrefs();
     readonly List<Paragraph> paras = [];
     readonly Dictionary<string, (Brush? Fg, Brush? Bg, bool Bold, string[] T)> looks = [];
@@ -49,6 +51,7 @@ public partial class MainWindow : Window
     public MainWindow(IBoard board, int? openThread)
     {
         this.board = board;
+        hide = Hide;
         InitializeComponent();
         ApplyFont();
         ApplyTheme();
@@ -217,7 +220,7 @@ public partial class MainWindow : Window
         var ctrl = Keyboard.Modifiers.HasFlag(ModifierKeys.Control);
         e.Handled = Reply.IsKeyboardFocused || Subject.IsKeyboardFocused
             ? BoxKey(key, ctrl, Keyboard.Modifiers.HasFlag(ModifierKeys.Alt))
-            : ScreenKey(key, ctrl);
+            : ScreenKey(key, Keyboard.Modifiers);
     }
 
     void OnClick(object sender, MouseButtonEventArgs e)

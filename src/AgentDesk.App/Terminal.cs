@@ -33,7 +33,8 @@ public partial class MainWindow
     ];
     static readonly string[] AuthorHues = ["cy", "pu", "gr", "or"];
 
-    string screen = "main", channel = "question", readBack = "list";
+    internal string screen = "main";
+    string channel = "question", readBack = "list";
     int? readTid;
     (int Tid, int Count)? readerKey;
     bool showArchived, showSettled, scrollToEnd;
@@ -135,7 +136,7 @@ public partial class MainWindow
     ThreadRow? HeldRow => rows["work"].FirstOrDefault(r => r.Id == st?.HeldId); // the newest item the Concierge holds
     bool SlackUp => st?.SlackTs is { } t && DateTimeOffset.Now - t < TimeSpan.FromSeconds(90);
     string SelKey => screen == "list" ? channel : screen;
-    int Sel { get => sel.GetValueOrDefault(SelKey); set => sel[SelKey] = value; }
+    internal int Sel { get => sel.GetValueOrDefault(SelKey); set => sel[SelKey] = value; }
 
     /// <summary>Every goal, the Concierge among them as a standing goal even before it is first turned on.</summary>
     IReadOnlyList<GoalRow> Goals => st?.Goals is { } g && g.Any(x => x.Standing && x.Name == "concierge") ? g
@@ -228,7 +229,7 @@ public partial class MainWindow
         return gap < 4 ? Pad([.. left, S("   "), .. right], W) : [.. left, S(Rep(' ', gap / 2)), .. mid, S(Rep(' ', gap - gap / 2)), .. right];
     }
 
-    Line Hints()
+    internal Line Hints()
     {
         static Seg[] K(string key, string label) => [S($" {key}", "ye inv"), S($" {label} ", "mu inv")];
         if (confirm is { } c)
@@ -257,7 +258,7 @@ public partial class MainWindow
         };
     }
 
-    Line BarLine(int W) => flash is { } f ? Pad([S(" " + f.Text, f.Tags + " inv")], W, "inv") : Pad(Hints(), W, "inv");
+    internal Line BarLine(int W) => flash is { } f ? Pad([S(" " + f.Text, f.Tags + " inv")], W, "inv") : Pad(Hints(), W, "inv");
 
     // --- shared pieces -----------------------------------------------------------
 
@@ -1099,7 +1100,7 @@ public partial class MainWindow
                 Flash($"{Label(name)} hasn't posted a bio.", "mu");
         }
         else if (screen == "options")
-            ChangeOption(0);
+            ChangeOption(0, Keyboard.Modifiers);
         else if (screen == "agents" && SelAgent is { } agent)
             Attach(agent);
         else if (screen == "agents" && SelGoal is { } g)
@@ -1111,14 +1112,14 @@ public partial class MainWindow
             Adopt();
     }
 
-    void ChangeOption(int delta)
+    void ChangeOption(int delta, ModifierKeys mods)
     {
         var key = OptionItems()[Sel].Key;
         var step = delta == 0 ? 1 : delta;
         switch (key)
         {
             case "max_sessions":
-                var n = Math.Max(Pref("max_sessions", 3) + step * (Keyboard.Modifiers.HasFlag(ModifierKeys.Shift) ? 10 : 1), 1);
+                var n = Math.Max(Pref("max_sessions", 3) + step * (mods.HasFlag(ModifierKeys.Shift) ? 10 : 1), 1);
                 SetPref(key, n);
                 Flash($"Up to {N(n, "agent session")} at once. Takes effect on the next start.", "ye");
                 break;
@@ -1286,7 +1287,7 @@ public partial class MainWindow
     // --- keys --------------------------------------------------------------------
 
     /// <summary>Keys while the reply or subject box has focus: typing goes to the box, these reach the reader.</summary>
-    bool BoxKey(Key key, bool ctrl, bool alt)
+    internal bool BoxKey(Key key, bool ctrl, bool alt)
     {
         if (Dictating && key is Key.Escape or Key.Enter)
         {
@@ -1326,7 +1327,7 @@ public partial class MainWindow
         return true;
     }
 
-    bool CtrlKey(Key key)
+    internal bool CtrlKey(Key key)
     {
         switch (key)
         {
@@ -1341,9 +1342,9 @@ public partial class MainWindow
     }
 
     /// <summary>Keys on the screen itself. Everything is swallowed, as in the Tk app, except copy and select-all.</summary>
-    bool ScreenKey(Key key, bool ctrl)
+    internal bool ScreenKey(Key key, ModifierKeys mods)
     {
-        if (ctrl)
+        if (mods.HasFlag(ModifierKeys.Control))
             return CtrlKey(key) || key is not (Key.C or Key.A or Key.Insert);
         var ch = key is >= Key.A and <= Key.Z ? (char)('a' + (key - Key.A)) : '\0';
         var s = screen;
@@ -1370,7 +1371,7 @@ public partial class MainWindow
         else if (key is Key.Home or Key.End && s != "read")
             Move(key == Key.Home ? -10_000 : 10_000);
         else if (key is Key.Left or Key.Right && s == "options")
-            ChangeOption(key == Key.Left ? -1 : 1);
+            ChangeOption(key == Key.Left ? -1 : 1, mods);
         else if (key is Key.Enter or Key.Space && s is not ("read" or "main"))
             ActivateRow();
         else if (s == "read")
@@ -1426,7 +1427,7 @@ public partial class MainWindow
         else if (s == "options" && ch == 'c')
             OpenConsole();
         else if (s is "agents" or "goal" && key is Key.OemPlus or Key.Add or Key.OemMinus or Key.Subtract)
-            Members((key is Key.OemPlus or Key.Add ? 1 : -1) * (Keyboard.Modifiers.HasFlag(ModifierKeys.Shift) ? 10 : 1));
+            Members((key is Key.OemPlus or Key.Add ? 1 : -1) * (mods.HasFlag(ModifierKeys.Shift) ? 10 : 1));
         else if (s is "agents" or "goal" && ch is 'a' or 'x' or 'l' || s == "agents" && ch is 's' or 'n' or 'f' or 'g')
             ((Action)(ch switch
             {
@@ -1441,7 +1442,7 @@ public partial class MainWindow
         else if (ch == 'g')
         {
             Flash("+++ATH0 · NO CARRIER", "or b");
-            Task.Delay(350).ContinueWith(_ => Hide(), TaskScheduler.FromCurrentSynchronizationContext());
+            Task.Delay(350).ContinueWith(_ => hide(), TaskScheduler.FromCurrentSynchronizationContext());
         }
         return true;
     }
