@@ -110,6 +110,15 @@ public sealed partial class Goals
         using var db = store.Open();
         var g = Need(db, name);
         if (Str(g, "measure_cmd") is null) throw new ArgumentException($"goal {name} has no proposal yet (goal_propose)");
+        if (Str(g, "state") == "running" && (maxMembers, maxHours, cadence) != (null, null, null))
+        {
+            // Approving a running goal again with a number changes its budget (more members, more hours, a faster cadence) and nothing else.
+            db.Exec("UPDATE goals SET max_members=COALESCE($m, max_members), max_hours=COALESCE($h, max_hours), cadence_minutes=COALESCE($c, cadence_minutes), updated_ts=$ts WHERE name=$n",
+                ("m", maxMembers), ("h", maxHours), ("c", cadence), ("ts", db.NowIso()), ("n", name));
+            g = Need(db, name);
+            db.Reply(Long(g, "thread_id"), Author, BoardDb.Agent, $"**Budget changed by John.** Now {g["max_members"]} members, {g["max_hours"]} h; the lead wakes every {g["cadence_minutes"]} min.");
+            return Ok(g);
+        }
         if (Str(g, "state") is "running" or "succeeded") throw new ArgumentException($"goal {name} is already {Str(g, "state")}");
         db.Exec("UPDATE goals SET state='running', started_ts=$ts, woke_ts=NULL, updated_ts=$ts, max_members=COALESCE($m, max_members), "
                 + "max_hours=COALESCE($h, max_hours), cadence_minutes=COALESCE($c, cadence_minutes) WHERE name=$n",
