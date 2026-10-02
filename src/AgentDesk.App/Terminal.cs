@@ -251,7 +251,7 @@ public partial class MainWindow
             "agents" => [.. K("↑↓", "move"), .. K("↵", "attach / read"), .. K("S", "start/stop"), .. K("N", "new agent"), .. K("G", "new goal"),
                 .. K("A", "adopt / approve"), .. K("X", "stop goal"), .. K("L", "goal's lead"), .. K("F", "forget"), .. K("Esc", "menu")],
             "adopt" => [.. K("↑↓", "move"), .. K("↵", "adopt"), .. K("Esc", "agents")],
-            "goal" => [.. K("A", "approve"), .. K("X", "stop"), .. K("L", "attach to lead"), .. K("↑↓", "scroll"), .. K("Esc", "agents")],
+            "goal" => [.. K("A", "approve"), .. K("+ -", "members"), .. K("X", "stop"), .. K("L", "attach to lead"), .. K("↑↓", "scroll"), .. K("Esc", "agents")],
             "ask" => [.. K("↵", "next"), .. K("Esc", "cancel")],
             _ => [],
         };
@@ -561,7 +561,7 @@ public partial class MainWindow
     {
         return
         [
-            ("Sessions at once", $"{Pref("max_sessions", 3)}   (←/→)  ·  {(st?.Budget?.Pool is { Length: > 0 } pool ? pool : $"{st?.LiveSessions ?? 0} running now")}", "max_sessions"),
+            ("Sessions at once", $"{Pref("max_sessions", 3)}   (←/→, Shift ±10)  ·  {(st?.Budget?.Pool is { Length: > 0 } pool ? pool : $"{st?.LiveSessions ?? 0} running now")}", "max_sessions"),
             ("Concierge", (st?.ConciergeOn == true ? "ON" : "off") + "   ↵ toggles (same as Ctrl+W)", "concierge"),
             ("Theme", $"{Palettes[Theme].Label}   ({Array.IndexOf(ThemeOrder, Theme) + 1} of {ThemeOrder.Length}, ←/→ to browse, from your VS Code themes)", "theme"),
             ("Modem screech on connect", Pref("screech", false) ? "ON" : "off", "screech"),
@@ -981,6 +981,30 @@ public partial class MainWindow
         }
     }
 
+    /// <summary>+ and - on a goal (the list or the reader): one more or one fewer member it may run at once; Shift moves by ten.
+    /// Takes effect on the next spawn. The Concierge sizes itself.</summary>
+    async void Members(int delta)
+    {
+        if (SelGoal is not { } g)
+            return;
+        if (g.Standing)
+        {
+            Flash("The Concierge sizes its own swarm.", "mu");
+            return;
+        }
+        var n = Math.Max(g.MaxMembers + delta, 1);
+        try
+        {
+            await board.ActAsync("ui:goal_budget", new { name = g.Name, max_members = n });
+            await RefreshAsync();
+            Flash($"{g.Name} may now run {N(n, "member")} at once. The total is still capped by Sessions at once (Options).", "gr");
+        }
+        catch (Exception e) when (e is InvalidOperationException or IOException)
+        {
+            Flash("Not changed: " + e.Message, "pk b");
+        }
+    }
+
     void StopGoal()
     {
         if (SelGoal is not { } g)
@@ -1094,7 +1118,7 @@ public partial class MainWindow
         switch (key)
         {
             case "max_sessions":
-                var n = Math.Clamp(Pref("max_sessions", 3) + step, 1, 8);
+                var n = Math.Max(Pref("max_sessions", 3) + step * (Keyboard.Modifiers.HasFlag(ModifierKeys.Shift) ? 10 : 1), 1);
                 SetPref(key, n);
                 Flash($"Up to {N(n, "agent session")} at once. Takes effect on the next start.", "ye");
                 break;
@@ -1401,6 +1425,8 @@ public partial class MainWindow
             Page();
         else if (s == "options" && ch == 'c')
             OpenConsole();
+        else if (s is "agents" or "goal" && key is Key.OemPlus or Key.Add or Key.OemMinus or Key.Subtract)
+            Members((key is Key.OemPlus or Key.Add ? 1 : -1) * (Keyboard.Modifiers.HasFlag(ModifierKeys.Shift) ? 10 : 1));
         else if (s is "agents" or "goal" && ch is 'a' or 'x' or 'l' || s == "agents" && ch is 's' or 'n' or 'f' or 'g')
             ((Action)(ch switch
             {
