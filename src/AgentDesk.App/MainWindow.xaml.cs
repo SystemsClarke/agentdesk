@@ -59,11 +59,11 @@ public partial class MainWindow : Window
         clock.Tick += (_, _) => { if (screen == "main") Render(); };
         // Heartbeats (SlackNet, the Concierge) change without the board changing, so re-read status on a timer, as Tk did.
         var beats = new DispatcherTimer { Interval = TimeSpan.FromSeconds(30) };
-        beats.Tick += async (_, _) => await RefreshAsync();
+        beats.Tick += async (_, _) => await RefreshQuietly();
         beats.Start();
         // A busy board pushes several changes a second; fold each burst into one refresh so the screen doesn't flicker.
         var changed = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(750) };
-        changed.Tick += async (_, _) => { changed.Stop(); await RefreshAsync(); };
+        changed.Tick += async (_, _) => { changed.Stop(); await RefreshQuietly(); };
         board.Changed += (_, _) => Dispatcher.InvokeAsync(() => { if (!changed.IsEnabled) changed.Start(); });
         PreviewKeyDown += OnKey;
         dictTimer.Tick += async (_, _) => await DictationTick();
@@ -74,12 +74,18 @@ public partial class MainWindow : Window
         SourceInitialized += (_, _) => ColourTitleBar();
         Loaded += async (_, _) =>
         {
-            await RefreshAsync();
-            clock.Start();
-            if (openThread is int tid)
-                OpenThread(tid);
-            else
-                Body.Focus();
+            try
+            {
+                await RefreshQuietly();
+            }
+            finally // a core that is down must not leave the window unfocused, its clock stopped and --thread unopened
+            {
+                clock.Start();
+                if (openThread is int tid)
+                    OpenThread(tid);
+                else
+                    Body.Focus();
+            }
         };
     }
 

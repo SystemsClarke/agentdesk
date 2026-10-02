@@ -14,10 +14,18 @@ public sealed class CoreConnection : IDisposable
 {
     static readonly JsonElement NoArgs = JsonDocument.Parse("{}").RootElement;
     readonly SemaphoreSlim gate = new(1, 1), relink = new(1, 1);
-    readonly ConcurrentDictionary<int, TaskCompletionSource<string>> waiting = new();
+    readonly ConcurrentDictionary<int, Pending> waiting = new();
     readonly Caller caller;
     Link? link;
     int nextId;
+
+    /// <summary>A call waiting for its reply, and the link it was written to: when a link dies only its own calls fail, never one
+    /// already resent on the link that replaced it. Link is null while the call is between links.</summary>
+    sealed class Pending
+    {
+        public readonly TaskCompletionSource<string> Reply = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public volatile Link? Link;
+    }
 
     sealed class Link(NamedPipeClientStream pipe)
     {
@@ -45,12 +53,26 @@ public sealed class CoreConnection : IDisposable
     public async Task<string> Call(string tool, JsonElement? args = null, CancellationToken ct = default)
     {
         var id = Interlocked.Increment(ref nextId);
-        var reply = waiting[id] = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        var pending = waiting[id] = new();
         var request = new Request(id, tool, args ?? NoArgs, caller);
-        var l = await Live();
-        try { await Wire.Write(l.Writer, request, WireJson.Default.Request, gate); }
-        catch (IOException) { l.Dead = true; await Wire.Write((await Live()).Writer, request, WireJson.Default.Request, gate); } // never sent: safe to resend
-        return await reply.Task.WaitAsync(ct);
+        try
+        {
+            var l = pending.Link = await Live();
+            try
+            {
+                if (l.Dead) throw new IOException("the link died before this call was written");
+                await Wire.Write(l.Writer, request, WireJson.Default.Request, gate);
+            }
+            catch (IOException) // never sent: safe to resend, on the new link, which must be the one this call is waiting on
+            {
+                pending.Link = null; // untag first: the dying link's reader must not fail a call that is about to move
+                l.Dead = true;
+                l = pending.Link = await Live();
+                await Wire.Write(l.Writer, request, WireJson.Default.Request, gate);
+            }
+            return await pending.Reply.Task.WaitAsync(ct);
+        }
+        finally { waiting.TryRemove(id, out _); } // a failed Live(), a failed write or a cancel must not leave it behind
     }
 
     async Task<Link> Live()
@@ -83,12 +105,12 @@ public sealed class CoreConnection : IDisposable
             {
                 var reader = new StreamReader(pipe);
                 while (await Wire.Read(reader, WireJson.Default.Response, default) is { } r)
-                    if (r.Id == 0) Pushed?.Invoke(r.Text);
-                    else if (waiting.TryRemove(r.Id, out var t)) t.SetResult(r.Text);
+                    if (r.Id == 0) { try { Pushed?.Invoke(r.Text); } catch { } } // one bad subscriber must not take the link down
+                    else if (waiting.TryRemove(r.Id, out var p)) p.Reply.TrySetResult(r.Text);
             }
-            catch (Exception e) when (e is IOException or ObjectDisposedException) { }
+            catch { } // a closed pipe, or a frame that is not JSON: either way this link is finished, and the code below must run
             l.Dead = true;
-            foreach (var (id, t) in waiting) if (waiting.TryRemove(id, out _)) t.TrySetException(new IOException("AgentDesk core restarted; try again"));
+            foreach (var (id, p) in waiting) if (p.Link == l && waiting.TryRemove(id, out _)) p.Reply.TrySetException(new IOException("AgentDesk core restarted; try again"));
             if (Reconnected is not null && !disposed)
                 for (var wait = 1; !disposed; wait = Math.Min(wait * 2, 30)) // the window: come back as soon as the core does
                     try { await Task.Delay(wait * 1000); await Live(); break; } catch { } // core not back yet

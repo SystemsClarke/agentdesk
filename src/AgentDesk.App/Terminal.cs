@@ -159,16 +159,48 @@ public partial class MainWindow
         }
     }
 
+    /// <summary>A refresh nobody awaits for its result (the timers, Loaded, a toggle): a core that is down or restarting shows one quiet
+    /// line and keeps the last screen; anything else is a bug and says so. Actions that need to know it failed call RefreshAsync.</summary>
+    async Task RefreshQuietly()
+    {
+        try
+        {
+            await RefreshAsync();
+        }
+        catch (Exception e) when (e is IOException or TimeoutException or InvalidOperationException)
+        {
+            Flash("The AgentDesk core isn't answering: " + e.Message + " Showing what was last read.", "or");
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            Flash("Something broke: " + e.Message, "pk b");
+        }
+    }
+
+    /// <summary>One of the reads that only decorate the screen: when it fails the last answer stays, and the thread lists still paint.
+    /// A dead link (IOException, TimeoutException) is the exception: that is the whole core being away, and says so.</summary>
+    static async Task<T> Optional<T>(Func<Task<T>> read, T previous)
+    {
+        try
+        {
+            return await read();
+        }
+        catch (Exception e) when (e is not (IOException or TimeoutException or OperationCanceledException))
+        {
+            return previous;
+        }
+    }
+
     async Task ReadBoardAsync()
     {
         // Every read is independent, so start them all and wait once: a refresh costs the slowest call, not the sum of a dozen
         // pipe round trips (measured on the live board: 366 ms one after another).
         var listed = Channels.Select(ch => board.ListThreadsAsync(ch)).ToList();
         var openQsCall = board.OpenQuestionsAsync();
-        var stCall = board.StatusAsync();
-        var agentsCall = board.IdentitiesAsync();
-        var webUrlCall = board.WebUrlAsync();
-        var slotsCall = board.SlotsAsync();
+        var stCall = Optional<BoardStatus?>(async () => await board.StatusAsync(), st);
+        var agentsCall = Optional(board.IdentitiesAsync, agents);
+        var webUrlCall = Optional(board.WebUrlAsync, webUrl);
+        var slotsCall = Optional(board.SlotsAsync, slots);
         var goalCall = screen == "goal" && goal is { } g ? board.GoalAsync(g.Name) : null;
         var adoptCall = screen == "adopt" ? board.AdoptableAsync() : null;
         // Re-read the open thread before dropping the cache. Clearing it first made Reader() paint "no longer on the board"
@@ -195,14 +227,33 @@ public partial class MainWindow
         Render();
     }
 
+    readonly HashSet<int> loading = [];
+
+    /// <summary>The thread, from the cache or the core; null while it is on its way (<see cref="loading"/>), when it is gone, or when the read
+    /// failed. A failure is cached as nothing, so the next Render asks again, but one request per id is in flight at a time.</summary>
     ThreadDetail? Thread(int id)
     {
         if (threads.TryGetValue(id, out var cached))
             return cached;
+        if (loading.Contains(id))
+            return null;
         var task = board.ReadThreadAsync(id);
         if (task.IsCompleted)
-            return threads[id] = task.Result;
-        task.ContinueWith(t => { threads[id] = t.Result; Render(); }, TaskScheduler.FromCurrentSynchronizationContext());
+            return task.IsCompletedSuccessfully ? threads[id] = task.Result : null;
+        loading.Add(id);
+        task.ContinueWith(t =>
+        {
+            loading.Remove(id);
+            if (!t.IsCompletedSuccessfully)
+            {
+                if (screen == "read" && readTid == id)
+                    Flash($"Couldn't read #{id}: " + (t.Exception?.GetBaseException().Message ?? "cancelled"), "pk b");
+                return;
+            }
+            threads[id] = t.Result;
+            if (screen == "read" && readTid == id)
+                Render();
+        }, TaskScheduler.FromCurrentSynchronizationContext());
         return null;
     }
 
@@ -407,7 +458,7 @@ public partial class MainWindow
     {
         var data = readTid is { } tid ? Thread(tid) : null;
         if (data is null)
-            return [[S(" That thread is no longer on the board.", "mu")]];
+            return [[S(readTid is { } wait && loading.Contains(wait) ? " Loading..." : " That thread is no longer on the board.", "mu")]];
         var (t, msgs) = (data.Thread, data.Messages);
         var key = (t.Id, msgs.Count);
         scrollToEnd = readerKey is null || readerKey.Value.Tid != t.Id || readerKey.Value.Count < msgs.Count;
@@ -806,7 +857,7 @@ public partial class MainWindow
         else if (to != "compose")
             Body.Focus();
         if (to is "adopt" or "goal")
-            _ = RefreshAsync();
+            _ = RefreshQuietly();
     }
 
     void GoBack()
@@ -939,7 +990,7 @@ public partial class MainWindow
                 _ => $"{a.Name} stopped. Its conversation is kept; S resumes it.",
             }, now == "running" ? "gr" : "ye");
         }
-        catch (Exception e) when (e is InvalidOperationException or IOException)
+        catch (Exception e) when (e is not OperationCanceledException)
         {
             Flash("Not done: " + e.Message, "pk b");
         }
@@ -952,9 +1003,16 @@ public partial class MainWindow
         var name = who.Name;
         confirm = ($"Forget {name}? It stops and leaves the list; its Claude conversation stays on disk.", async () =>
         {
-            await board.ActAsync("ui:identity_forget", new { name });
-            await RefreshAsync();
-            Flash($"{name} forgotten.", "gr");
+            try
+            {
+                await board.ActAsync("ui:identity_forget", new { name });
+                await RefreshAsync();
+                Flash($"{name} forgotten.", "gr");
+            }
+            catch (Exception e) when (e is not OperationCanceledException)
+            {
+                Flash("Not forgotten: " + e.Message, "pk b");
+            }
         });
         Render();
     }
@@ -976,7 +1034,7 @@ public partial class MainWindow
             await RefreshAsync();
             Flash($"{g.Name} is running: until its line, its budget, or X.", "gr");
         }
-        catch (Exception e) when (e is InvalidOperationException or IOException)
+        catch (Exception e) when (e is not OperationCanceledException)
         {
             Flash("Not approved: " + e.Message, "pk b");
         }
@@ -1000,7 +1058,7 @@ public partial class MainWindow
             await RefreshAsync();
             Flash($"{g.Name} may now run {N(n, "member")} at once. The total is still capped by Sessions at once (Options).", "gr");
         }
-        catch (Exception e) when (e is InvalidOperationException or IOException)
+        catch (Exception e) when (e is not OperationCanceledException)
         {
             Flash("Not changed: " + e.Message, "pk b");
         }
@@ -1018,7 +1076,7 @@ public partial class MainWindow
                 await RefreshAsync();
                 Flash($"{g.Name} stopped. A starts it again.", "gr");
             }
-            catch (Exception e) when (e is InvalidOperationException or IOException)
+            catch (Exception e) when (e is not OperationCanceledException)
             {
                 Flash("Not stopped: " + e.Message, "pk b");
             }
@@ -1199,7 +1257,7 @@ public partial class MainWindow
             await Task.Delay(400); // re-read rather than assume: the start may fail
             await RefreshAsync();
         }
-        catch (Exception e) when (e is InvalidOperationException or IOException)
+        catch (Exception e) when (e is not OperationCanceledException)
         {
             Flash(e.Message, "pk b");
         }
@@ -1219,7 +1277,7 @@ public partial class MainWindow
             var said = await board.ActAsync("ui:wake", new { thread_id = tid }) ?? "";
             Flash(said, said.StartsWith("woke") ? "gr" : "ye");
         }
-        catch (Exception e) when (e is InvalidOperationException or IOException)
+        catch (Exception e) when (e is not OperationCanceledException)
         {
             Flash("Not woken: " + e.Message, "pk b");
         }
@@ -1250,8 +1308,15 @@ public partial class MainWindow
         }
         confirm = ($"Close & archive #{tid}? It goes to the vault on the next sweep.", async () =>
         {
-            await board.CloseAsync(tid);
-            Flash($"#{tid} closed. The sweep files it.", "gr");
+            try
+            {
+                await board.CloseAsync(tid);
+                Flash($"#{tid} closed. The sweep files it.", "gr");
+            }
+            catch (Exception e) when (e is not OperationCanceledException)
+            {
+                Flash("Not closed: " + e.Message, "pk b");
+            }
         });
         Body.Focus();
         Render();
@@ -1263,12 +1328,31 @@ public partial class MainWindow
             _ = Unarchive(tid);
     }
 
+    async Task CheckPrs()
+    {
+        try
+        {
+            await board.ActAsync("ui:check_prs");
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            Flash("Not checked: " + e.Message, "pk b");
+        }
+    }
+
     async Task Unarchive(int tid)
     {
-        await board.UnarchiveAsync(tid);
-        showArchived = false; // it lives on the Active list now
-        await RefreshAsync();
-        Flash($"#{tid} is back on the desk.", "gr");
+        try
+        {
+            await board.UnarchiveAsync(tid);
+            showArchived = false; // it lives on the Active list now
+            await RefreshAsync();
+            Flash($"#{tid} is back on the desk.", "gr");
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            Flash("Not unarchived: " + e.Message, "pk b");
+        }
     }
 
     void Page()
@@ -1398,7 +1482,7 @@ public partial class MainWindow
         {
             showArchived = !showArchived;
             sel["question"] = 0;
-            _ = RefreshAsync();
+            _ = RefreshQuietly();
         }
         else if (s == "list" && ch == 'u' && channel == "question" && showArchived)
         {
@@ -1407,8 +1491,8 @@ public partial class MainWindow
         }
         else if (s == "prs" && ch == 'c')
         {
-            _ = board.ActAsync("ui:check_prs");
             Flash("Checking GitHub for merges...", "cy");
+            _ = CheckPrs();
         }
         else if (s == "prs" && ch == 'h')
         {
