@@ -334,18 +334,16 @@ CREATE VIEW IF NOT EXISTS open_questions AS
 
 
 def init_db(conn: sqlite3.Connection) -> None:
-    """Create the schema, then bring the open_questions view up to date.
+    """Create the schema and, only if the board has none, the open_questions view.
 
-    The second half is not tidiness. `SCHEMA` is all CREATE ... IF NOT EXISTS,
-    which is what lets it run against a board that predates any given table --
-    and which would equally let a corrected open_questions view never be
-    applied to a board that already has the old one. Dropping it first is the
-    only thing that makes an edited definition take effect there, and it is
-    idempotent: a drop with nothing behind it is free, and the create follows.
+    The C# core owns the view: it drops and rebuilds it from its own rule every
+    time it starts. This code used to do the same from this file's copy of the
+    rule, so whenever the plugin host or the backup opened the board it put a
+    stale definition back over the core's (answered questions kept ringing after
+    the core was fixed). It now never replaces an existing view.
     """
     conn.executescript(SCHEMA)
-    conn.executescript("DROP VIEW IF EXISTS open_questions;")
-    conn.executescript(OPEN_QUESTIONS_VIEW)
+    conn.executescript(OPEN_QUESTIONS_VIEW)  # CREATE VIEW IF NOT EXISTS: leaves the core's view alone
     _migrate_pr_columns(conn)
 
 
