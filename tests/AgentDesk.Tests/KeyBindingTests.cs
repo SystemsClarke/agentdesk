@@ -46,6 +46,25 @@ public sealed class KeyBindingTests
     }
 
     [Fact]
+    public void S_inside_a_goal_starts_or_stops_its_lead_instead_of_jumping_to_SysOp()
+    {
+        var board = new RecordingBoard();
+        KeyHarness.Run(board, w =>
+        {
+            OnGoalRow(w);
+            w.Press(Key.Enter); // into the goal
+            DictateWindowTests.Pump(500);
+            Assert.Equal("goal", w.screen);
+            Assert.Contains("start/stop lead", Hints(w));
+            w.Press(Key.S);
+            DictateWindowTests.Pump(300);
+            Assert.Equal("goal", w.screen);
+            var act = Assert.Single(board.Acts, a => a.Request == "ui:identity_stop");
+            Assert.Contains("build-speed-lead", Args(act.Args));
+        });
+    }
+
+    [Fact]
     public void A_modifier_key_does_not_answer_a_question_and_Ctrl_W_and_R_wait_for_it()
     {
         var board = new RecordingBoard();

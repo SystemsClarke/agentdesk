@@ -353,7 +353,7 @@ public partial class MainWindow
                     : [.. K("↵", "attach"), .. K("S", "start/stop"), .. K("A", "adopt"), .. K("F", "forget")],
                 .. K("N", "new agent"), .. K("G", "new goal"), .. K("Esc", "menu")],
             "adopt" => [.. K("↑↓", "move"), .. K("↵", "adopt"), .. K("Esc", "agents")],
-            "goal" => [.. K("A", "approve"), .. If(SelGoal?.Standing != true, K("+ -", "members (Shift ±10)")), .. K("X", "stop"), .. K("L", "attach to lead"), .. K("↑↓", "scroll"), .. K("Esc", "agents")],
+            "goal" => [.. K("A", "approve"), .. K("S", "start/stop lead"), .. If(SelGoal?.Standing != true, K("+ -", "members (] [ ±10)")), .. K("X", "stop"), .. K("L", "attach to lead"), .. K("↑↓", "scroll"), .. K("Esc", "agents")],
             "ask" => [.. K("↵", "next"), .. K("Esc", "cancel")],
             _ => [],
         };
@@ -1733,7 +1733,7 @@ public partial class MainWindow
             Flash("Still reading the goal's log. Try again in a moment.", "mu"); // not A: with no goal under it, A on Agents means adopt
         else if (s is "agents" or "goal" && key is Key.OemPlus or Key.Add or Key.OemMinus or Key.Subtract or Key.OemOpenBrackets or Key.OemCloseBrackets)
             Members(key switch { Key.OemPlus or Key.Add => 1, Key.OemMinus or Key.Subtract => -1, Key.OemCloseBrackets => 10, _ => -10 }); // + needs Shift on a US keyboard, so Shift cannot mean "by ten"
-        else if (s is "agents" or "goal" && ch is 'a' or 'x' or 'l' || s == "agents" && ch is 's' or 'n' or 'f' or 'g')
+        else if (s is "agents" or "goal" && ch is 'a' or 'x' or 'l' || s is "agents" or "goal" && ch is 's' || s == "agents" && ch is 'n' or 'f' or 'g')
             ((Action)(ch switch
             {
                 'a' => SelGoal is null ? () => Goto("adopt") : Approve, 'x' => StopGoal, 'l' => AttachLead, 'g' => NewGoal, 's' => StartStop, 'n' => NewAgent, _ => Forget,
