@@ -73,8 +73,19 @@ public sealed class CoreBoard : IBoard, IDisposable
     // ui:threads is list_threads without each thread's last message body, which Row never reads and which was most of the bytes.
     async Task<List<ThreadRow>> List(object args) => [.. (await Call("ui:threads", args)).GetProperty("threads").EnumerateArray().Select(Row)];
 
+    /// <summary>The discussion list the window just asked for: StatusAsync reads bios from the same 300 rows, and takes this one when it is
+    /// fresh instead of asking the core for them again.</summary>
+    (Task<List<ThreadRow>> Rows, long At)? discussion;
+    const long DiscussionShareMs = 3000;
+
     public async Task<IReadOnlyList<ThreadRow>> ListThreadsAsync(string channel)
     {
+        if (channel == "discussion")
+        {
+            var rows = List(new { channel, limit = 300, include_archived = true });
+            discussion = (rows, Environment.TickCount64);
+            return await rows;
+        }
         if (channel != "question")
             return await List(new { channel, limit = 300, include_archived = true });
         // The newest 300 of everything let a long archive push an old, still-waiting question off the list: take each side on its own cap.
@@ -116,7 +127,8 @@ public sealed class CoreBoard : IBoard, IDisposable
     {
         // Five independent reads: ask for all of them at once (the core answers each on its own thread) instead of one after another.
         var recentCall = Call("recent_messages", new { limit = 60 });
-        var biosCall = List(new { channel = "discussion", limit = 300 });
+        var biosCall = discussion is { } d && Environment.TickCount64 - d.At < DiscussionShareMs && !d.Rows.IsFaulted && !d.Rows.IsCanceled
+            ? d.Rows : List(new { channel = "discussion", limit = 300 });
         var filedCall = List(new { channel = "question", status = "archived", limit = 1 });
         var beatCall = Call("ui:status");
         await Task.WhenAll(recentCall, biosCall, filedCall, beatCall);
@@ -154,18 +166,17 @@ public sealed class CoreBoard : IBoard, IDisposable
         var mode = g.TryGetProperty("enforcing", out var e) && e.ValueKind is JsonValueKind.True or JsonValueKind.False ? (e.GetBoolean() ? "enforcing" : "advisory")
             : g.TryGetProperty("advisory", out var a) && a.ValueKind is JsonValueKind.True or JsonValueKind.False ? (a.GetBoolean() ? "advisory" : "enforcing") : null;
         return new(Int(g, "samples"), Num(g, "remaining") ?? 0, Num(g, "reset_in_hours") ?? 0, Num(g, "projected_end_pct") ?? 0, Cap("total_sessions"),
-            Cap("swarms"), Cap("members_per_swarm"), Str(g, "reason") ?? "", Str(g, "summary") ?? "", [.. Arr(g, "series").Where(v => v.ValueKind == JsonValueKind.Number).Select(v => v.GetDouble())], mode,
+            Cap("swarms"), Cap("members_per_swarm"), Str(g, "reason") ?? "", [.. Arr(g, "series").Where(v => v.ValueKind == JsonValueKind.Number).Select(v => v.GetDouble())], mode,
             g.TryGetProperty("pool", out var p) && p.ValueKind == JsonValueKind.Object ? Str(p, "summary") ?? "" : "",
             Str(g, "status") ?? "", Num(g, "plan_end_pct") ?? 0, [.. Arr(g, "forecast").Where(v => v.ValueKind == JsonValueKind.Number).Select(v => v.GetDouble())],
             g.TryGetProperty("learned", out var l) && l.ValueKind == JsonValueKind.Object ? Str(l, "note") ?? "" : "");
     }
 
     static GoalRow ToGoal(JsonElement g) => new(Str(g, "name") ?? "", Str(g, "state") ?? "draft", Str(g, "objective") ?? "", Str(g, "lead") ?? "",
-        Str(g, "success"), Int(g, "experiments"), Num(g, "last_value"), Int(g, "members"), Int(g, "max_members"), Int(g, "standing") != 0,
-        Int(g, "thread_id") is var t and > 0 ? t : null);
+        Str(g, "success"), Int(g, "experiments"), Num(g, "last_value"), Int(g, "members"), Int(g, "max_members"), Int(g, "standing") != 0);
 
     public async Task<IReadOnlyList<Slot>> SlotsAsync() =>
-        [.. Arr(await Call("ui:slot_list"), "slots").Select(s => new Slot(Int(s, "n"), Str(s, "goal"), Str(s, "channel_name"), Str(s, "persona_name")))];
+        [.. Arr(await Call("ui:slot_list"), "slots").Select(s => new Slot(Int(s, "n"), Str(s, "goal")))];
 
     public async Task<GoalDetail?> GoalAsync(string name)
     {

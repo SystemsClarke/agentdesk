@@ -29,7 +29,7 @@ public sealed record Adoptable(string SessionId, string Folder, DateTimeOffset L
 
 /// <summary>A goal as ui:goal_list gives it: LastValue is the newest measured value, Success the line it has to cross.</summary>
 public sealed record GoalRow(string Name, string State, string Objective, string Lead, string? Success, int Experiments, double? LastValue,
-    int Members, int MaxMembers, bool Standing = false, int? ThreadId = null);
+    int Members, int MaxMembers, bool Standing = false);
 
 /// <summary>One experiment in a goal's log (ui:goal_status): Value and Verdict are null until it is measured.</summary>
 public sealed record Experiment(int N, string Change, string? Owner, double? Value, string? Verdict);
@@ -39,13 +39,13 @@ public sealed record GoalDetail(GoalRow Row, string? Hypothesis, string? Measure
     IReadOnlyList<Experiment> Experiments, IReadOnlyList<double> History, IReadOnlyList<SwarmMember> Members, string Summary);
 
 /// <summary>A swarm slot (ui:slot_list): one of the 10 Slack channels, and the goal in it, if any.</summary>
-public sealed record Slot(int N, string? Goal, string? Channel, string? Persona);
+public sealed record Slot(int N, string? Goal);
 
 /// <summary>The usage governor (ui:governor): Remaining is the week's % left, the caps are today's allowance, Series the week's
 /// weekly % by hour. Mode is "advisory" or "enforcing", or null when the core does not say. Pool is the session pool in one line:
 /// running of the ceiling and why, then running by owner (ui:governor's pool.summary).</summary>
 public sealed record Budget(int Samples, double Remaining, double ResetInHours, double ProjectedEnd, int Sessions, int Swarms, int Members,
-    string Reason, string Summary, IReadOnlyList<double> Series, string? Mode, string Pool = "", string Status = "", double PlanEnd = 0,
+    string Reason, IReadOnlyList<double> Series, string? Mode, string Pool = "", string Status = "", double PlanEnd = 0,
     IReadOnlyList<double>? Forecast = null, string Learned = "");
 
 /// <summary>Everything the main menu, SysOp, Who's On and Options screens show besides the channel lists.</summary>
@@ -284,7 +284,6 @@ public sealed class SampleBoard : IBoard
             ["time left: 2h 14m in your 5-hour window, 38% used", "time left: 1d 6h on the week, 82% used, getting close"],
             "5h 38%, resets in 2h 14m · week 82%, resets in 1d 6h · reported 1m ago", 3, 3,
             new(1386, 18, 30, 97.4, 5, 2, 2, "14.2% spendable over 1d 6h: 0.47%/h funds 5 sessions at 1.2%/session-hour",
-                "governor: 14.2% spendable of 18% left, resets in 1d 6h · up to 5 sessions (2 swarms x 2 members), 2 new · members sonnet",
                 WeekSeries(), "advisory"),
             goals));
     }
@@ -312,8 +311,7 @@ public sealed class SampleBoard : IBoard
 
     public Task<IReadOnlyList<Slot>> SlotsAsync() => Task.FromResult<IReadOnlyList<Slot>>(
     [
-        new(1, "build-speed", "swarm-build-speed", "Pit Crew"), new(2, "flaky-tests", "swarm-flaky-tests", "Exterminator"),
-        new(3, "docs-links", "swarm-docs-links", "Librarian"), .. Enumerable.Range(4, 7).Select(n => new Slot(n, null, n < 6 ? $"swarm-{n}" : null, null)),
+        new(1, "build-speed"), new(2, "flaky-tests"), new(3, "docs-links"), .. Enumerable.Range(4, 7).Select(n => new Slot(n, null)),
     ]);
 
     public Task<GoalDetail?> GoalAsync(string name)

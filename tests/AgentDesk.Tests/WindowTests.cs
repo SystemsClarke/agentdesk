@@ -85,7 +85,7 @@ epo"));
     [Fact]
     public void The_budget_panel_shows_the_week_the_allowance_the_mode_and_the_series()
     {
-        var b = new Budget(900, 18, 30, 97.4, 5, 2, 2, "why", "summary", [.. Enumerable.Range(0, 168).Select(i => (double)i / 2)], "advisory");
+        var b = new Budget(900, 18, 30, 97.4, 5, 2, 2, "why", [.. Enumerable.Range(0, 168).Select(i => (double)i / 2)], "advisory");
         var text = MainWindow.BudgetLines(b, 92).Select(Text).ToList();
         Assert.Equal("18% of the week left · resets in 1d 6h · forecast 97.4% at the reset    advisory ", text[0]);
         Assert.Equal("Today's allowance: 5 sessions · 2 swarms x 2 members", text[1]);

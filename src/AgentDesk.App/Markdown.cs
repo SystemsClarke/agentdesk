@@ -28,6 +28,22 @@ public partial class MainWindow
         + "select join on group by order insert update delete into values create table Get Set New Remove Write-Host process").Split(' ')];
     static readonly string[] Hues = ["cy", "gr", "ye", "pu", "or", "pk"];
 
+    /// <summary>A message body laid out once per (body, width, font size), which is all <see cref="Markdown"/> reads: a refresh while a long thread is
+    /// open re-laid out every message on the UI thread, and a typed reply stalled each time any agent posted. Callers must not change the lines.</summary>
+    readonly Dictionary<(string Body, int W, int Pt), List<Line>> laidOut = [];
+    internal int MarkdownRuns;
+
+    List<Line> MarkdownOf(string body, int W)
+    {
+        var key = (body, W, Pref("font_size", 11));
+        if (laidOut.TryGetValue(key, out var hit))
+            return hit;
+        if (laidOut.Count >= 600) // a long session's worth of threads: start over rather than grow
+            laidOut.Clear();
+        MarkdownRuns++;
+        return laidOut[key] = Markdown(body, W);
+    }
+
     List<Line> Markdown(string body, int W)
     {
         List<Line> L = [];

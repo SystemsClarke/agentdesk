@@ -131,7 +131,7 @@ After a few days advisory (the milestone 7 check needs real advisory data first)
 2. **Backtest on a copy of the board** (below): with several days of samples, `Backtest_on_recorded_samples` should end each
    week under 100%.
 3. **Flip it**: Slack `governor on` (ops area), the ops console's "Enforce the governor's caps" button,
-   `ui:governor_enforce {"on": true}` from the window, or `"governor_enforce": true` in `settings.json`. `governor off` turns it back.
+   `ui:governor_enforce {"on": true}` sent to the core (the window has no toggle for it), or `"governor_enforce": true` in `settings.json`. `governor off` turns it back.
 4. **Watch the first day**: `governor: shed` lines, and `held` in `ui:governor`. A swarm that never gets going is a cap of 0,
    and its `reason` says why. Then the milestone 7 check: week-end usage lands at 90-100% with the 5-hour window never over 90%.
 

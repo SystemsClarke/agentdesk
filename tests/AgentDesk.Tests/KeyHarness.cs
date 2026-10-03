@@ -18,8 +18,10 @@ sealed class RecordingBoard : IBoard
     public event EventHandler? Changed { add { inner.Changed += value; pushed += value; } remove { inner.Changed -= value; pushed -= value; } }
     /// <summary>The core pushing board.changed with nothing the sample board did itself.</summary>
     public void Push() => pushed?.Invoke(this, EventArgs.Empty);
-    public Task<IReadOnlyList<ThreadRow>> ListThreadsAsync(string channel) => inner.ListThreadsAsync(channel);
-    public Task<ThreadDetail?> ReadThreadAsync(int id) => inner.ReadThreadAsync(id);
+    /// <summary>How many times each read was asked for.</summary>
+    public int ListCalls, ThreadReads, StatusCalls, IdentityCalls, SlotCalls, WebUrlCalls;
+    public Task<IReadOnlyList<ThreadRow>> ListThreadsAsync(string channel) { ListCalls++; return inner.ListThreadsAsync(channel); }
+    public Task<ThreadDetail?> ReadThreadAsync(int id) { ThreadReads++; return inner.ReadThreadAsync(id); }
     public Task<IReadOnlyList<ThreadRow>> OpenQuestionsAsync() => inner.OpenQuestionsAsync();
     public Task ReplyAsync(int id, string body) => inner.ReplyAsync(id, body);
     public Task<bool> CloseAsync(int id) => inner.CloseAsync(id);
@@ -27,14 +29,14 @@ sealed class RecordingBoard : IBoard
     /// <summary>Holds back or counts posts: null is the sample board's own answer.</summary>
     public Func<string, string, string, Task<int>>? Posting;
     public Task<int> PostAsync(string channel, string subject, string body) => Posting?.Invoke(channel, subject, body) ?? inner.PostAsync(channel, subject, body);
-    public Task<BoardStatus> StatusAsync() => inner.StatusAsync();
-    public Task<IReadOnlyList<Identity>> IdentitiesAsync() => Identities?.Invoke() ?? inner.IdentitiesAsync();
+    public Task<BoardStatus> StatusAsync() { StatusCalls++; return inner.StatusAsync(); }
+    public Task<IReadOnlyList<Identity>> IdentitiesAsync() { IdentityCalls++; return Identities?.Invoke() ?? inner.IdentitiesAsync(); }
     public Task<IReadOnlyList<Adoptable>> AdoptableAsync() => inner.AdoptableAsync();
-    public Task<IReadOnlyList<Slot>> SlotsAsync() => inner.SlotsAsync();
+    public Task<IReadOnlyList<Slot>> SlotsAsync() { SlotCalls++; return inner.SlotsAsync(); }
     public Task<GoalDetail?> GoalAsync(string name) => Goal?.Invoke(name) ?? inner.GoalAsync(name);
     public Task<GoalDetail?> SampleGoal(string name) => inner.GoalAsync(name);
     public IReadOnlyList<Identity> SampleIdentities() => inner.IdentitiesAsync().Result;
-    public Task<string?> WebUrlAsync() => inner.WebUrlAsync();
+    public Task<string?> WebUrlAsync() { WebUrlCalls++; return inner.WebUrlAsync(); }
     /// <summary>Holds every action until it completes, as a core a pipe away does: null answers at once.</summary>
     public Task? Hold;
     public async Task<string?> ActAsync(string request, object? args = null)

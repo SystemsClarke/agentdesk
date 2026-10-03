@@ -2,6 +2,7 @@ global using Line = System.Collections.Generic.List<AgentDesk.App.Seg>;
 using System.Diagnostics;
 using System.IO;
 using System.Windows.Input;
+using System.Windows.Threading;
 
 namespace AgentDesk.App;
 
@@ -50,7 +51,7 @@ public partial class MainWindow
     string? agentsSel; // the row under the cursor on Agents, by name: a refresh can reorder the list under an index
     IReadOnlyList<ThreadRow> openQs = [];
     BoardStatus? st;
-    int cols = 96, lines = 30;
+    internal int cols = 96, lines = 30;
     IReadOnlyList<Identity> agents = [];
     IReadOnlyList<Adoptable>? adoptables; // read on the Adopt screen only: it scans ~/.claude/projects
     string? webUrl, adoptNote;
@@ -76,6 +77,14 @@ public partial class MainWindow
     {
         s = string.Join(' ', (s ?? "").Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
         return n <= 0 ? "" : s.Length > n ? s[..(n - 1)] + "…" : s.PadRight(n);
+    }
+
+    static int IndexOf<T>(IReadOnlyList<T> list, Func<T, bool> match)
+    {
+        for (var i = 0; i < list.Count; i++)
+            if (match(list[i]))
+                return i;
+        return -1;
     }
 
     static Line Pad(Line segs, int width, string tags = "") => width > Len(segs) ? [.. segs, S(Rep(' ', width - Len(segs)), tags)] : segs;
@@ -134,8 +143,14 @@ public partial class MainWindow
 
     // --- board state -------------------------------------------------------------
 
-    IReadOnlyList<PrRow> Prs => [.. (st?.Prs ?? []).Where(p => showSettled || p.State == "open")];
-    IReadOnlyList<Post> Callers => [.. (st?.Callers ?? []).Where(c => c.Author != Human)];
+    // Built once per refresh (per st, and per showSettled for Prs): a render and a key press read these several times each.
+    (BoardStatus? For, bool Settled, IReadOnlyList<PrRow> Rows)? prsMemo;
+    (BoardStatus? For, IReadOnlyList<Post> Rows)? callersMemo;
+    (BoardStatus? For, IReadOnlyList<GoalRow> Rows)? goalsMemo;
+    internal IReadOnlyList<PrRow> Prs => prsMemo is { } m && ReferenceEquals(m.For, st) && m.Settled == showSettled ? m.Rows
+        : (prsMemo = (st, showSettled, [.. (st?.Prs ?? []).Where(p => showSettled || p.State == "open")])).Value.Rows;
+    internal IReadOnlyList<Post> Callers => callersMemo is { } m && ReferenceEquals(m.For, st) ? m.Rows
+        : (callersMemo = (st, [.. (st?.Callers ?? []).Where(c => c.Author != Human)])).Value.Rows;
     /// <summary>The sessions the core lets run at once now (the governor's ceiling, which is Options' setting unless the plan holds it lower).</summary>
     int Ceiling => st?.MaxSessions is > 0 and var m ? m : Pref("max_sessions", 3);
     ThreadRow? HeldRow => rows["work"].FirstOrDefault(r => r.Id == st?.HeldId); // the newest item the Concierge holds
@@ -145,7 +160,7 @@ public partial class MainWindow
     {
         get
         {
-            if (screen == "agents" && agentsSel is { } k && Entries.ToList().FindIndex(e => EntryKey(e) == k) is >= 0 and var at)
+            if (screen == "agents" && agentsSel is { } k && IndexOf(Entries, e => EntryKey(e) == k) is >= 0 and var at)
                 sel["agents"] = at;
             return sel.GetValueOrDefault(SelKey);
         }
@@ -160,19 +175,20 @@ public partial class MainWindow
     static string EntryKey((GoalRow? Goal, Identity? Agent) e) => e.Goal is { } g ? "g:" + g.Name : "a:" + e.Agent!.Name;
 
     /// <summary>Every goal, the Concierge among them as a standing goal even before it is first turned on.</summary>
-    IReadOnlyList<GoalRow> Goals => st?.Goals is { } g && g.Any(x => x.Standing && x.Name == "concierge") ? g
-        : [.. st?.Goals ?? [], new GoalRow("concierge", "off", "Keep Work to Hire drained", "concierge-lead", "value <= 0", 0, null, 0, 3, true)];
+    IReadOnlyList<GoalRow> Goals => goalsMemo is { } m && ReferenceEquals(m.For, st) ? m.Rows
+        : (goalsMemo = (st, st?.Goals is { } g && g.Any(x => x.Standing && x.Name == "concierge") ? g
+            : [.. st?.Goals ?? [], new GoalRow("concierge", "off", "Keep Work to Hire drained", "concierge-lead", "value <= 0", 0, null, 0, 3, true)])).Value.Rows;
 
     readonly SemaphoreSlim refreshGate = new(1, 1);
 
     /// <summary>One refresh at a time. The heartbeat, the change push and every action each start one, and they fill shared state
     /// call by call: overlapping, an older slower run finished last and put its stale goal list back over a fresh one.</summary>
-    async Task RefreshAsync()
+    async Task RefreshAsync(bool pushed = false)
     {
         await refreshGate.WaitAsync();
         try
         {
-            await ReadBoardAsync();
+            await ReadBoardAsync(pushed);
         }
         finally
         {
@@ -182,11 +198,11 @@ public partial class MainWindow
 
     /// <summary>A refresh nobody awaits for its result (the timers, Loaded, a toggle): a core that is down or restarting shows one quiet
     /// line and keeps the last screen; anything else is a bug and says so. Actions that need to know it failed call RefreshAsync.</summary>
-    async Task RefreshQuietly()
+    async Task RefreshQuietly(bool pushed = false)
     {
         try
         {
-            await RefreshAsync();
+            await RefreshAsync(pushed);
         }
         catch (Exception e) when (e is IOException or TimeoutException or InvalidOperationException)
         {
@@ -212,16 +228,19 @@ public partial class MainWindow
         }
     }
 
-    async Task ReadBoardAsync()
+    /// <summary>pushed: this run is the change push's, on a screen of threads (a list, the reader). The status data (governor, usage, PRs,
+    /// slots, identities) is not what the push changed and waits for the 30 s beat or the next action, which read everything.</summary>
+    async Task ReadBoardAsync(bool pushed = false)
     {
+        var threadsOnly = pushed && screen is "list" or "read";
         // Every read is independent, so start them all and wait once: a refresh costs the slowest call, not the sum of a dozen
         // pipe round trips (measured on the live board: 366 ms one after another).
         var listed = Channels.Select(ch => board.ListThreadsAsync(ch)).ToList();
         var openQsCall = board.OpenQuestionsAsync();
-        var stCall = Optional<BoardStatus?>(async () => await board.StatusAsync(), st);
-        var agentsCall = Optional(board.IdentitiesAsync, agents);
-        var webUrlCall = Optional(board.WebUrlAsync, webUrl);
-        var slotsCall = Optional(board.SlotsAsync, slots);
+        var stCall = threadsOnly ? Task.FromResult(st) : Optional<BoardStatus?>(async () => await board.StatusAsync(), st);
+        var agentsCall = threadsOnly ? Task.FromResult(agents) : Optional(board.IdentitiesAsync, agents);
+        var webUrlCall = threadsOnly || webUrl is not null ? Task.FromResult(webUrl) : Optional(board.WebUrlAsync, webUrl); // the console's address does not change
+        var slotsCall = threadsOnly ? Task.FromResult(slots) : Optional(board.SlotsAsync, slots);
         var goalName = screen == "goal" ? goal?.Name : null;
         var goalCall = goalName is null ? null : board.GoalAsync(goalName);
         var adoptCall = screen == "adopt" ? board.AdoptableAsync() : null;
@@ -336,7 +355,19 @@ public partial class MainWindow
     }
 
     /// <summary>A flash, unless a question is being asked: that is never hidden behind an old one.</summary>
-    internal Line BarLine(int W) => confirm is null && flash is { } f ? Pad([S(" " + f.Text, f.Tags + " inv")], W, "inv") : Pad(Hints(), W, "inv");
+    internal Line BarLine(int W) => confirm is null && flash is { } f ? Pad([S(" " + f.Text, f.Tags + " inv")], W, "inv") : Pad(Shorten(Hints(), W), W, "inv");
+
+    /// <summary>The footer is one unwrapped line, so what does not fit is cut off at the window's edge, and Esc is last. Past the width, drop
+    /// whole hints from the right, never Esc or F (forget). A line made of anything but hints (a question) is left alone.</summary>
+    internal static Line Shorten(Line hints, int W)
+    {
+        if (Len(hints) <= W)
+            return hints;
+        hints = [.. hints];
+        while (Len(hints) > W && hints.FindLastIndex(x => x.Tags == "ye inv" && x.Text.Trim() is not ("Esc" or "F")) is >= 0 and var at)
+            hints.RemoveRange(at, Math.Min(2, hints.Count - at)); // a key and its label
+        return hints;
+    }
 
     // --- shared pieces -----------------------------------------------------------
 
@@ -384,14 +415,13 @@ public partial class MainWindow
 
     List<Line> MainScreen(int W)
     {
-        var screech = Pref("screech", false);
         List<Line> L =
         [
             [S("   "), .. Logo.SelectMany(l => new[] { S(l.Top, l.Hue + " b"), S(" ") }), S("  6 lines · no long-distance fees", "mu")],
             [S("   "), .. Logo.SelectMany(l => new[] { S(l.Bot, l.Hue + " b"), S(" ") }), S("  please do not tie up the line", "fa")],
             [],
             [S("ATDT AGENTDESK ... ", "fa"), S("CONNECT", "gr b"),
-                S(screech ? "  (you heard that. we all heard that.)" : "  (handshake screech omitted for your comfort)", "fa")],
+                S("  (handshake screech omitted for your comfort)", "fa")],
             [],
             st?.JohnLast is { } me
                 ? [S(" Welcome back, "), S(Human.ToUpperInvariant(), "ye b"), S($". Last call {When(me.Ts)}, "),
@@ -418,7 +448,7 @@ public partial class MainWindow
             ("W", "Wiki", S($"{rows["wiki"].Count} articles", "mu")),
             ("S", "SysOp console", sysop),
             ("B", "Who's on", S($"{N(agents, "agent")} today", "pu")),
-            ("O", "Options", S(Palettes[Theme].Label + (screech ? " · screech on" : ""), "ye")),
+            ("O", "Options", S(Palettes[Theme].Label, "ye")),
             ("A", "Agents & goals", this.agents.Count == 0 && Goals.Count == 0 ? S("none signed up", "mu")
                 : S($"{this.agents.Count(a => a.State == "running")} running · {this.agents.Count(a => a.State == "queued")} queued · {Goals.Count(g => g.State == "running")} goals", "gr")),
             ("G", "Hang up", S("to the tray", "mu")),
@@ -476,7 +506,7 @@ public partial class MainWindow
         else
             footer = [S(" " + N(rs.Count, "thread"), "mu"), .. If(rs.Count > 0, S($" · newest post {Ago(rs.Select(r => (DateTimeOffset?)r.UpdatedTs).Max())} ago", "mu"))];
         if (window.Count > window.Visible)
-            footer.Add(S($" · rows {window.Top + 1}–{window.End} of {window.Count}", "fa"));
+            footer.AddRange(ScrollCue());
         L.Add(footer);
         return L;
     }
@@ -497,7 +527,7 @@ public partial class MainWindow
             "WAIT" => "WAITING ON YOU", "OPEN" => "up for grabs", "HELD" => "held", "DONE" => "done", "ansd" => "answered",
             "clsd" => "closed", "arch" => "archived", _ => code.Trim(),
         };
-        var idx = rows.TryGetValue(ch, out var list) ? list.ToList().FindIndex(r => r.Id == t.Id) : -1;
+        var idx = rows.TryGetValue(ch, out var list) ? IndexOf(list, r => r.Id == t.Id) : -1;
         var pos = idx >= 0 ? $"{idx + 1} of {list!.Count} in {Titles[ch]}" : Titles.GetValueOrDefault(ch, ch);
         var head = $"═ Msg #{t.Id} ═ {pos} ";
         List<Line> L =
@@ -522,7 +552,7 @@ public partial class MainWindow
             var text = $" ─── {Label(m.Author)} {verb} {When(m.Ts)}{via} ";
             L.Add([S(" ───", receipt ? "rule rcpt" : "rule"), S(" " + Label(m.Author), Hue(m.Author) + " b" + (receipt ? " rcpt" : "")),
                 S($" {verb} {When(m.Ts)}", receipt ? "rcpt" : "mu"), S(via, "pu"), S(" " + Rep('─', W - text.Length - 1), "rule")]);
-            L.AddRange(Markdown(m.Body, W - 2).Select(Line (l) => [S(" "), .. receipt ? l.Select(s => s with { Tags = (s.Tags + " rcpt").Trim() }) : l]));
+            L.AddRange(MarkdownOf(m.Body, W - 2).Select(Line (l) => [S(" "), .. receipt ? l.Select(s => s with { Tags = (s.Tags + " rcpt").Trim() }) : l]));
             L.Add([]);
         }
         return L;
@@ -588,18 +618,27 @@ public partial class MainWindow
         L.Add([]);
         if (swarm.Count > 0)
         {
-            List<Line> box = [.. swarm.Select(Line (m) => [S(Fit(Label(m.Identity), 22), "cy"), S(m.WorkId is { } w ? $"#{w,-5} " : "      ", "ye"),
-                S(Fit(m.Task.ReplaceLineEndings(" "), Math.Max(10, W - 38)), "mu")])];
+            List<Line> box = [.. swarm.Select(m => MemberLine(m, 22, W, Label(m.Identity)))];
             L.AddRange(Box($"The Concierge's swarm · {N(swarm.Count, "member")}", box, W));
         }
         else
             L.AddRange(Box("The Concierge's swarm", [[S(st?.ConciergeOn == true ? "No members running: nothing is being worked right now." : "Off. Ctrl+W starts the Concierge.", "mu")]], W));
         L.Add([]);
-        var jobs = rows["work"].Where(r => r.Status is "open" or "claimed").Take(8).Select(Line (r) => [S($"#{r.Id,-5}", "ye"),
-            S(StateCode("work", r).Code, StateCode("work", r).Tags), S("  "), S(Fit(r.Subject, W - 34)), S(" "), S(Fit(r.Holder ?? "—", 14), "mu")]).ToList();
+        var jobs = rows["work"].Where(r => r.Status is "open" or "claimed").Take(8).Select(Line (r) =>
+        {
+            var (code, tags) = StateCode("work", r);
+            return [S($"#{r.Id,-5}", "ye"), S(code, tags), S("  "), S(Fit(r.Subject, W - 34)), S(" "), S(Fit(r.Holder ?? "—", 14), "mu")];
+        }).ToList();
         L.AddRange(Box("Work to Hire queue", jobs.Count > 0 ? jobs : [[S("The job board is empty.", "mu")]], W));
         return L;
     }
+
+    /// <summary>One swarm member: who, the work item it holds, and what it is doing.</summary>
+    static Line MemberLine(SwarmMember m, int nameW, int W, string label) =>
+        [S(Fit(label, nameW), "cy"), S(m.WorkId is { } w ? $"#{w,-5} " : "      ", "ye"), S(Fit(m.Task.ReplaceLineEndings(" "), Math.Max(10, W - 38)), "mu")];
+
+    /// <summary>The "rows a–b of c" segment for the foot of a list, when the list does not fit.</summary>
+    Seg[] ScrollCue() => If(window.Count > window.Visible, S($" · rows {window.Top + 1}–{window.End} of {window.Count}", "fa"));
 
     List<Line> WhoScreen(int W)
     {
@@ -643,8 +682,6 @@ public partial class MainWindow
             ("Sessions at once", $"{Pref("max_sessions", 3)}   (←/→, Shift ±10)  ·  {(st?.Budget?.Pool is { Length: > 0 } pool ? pool : $"{st?.LiveSessions ?? 0} running now")}", "max_sessions"),
             ("Concierge", (st?.ConciergeOn == true ? "ON" : "off") + "   ↵ toggles (same as Ctrl+W)", "concierge"),
             ("Theme", $"{Palettes[Theme].Label}   ({Array.IndexOf(ThemeOrder, Theme) + 1} of {ThemeOrder.Length}, ←/→ to browse, from your VS Code themes)", "theme"),
-            ("Modem screech on connect", Pref("screech", false) ? "ON" : "off", "screech"),
-            ("Play the screech now", "↵", "play"),
             ("Font size", $"{Pref("font_size", 11)} pt   (←/→ or Ctrl +/-)", "font"),
             ("Dictation pre-roll", (Pref("preroll", true) ? "ON" : "off") + "   keeps the last 2 s in RAM while a box has focus, so Ctrl+D catches what you just said", "preroll"),
             ("Ops console", webUrl is null ? "not running (the core log says why)" : $"{Unkeyed(webUrl)}   (key hidden)  ·  ↵ or C opens it in the browser", "web"),
@@ -672,8 +709,6 @@ public partial class MainWindow
             [],
             [S(" Version ", "fa"), S(Version, "ye"), S("   ·   updates arrive from GitHub Releases; the tray offers Restart to update", "fa")],
             [S(" Settings live in ", "fa"), S(SettingsPath, "mu")],
-            [S(" The screech is synthesized from its parts (dial tone, DTMF, 2100 Hz answer tone,", "fa")],
-            [S(" V.21 chirps, training noise). No 56k modems were harmed.", "fa")],
         ]);
         return L;
     }
@@ -716,7 +751,7 @@ public partial class MainWindow
             head: budget);
         L.Add([S($" {agents.Count(a => a.State == "running")} running", "gr"), S(" · "), S($"{agents.Count(a => a.State == "queued")} queued", "ye"), S(" · "),
             S($"{agents.Count(a => a.State == "stopped")} stopped", "fa"), S($" · {gs.Count(g => g.State == "draft")} draft goals", "ye"), S($" · at most {Ceiling} at once", "mu"),
-            .. If(window.Count > window.Visible, S($" · rows {window.Top + 1}–{window.End} of {window.Count}", "fa"))]);
+            .. ScrollCue()]);
         L.AddRange([[], [S(" ↵", "ye"), S(" on an agent attaches (", "mu"), S("agentdesk attach <name>", "cy"), S("; Ctrl+] detaches); on a goal it reads it. ", "mu"),
                 S("A", "ye"), S(" adopts a Claude session, or approves a goal; ", "mu"), S("X", "ye"), S(" stops one.", "mu")]]);
         if (adoptNote != null)
@@ -732,7 +767,7 @@ public partial class MainWindow
             "  " + Fit("FOLDER", folderW) + " " + Fit("LAST", 11) + "FIRST MESSAGE", rs.Count, i => AdoptRow(rs[i], folderW, msgW),
             [S(adoptables is null ? "   Looking through ~/.claude/projects..." : "   No Claude Code conversations in the last 24 hours that anyone typed in.", "mu")], 9);
         L.Add([S($" {N(rs.Count, "conversation")} from the last 24 hours, newest first", "mu"),
-            .. If(window.Count > window.Visible, S($" · rows {window.Top + 1}–{window.End} of {window.Count}", "fa"))]);
+            .. ScrollCue()]);
         L.AddRange([[], [S(" ↵", "ye"), S(" asks for a name, then starts it here as an agent in its own folder, resuming the conversation.", "mu")],
             [S(" Then close it in the Claude desktop app: two programs writing one conversation will garble it.", "fa")]]);
         return L;
@@ -822,8 +857,7 @@ public partial class MainWindow
         L.AddRange(Box(d.Experiments.Count > 10 ? $"Experiments · last 10 of {d.Experiments.Count}" : $"Experiments · {d.Experiments.Count}",
             log.Count > 0 ? log : [[S("No experiments yet.", "mu")]], W));
         L.Add([]);
-        L.AddRange(Box($"Members · {g.Members} of {g.MaxMembers}", d.Members.Count > 0 ? d.Members.Select(Line (m) => [S(Fit(m.Identity, 24), "cy"),
-            S(m.WorkId is { } w ? $"#{w,-5} " : "      ", "ye"), S(Fit(m.Task.ReplaceLineEndings(" "), Math.Max(10, W - 38)), "mu")]) : [[S("None running.", "mu")]], W));
+        L.AddRange(Box($"Members · {g.Members} of {g.MaxMembers}", d.Members.Count > 0 ? d.Members.Select(m => MemberLine(m, 24, W, m.Identity)) : [[S("None running.", "mu")]], W));
         L.Add([]);
         L.AddRange(Box("Summary · what its agents are woken with", d.Summary.Length > 0
             ? d.Summary.Trim().Split('\n').SelectMany(l => Wrap(l.TrimEnd(), W - 4)).Take(12).Select(Line (l) => [S(l, "mu")]) : [[S("(none)", "fa")]], W));
@@ -1006,7 +1040,7 @@ public partial class MainWindow
     /// <summary>Put the cursor on this agent's row of the combined list (a goal's lead has none) and repaint if Agents is up.</summary>
     void SelectAgent(string name)
     {
-        if (Entries.ToList().FindIndex(e => string.Equals(e.Agent?.Name, name, StringComparison.OrdinalIgnoreCase)) is not (>= 0 and var at))
+        if (IndexOf(Entries, e => string.Equals(e.Agent?.Name, name, StringComparison.OrdinalIgnoreCase)) is not (>= 0 and var at))
             return;
         (sel["agents"], agentsSel) = (at, EntryKey(Entries[at]));
         if (screen == "agents")
@@ -1204,7 +1238,7 @@ public partial class MainWindow
             var name = AgentDesk.Contracts.GoalNames.Slug(a[0]); // the core slugs it the same way
             await board.ActAsync("ui:goal_create", new { name, objective = a[2], folder = a[1] });
             await RefreshAsync();
-            if (Goals.ToList().FindIndex(x => x.Name == name) is >= 0 and var at)
+            if (IndexOf(Goals, x => x.Name == name) is >= 0 and var at)
                 Sel = at;
             Render(); // the selection moved after the refresh painted
             Flash($"{name} is a draft. Its lead is proposing a hypothesis; A approves it.", "gr");
@@ -1254,6 +1288,18 @@ public partial class MainWindow
     {
         Sel = Math.Clamp(Sel + delta, 0, Math.Max(0, ItemCount() - 1));
         Render();
+        KeepCursorInView();
+    }
+
+    /// <summary>In a window too short for the rows the screen asks for, the cursor row can sit below the fold, and the Body has no scrollbar.</summary>
+    void KeepCursorInView()
+    {
+        var shown = screen;
+        Dispatcher.BeginInvoke(DispatcherPriority.Background, () =>
+        {
+            if (screen == shown && clickMap.FirstOrDefault(kv => kv.Value == Sel, new(-1, -1)).Key is >= 0 and var at && at < paras.Count)
+                paras[at].BringIntoView();
+        });
     }
 
     void ActivateRow()
@@ -1303,13 +1349,6 @@ public partial class MainWindow
                 break;
             case "theme":
                 SetTheme(ThemeOrder[(Array.IndexOf(ThemeOrder, Theme) + step + ThemeOrder.Length) % ThemeOrder.Length]);
-                break;
-            case "screech":
-                SetPref(key, !Pref("screech", false));
-                Flash(Pref("screech", false) ? "Screech on. Brace yourself." : "Screech off. The neighbours thank you.", "ye");
-                break;
-            case "play":
-                Flash("EEEEEEEE-KSSSHHH-BWONG-BWONG-KSSSHHHHH", "or b");
                 break;
             case "font":
                 Zoom(step);
@@ -1431,7 +1470,7 @@ public partial class MainWindow
     void ReaderStep(int delta)
     {
         var rs = rows[channel];
-        var idx = rs.ToList().FindIndex(r => r.Id == readTid);
+        var idx = IndexOf(rs, r => r.Id == readTid);
         if (idx < 0)
             return;
         var j = Math.Clamp(idx + delta, 0, rs.Count - 1);
@@ -1618,7 +1657,7 @@ public partial class MainWindow
             GoBack();
         else if (key is Key.Up or Key.Down or Key.PageUp or Key.PageDown)
         {
-            if (s is "read" or "goal")
+            if (s is "read" or "goal" || ItemCount() == 0) // no rows to move over (SysOp, the main menu): the keys scroll what is below the fold
                 ((Action)(key switch { Key.Up => Body.LineUp, Key.Down => Body.LineDown, Key.PageUp => Body.PageUp, _ => Body.PageDown }))();
             else
                 Move((key is Key.Up or Key.PageUp ? -1 : 1) * (key is Key.PageUp or Key.PageDown ? Math.Max(5, lines - 7) : 1));

@@ -190,6 +190,28 @@ public sealed class KeyBindingTests
     }
 
     [Fact]
+    public void Options_has_no_screech_rows_and_every_row_key_still_acts_on_its_own_row()
+    {
+        var board = new RecordingBoard();
+        KeyHarness.Run(board, w =>
+        {
+            DictateWindowTests.Pump(300);
+            w.Press(Key.O);
+            Assert.DoesNotContain("screech", Text(w), StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("Sessions at once", Text(w));
+            w.Press(Key.Down); // Concierge
+            w.Press(Key.Down); // Theme
+            var before = Text(w);
+            w.Press(Key.Right);
+            Assert.NotEqual(before, Text(w));
+            w.Press(Key.Down); // Font size: Enter used to hit "Play the screech now" here
+            w.Press(Key.Enter);
+            Assert.DoesNotContain("EEEEEEEE", Bar(w));
+            Assert.Empty(board.Acts);
+        });
+    }
+
+    [Fact]
     public void Ctrl_W_in_a_text_box_does_nothing()
     {
         var board = new RecordingBoard();

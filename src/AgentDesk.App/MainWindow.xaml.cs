@@ -47,6 +47,11 @@ public partial class MainWindow : Window
     readonly DispatcherTimer flashTimer = new() { Interval = TimeSpan.FromMilliseconds(3200) };
     readonly DispatcherTimer clock = new() { Interval = TimeSpan.FromSeconds(6) };
     List<Line> painted = [];
+    readonly DispatcherTimer sizeTimer = new() { Interval = TimeSpan.FromMilliseconds(75) };
+    bool measured;
+    /// <summary>The width of "M" at this font and DPI, measured once: laying one out per resize event was most of a drag's cost. Counted for tests.</summary>
+    (double Width, double Dpi)? glyph;
+    internal int GlyphMeasures, ScreenMeasures;
 
     string Theme => Palettes.ContainsKey(Pref("theme", "")) ? Pref("theme", "") : "monokai-pro";
 
@@ -65,14 +70,25 @@ public partial class MainWindow : Window
         beats.Start();
         // A busy board pushes several changes a second; fold each burst into one refresh so the screen doesn't flicker.
         var changed = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(750) };
-        changed.Tick += async (_, _) => { changed.Stop(); await RefreshQuietly(); };
+        changed.Tick += async (_, _) => { changed.Stop(); await RefreshQuietly(pushed: true); };
         board.Changed += (_, _) => Dispatcher.InvokeAsync(() => { if (!changed.IsEnabled) changed.Start(); });
         PreviewKeyDown += OnKey;
         dictTimer.Tick += async (_, _) => await DictationTick();
         WireMic();
         Subject.TextChanged += (_, _) => { if (OnFolderStep) { folderSel = 0; Render(); } };
         Body.PreviewMouseLeftButtonDown += OnClick;
-        Body.SizeChanged += (_, _) => MeasureScreen();
+        // Dragging an edge fires SizeChanged for every pixel: lay out once it settles. The first size (the window opening) is not waited for.
+        sizeTimer.Tick += (_, _) => { sizeTimer.Stop(); MeasureScreen(); };
+        Body.SizeChanged += (_, _) =>
+        {
+            if (measured)
+            {
+                sizeTimer.Stop();
+                sizeTimer.Start();
+            }
+            else
+                MeasureScreen();
+        };
         SourceInitialized += (_, _) => ColourTitleBar();
         Loaded += async (_, _) =>
         {
@@ -208,10 +224,15 @@ public partial class MainWindow : Window
 
     void MeasureScreen()
     {
-        var m = new FormattedText("M", CultureInfo.InvariantCulture, FlowDirection.LeftToRight,
-            new Typeface(FontFamily, FontStyles.Normal, FontWeights.Bold, FontStretches.Normal), FontSize, Brushes.White,
-            VisualTreeHelper.GetDpi(this).PixelsPerDip);
-        var c = Math.Max(64, (int)((Body.ActualWidth - 24) / m.WidthIncludingTrailingWhitespace) - 2);
+        (measured, ScreenMeasures) = (true, ScreenMeasures + 1);
+        var dpi = VisualTreeHelper.GetDpi(this).PixelsPerDip;
+        if (glyph is not { } g || g.Dpi != dpi)
+        {
+            GlyphMeasures++;
+            glyph = g = (new FormattedText("M", CultureInfo.InvariantCulture, FlowDirection.LeftToRight,
+                new Typeface(FontFamily, FontStyles.Normal, FontWeights.Bold, FontStretches.Normal), FontSize, Brushes.White, dpi).WidthIncludingTrailingWhitespace, dpi);
+        }
+        var c = Math.Max(64, (int)((Body.ActualWidth - 24) / g.Width) - 2);
         var n = (int)((Body.ActualHeight - 16) / (FontFamily.LineSpacing * FontSize));
         if (c != cols || n != lines)
         {
@@ -343,6 +364,7 @@ public partial class MainWindow : Window
         FontSize = Pref("font_size", 11) * 96.0 / 72;
         Doc.FontSize = FontSize;
         Doc.FontFamily = FontFamily;
+        glyph = null; // the next measure reads the new size
     }
 
     /// <summary>Colour the native title bar to match, as the Tk app does (Windows 11 honours the exact colours).</summary>
