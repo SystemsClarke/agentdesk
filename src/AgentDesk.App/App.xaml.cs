@@ -74,11 +74,18 @@ public partial class App : Application
     {
         while (true)
         {
-            await using var pipe = new NamedPipeServerStream(PipeName, PipeDirection.In, 1, PipeTransmissionMode.Byte,
-                PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
-            await pipe.WaitForConnectionAsync();
-            var text = await new StreamReader(pipe).ReadToEndAsync();
-            window.Summon(int.TryParse(text, out var tid) ? tid : null);
+            try
+            {
+                await using var pipe = new NamedPipeServerStream(PipeName, PipeDirection.In, 1, PipeTransmissionMode.Byte,
+                    PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
+                await pipe.WaitForConnectionAsync();
+                var text = await new StreamReader(pipe).ReadToEndAsync();
+                window.Summon(int.TryParse(text, out var tid) ? tid : null);
+            }
+            catch (Exception)
+            {
+                await Task.Delay(500); // a client that dropped, or a Summon that threw: keep listening, or no later launch reaches this window
+            }
         }
     }
 

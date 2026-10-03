@@ -34,21 +34,31 @@ public partial class MainWindow : Window
             "#000000 #121212 #2e2e2e #ffffff #c4c4c4 #9e9e9e #6e6e6e #ffffff #ffffff #ffffff #ffffff #ffffff #ffffff #000000 #5c5c5c"),
     };
     static readonly string[] ThemeOrder = [.. Palettes.Keys];
-    static readonly string SettingsPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "AgentDesk", "settings.json");
+    /// <summary>In the core's data folder (AGENTDESK_DATA when set): the core reads and writes this same file.</summary>
+    static readonly string SettingsPath = Path.Combine(Environment.GetEnvironmentVariable("AGENTDESK_DATA") is { Length: > 0 } data ? data
+        : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "AgentDesk"), "settings.json");
 
     readonly IBoard board;
+    /// <summary>What "hang up" does after its flash; tests swap it so the window stays up.</summary>
+    internal Action hide;
     readonly JsonObject prefs = LoadPrefs();
     readonly List<Paragraph> paras = [];
     readonly Dictionary<string, (Brush? Fg, Brush? Bg, bool Bold, string[] T)> looks = [];
     readonly DispatcherTimer flashTimer = new() { Interval = TimeSpan.FromMilliseconds(3200) };
     readonly DispatcherTimer clock = new() { Interval = TimeSpan.FromSeconds(6) };
     List<Line> painted = [];
+    readonly DispatcherTimer sizeTimer = new() { Interval = TimeSpan.FromMilliseconds(75) };
+    bool measured;
+    /// <summary>The width of "M" at this font and DPI, measured once: laying one out per resize event was most of a drag's cost. Counted for tests.</summary>
+    (double Width, double Dpi)? glyph;
+    internal int GlyphMeasures, ScreenMeasures;
 
     string Theme => Palettes.ContainsKey(Pref("theme", "")) ? Pref("theme", "") : "monokai-pro";
 
     public MainWindow(IBoard board, int? openThread)
     {
         this.board = board;
+        hide = Hide;
         InitializeComponent();
         ApplyFont();
         ApplyTheme();
@@ -56,27 +66,44 @@ public partial class MainWindow : Window
         clock.Tick += (_, _) => { if (screen == "main") Render(); };
         // Heartbeats (SlackNet, the Concierge) change without the board changing, so re-read status on a timer, as Tk did.
         var beats = new DispatcherTimer { Interval = TimeSpan.FromSeconds(30) };
-        beats.Tick += async (_, _) => await RefreshAsync();
+        beats.Tick += async (_, _) => await RefreshQuietly();
         beats.Start();
         // A busy board pushes several changes a second; fold each burst into one refresh so the screen doesn't flicker.
         var changed = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(750) };
-        changed.Tick += async (_, _) => { changed.Stop(); await RefreshAsync(); };
+        changed.Tick += async (_, _) => { changed.Stop(); await RefreshQuietly(pushed: true); };
         board.Changed += (_, _) => Dispatcher.InvokeAsync(() => { if (!changed.IsEnabled) changed.Start(); });
         PreviewKeyDown += OnKey;
         dictTimer.Tick += async (_, _) => await DictationTick();
         WireMic();
         Subject.TextChanged += (_, _) => { if (OnFolderStep) { folderSel = 0; Render(); } };
         Body.PreviewMouseLeftButtonDown += OnClick;
-        Body.SizeChanged += (_, _) => MeasureScreen();
+        // Dragging an edge fires SizeChanged for every pixel: lay out once it settles. The first size (the window opening) is not waited for.
+        sizeTimer.Tick += (_, _) => { sizeTimer.Stop(); MeasureScreen(); };
+        Body.SizeChanged += (_, _) =>
+        {
+            if (measured)
+            {
+                sizeTimer.Stop();
+                sizeTimer.Start();
+            }
+            else
+                MeasureScreen();
+        };
         SourceInitialized += (_, _) => ColourTitleBar();
         Loaded += async (_, _) =>
         {
-            await RefreshAsync();
-            clock.Start();
-            if (openThread is int tid)
-                OpenThread(tid);
-            else
-                Body.Focus();
+            try
+            {
+                await RefreshQuietly();
+            }
+            finally // a core that is down must not leave the window unfocused, its clock stopped and --thread unopened
+            {
+                clock.Start();
+                if (openThread is int tid)
+                    OpenThread(tid);
+                else
+                    Body.Focus();
+            }
         };
     }
 
@@ -197,10 +224,15 @@ public partial class MainWindow : Window
 
     void MeasureScreen()
     {
-        var m = new FormattedText("M", CultureInfo.InvariantCulture, FlowDirection.LeftToRight,
-            new Typeface(FontFamily, FontStyles.Normal, FontWeights.Bold, FontStretches.Normal), FontSize, Brushes.White,
-            VisualTreeHelper.GetDpi(this).PixelsPerDip);
-        var c = Math.Max(64, (int)((Body.ActualWidth - 24) / m.WidthIncludingTrailingWhitespace) - 2);
+        (measured, ScreenMeasures) = (true, ScreenMeasures + 1);
+        var dpi = VisualTreeHelper.GetDpi(this).PixelsPerDip;
+        if (glyph is not { } g || g.Dpi != dpi)
+        {
+            GlyphMeasures++;
+            glyph = g = (new FormattedText("M", CultureInfo.InvariantCulture, FlowDirection.LeftToRight,
+                new Typeface(FontFamily, FontStyles.Normal, FontWeights.Bold, FontStretches.Normal), FontSize, Brushes.White, dpi).WidthIncludingTrailingWhitespace, dpi);
+        }
+        var c = Math.Max(64, (int)((Body.ActualWidth - 24) / g.Width) - 2);
         var n = (int)((Body.ActualHeight - 16) / (FontFamily.LineSpacing * FontSize));
         if (c != cols || n != lines)
         {
@@ -215,9 +247,15 @@ public partial class MainWindow : Window
     {
         var key = e.Key == Key.System ? e.SystemKey : e.Key;
         var ctrl = Keyboard.Modifiers.HasFlag(ModifierKeys.Control);
-        e.Handled = Reply.IsKeyboardFocused || Subject.IsKeyboardFocused
-            ? BoxKey(key, ctrl, Keyboard.Modifiers.HasFlag(ModifierKeys.Alt))
-            : ScreenKey(key, ctrl);
+        var inBox = Reply.IsKeyboardFocused || Subject.IsKeyboardFocused;
+        if (e.IsRepeat && HeldKeyIgnored(key, ctrl, inBox, Subject.IsKeyboardFocused))
+        {
+            e.Handled = true;
+            return;
+        }
+        e.Handled = inBox
+            ? BoxKey(key, ctrl, Keyboard.Modifiers.HasFlag(ModifierKeys.Alt), Keyboard.Modifiers.HasFlag(ModifierKeys.Shift))
+            : ScreenKey(key, Keyboard.Modifiers);
     }
 
     void OnClick(object sender, MouseButtonEventArgs e)
@@ -239,11 +277,11 @@ public partial class MainWindow : Window
 
     // --- settings, theme, font ---------------------------------------------------
 
-    static JsonObject LoadPrefs()
+    static JsonObject LoadPrefs(string? path = null)
     {
         try
         {
-            return JsonNode.Parse(File.ReadAllText(SettingsPath)) as JsonObject ?? [];
+            return JsonNode.Parse(File.ReadAllText(path ?? SettingsPath)) as JsonObject ?? [];
         }
         catch (Exception e) when (e is IOException or JsonException or UnauthorizedAccessException)
         {
@@ -265,16 +303,28 @@ public partial class MainWindow : Window
 
     void SetPref(string key, JsonNode? value)
     {
+        var onDisk = value?.DeepClone();
         prefs[key] = value;
         try
         {
-            Directory.CreateDirectory(Path.GetDirectoryName(SettingsPath)!);
-            File.WriteAllText(SettingsPath, prefs.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+            WritePref(SettingsPath, key, onDisk);
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         {
             Flash("Couldn't save settings: " + e.Message, "pk");
         }
+    }
+
+    /// <summary>Change this one key in the file as it is now, not as this window read it at launch: the core writes keys of its own
+    /// (governor_enforce) and a whole-file write would put the old values back. Written beside it and moved in: never half a file.</summary>
+    internal static void WritePref(string path, string key, JsonNode? value)
+    {
+        var file = LoadPrefs(path);
+        file[key] = value;
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        var temp = path + ".tmp";
+        File.WriteAllText(temp, file.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+        File.Move(temp, path, true);
     }
 
     void SetTheme(string key)
@@ -314,6 +364,7 @@ public partial class MainWindow : Window
         FontSize = Pref("font_size", 11) * 96.0 / 72;
         Doc.FontSize = FontSize;
         Doc.FontFamily = FontFamily;
+        glyph = null; // the next measure reads the new size
     }
 
     /// <summary>Colour the native title bar to match, as the Tk app does (Windows 11 honours the exact colours).</summary>

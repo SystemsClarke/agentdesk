@@ -152,9 +152,9 @@ public sealed class UiTests : IDisposable
         var s = await board.DictateAsync("poll");
         Assert.Equal(("listening", "hello there", null), (s.State, s.Text, s.Error));
 
-        broken = true; // a plugin failure keeps its message instead of being lost
-        var e = await Assert.ThrowsAsync<InvalidOperationException>(() => board.DictateAsync("start"));
-        Assert.Equal("PortAudioError('no microphone')", e.Message);
+        broken = true; // a plugin failure comes back as a state with its message, which the window shows as "Dictation failed"
+        var failed = await board.DictateAsync("start");
+        Assert.Equal(("done", "PortAudioError('no microphone')"), (failed.State, failed.Error));
         stop.Cancel();
     }
 
