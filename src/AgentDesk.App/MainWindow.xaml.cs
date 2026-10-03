@@ -34,7 +34,9 @@ public partial class MainWindow : Window
             "#000000 #121212 #2e2e2e #ffffff #c4c4c4 #9e9e9e #6e6e6e #ffffff #ffffff #ffffff #ffffff #ffffff #ffffff #000000 #5c5c5c"),
     };
     static readonly string[] ThemeOrder = [.. Palettes.Keys];
-    static readonly string SettingsPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "AgentDesk", "settings.json");
+    /// <summary>In the core's data folder (AGENTDESK_DATA when set): the core reads and writes this same file.</summary>
+    static readonly string SettingsPath = Path.Combine(Environment.GetEnvironmentVariable("AGENTDESK_DATA") is { Length: > 0 } data ? data
+        : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "AgentDesk"), "settings.json");
 
     readonly IBoard board;
     /// <summary>What "hang up" does after its flash; tests swap it so the window stays up.</summary>
@@ -248,11 +250,11 @@ public partial class MainWindow : Window
 
     // --- settings, theme, font ---------------------------------------------------
 
-    static JsonObject LoadPrefs()
+    static JsonObject LoadPrefs(string? path = null)
     {
         try
         {
-            return JsonNode.Parse(File.ReadAllText(SettingsPath)) as JsonObject ?? [];
+            return JsonNode.Parse(File.ReadAllText(path ?? SettingsPath)) as JsonObject ?? [];
         }
         catch (Exception e) when (e is IOException or JsonException or UnauthorizedAccessException)
         {
@@ -274,16 +276,28 @@ public partial class MainWindow : Window
 
     void SetPref(string key, JsonNode? value)
     {
+        var onDisk = value?.DeepClone();
         prefs[key] = value;
         try
         {
-            Directory.CreateDirectory(Path.GetDirectoryName(SettingsPath)!);
-            File.WriteAllText(SettingsPath, prefs.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+            WritePref(SettingsPath, key, onDisk);
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         {
             Flash("Couldn't save settings: " + e.Message, "pk");
         }
+    }
+
+    /// <summary>Change this one key in the file as it is now, not as this window read it at launch: the core writes keys of its own
+    /// (governor_enforce) and a whole-file write would put the old values back. Written beside it and moved in: never half a file.</summary>
+    internal static void WritePref(string path, string key, JsonNode? value)
+    {
+        var file = LoadPrefs(path);
+        file[key] = value;
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        var temp = path + ".tmp";
+        File.WriteAllText(temp, file.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+        File.Move(temp, path, true);
     }
 
     void SetTheme(string key)

@@ -73,8 +73,15 @@ public sealed class CoreBoard : IBoard, IDisposable
     // ui:threads is list_threads without each thread's last message body, which Row never reads and which was most of the bytes.
     async Task<List<ThreadRow>> List(object args) => [.. (await Call("ui:threads", args)).GetProperty("threads").EnumerateArray().Select(Row)];
 
-    public async Task<IReadOnlyList<ThreadRow>> ListThreadsAsync(string channel) =>
-        await List(new { channel, limit = 300, include_archived = true });
+    public async Task<IReadOnlyList<ThreadRow>> ListThreadsAsync(string channel)
+    {
+        if (channel != "question")
+            return await List(new { channel, limit = 300, include_archived = true });
+        // The newest 300 of everything let a long archive push an old, still-waiting question off the list: take each side on its own cap.
+        var (active, filed) = (List(new { channel, limit = 300, include_archived = false }), List(new { channel, status = "archived", limit = 300 }));
+        await Task.WhenAll(active, filed);
+        return [.. await active, .. await filed];
+    }
 
     public async Task<ThreadDetail?> ReadThreadAsync(int id)
     {
@@ -95,9 +102,12 @@ public sealed class CoreBoard : IBoard, IDisposable
 
     public Task ReplyAsync(int id, string body) => Call("ui:reply", new { thread_id = id, body });
 
-    public Task CloseAsync(int id) => Call("ui:close", new { thread_id = id });
+    /// <summary>{"closed": false} is a reply that did nothing; a core that does not say is taken at its word.</summary>
+    static bool Did(JsonElement r, string name) => !(r.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.False);
 
-    public Task UnarchiveAsync(int id) => Call("ui:unarchive", new { thread_id = id });
+    public async Task<bool> CloseAsync(int id) => Did(await Call("ui:close", new { thread_id = id }), "closed");
+
+    public async Task<bool> UnarchiveAsync(int id) => Did(await Call("ui:unarchive", new { thread_id = id }), "unarchived");
 
     public async Task<int> PostAsync(string channel, string subject, string body) =>
         Int(await Call("ui:post", new { channel, subject, body }), "thread_id");

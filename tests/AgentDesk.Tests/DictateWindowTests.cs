@@ -6,6 +6,7 @@ namespace AgentDesk.Tests;
 
 /// <summary>Ctrl+D in the real window, on a scripted board: words appear in the box at the cursor as they are heard, the box is
 /// read-only meanwhile, a second press keeps them, Esc restores the box, and a failure leaves it as it was.</summary>
+[Collection("window")] // one WPF Application per process: window tests run one after another
 public sealed class DictateWindowTests
 {
     internal static void Pump(int ms)

@@ -3,6 +3,7 @@ using System.Windows.Input;
 namespace AgentDesk.Tests;
 
 /// <summary>The window's key handling driven headless: keys go in as a Key and its modifiers, not through the keyboard.</summary>
+[Collection("window")] // one WPF Application per process: window tests run one after another
 public sealed class KeySeamTests
 {
     [Fact]

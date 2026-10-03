@@ -10,20 +10,28 @@ sealed class RecordingBoard : IBoard
 {
     readonly SampleBoard inner = new();
     public List<(string Request, object? Args)> Acts { get; } = [];
+    /// <summary>Scripts for the reads a scenario wants to hold back or change; null is the sample board's own answer.</summary>
+    public Func<string, Task<GoalDetail?>>? Goal;
+    public Func<Task<IReadOnlyList<Identity>>>? Identities;
+    EventHandler? pushed;
 
-    public event EventHandler? Changed { add => inner.Changed += value; remove => inner.Changed -= value; }
+    public event EventHandler? Changed { add { inner.Changed += value; pushed += value; } remove { inner.Changed -= value; pushed -= value; } }
+    /// <summary>The core pushing board.changed with nothing the sample board did itself.</summary>
+    public void Push() => pushed?.Invoke(this, EventArgs.Empty);
     public Task<IReadOnlyList<ThreadRow>> ListThreadsAsync(string channel) => inner.ListThreadsAsync(channel);
     public Task<ThreadDetail?> ReadThreadAsync(int id) => inner.ReadThreadAsync(id);
     public Task<IReadOnlyList<ThreadRow>> OpenQuestionsAsync() => inner.OpenQuestionsAsync();
     public Task ReplyAsync(int id, string body) => inner.ReplyAsync(id, body);
-    public Task CloseAsync(int id) => inner.CloseAsync(id);
-    public Task UnarchiveAsync(int id) => inner.UnarchiveAsync(id);
+    public Task<bool> CloseAsync(int id) => inner.CloseAsync(id);
+    public Task<bool> UnarchiveAsync(int id) => inner.UnarchiveAsync(id);
     public Task<int> PostAsync(string channel, string subject, string body) => inner.PostAsync(channel, subject, body);
     public Task<BoardStatus> StatusAsync() => inner.StatusAsync();
-    public Task<IReadOnlyList<Identity>> IdentitiesAsync() => inner.IdentitiesAsync();
+    public Task<IReadOnlyList<Identity>> IdentitiesAsync() => Identities?.Invoke() ?? inner.IdentitiesAsync();
     public Task<IReadOnlyList<Adoptable>> AdoptableAsync() => inner.AdoptableAsync();
     public Task<IReadOnlyList<Slot>> SlotsAsync() => inner.SlotsAsync();
-    public Task<GoalDetail?> GoalAsync(string name) => inner.GoalAsync(name);
+    public Task<GoalDetail?> GoalAsync(string name) => Goal?.Invoke(name) ?? inner.GoalAsync(name);
+    public Task<GoalDetail?> SampleGoal(string name) => inner.GoalAsync(name);
+    public IReadOnlyList<Identity> SampleIdentities() => inner.IdentitiesAsync().Result;
     public Task<string?> WebUrlAsync() => inner.WebUrlAsync();
     public Task<string?> ActAsync(string request, object? args = null)
     {

@@ -4,6 +4,7 @@ using AgentDesk.Core.Host;
 namespace AgentDesk.Tests;
 
 /// <summary>The window's Agents, Adopt and Goals rows, the goal reader and budget panel, the ops console line, and the tray guard for temp cores.</summary>
+[Collection("window")] // one WPF Application per process: window tests run one after another
 public sealed class WindowTests
 {
     static string Text(List<Seg> line) => string.Concat(line.Select(s => s.Text));

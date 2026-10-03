@@ -20,12 +20,13 @@ sealed class FaultyBoard : IBoard
     public event EventHandler? Changed { add => inner.Changed += value; remove => inner.Changed -= value; }
     async Task<T> Read<T>(Task<T> ok) => Reads() is { } e ? throw e : await ok;
     async Task Write(Task ok) { if (Writes() is { } e) throw e; await ok; }
+    async Task<T> Write<T>(Task<T> ok) => Writes() is { } e ? throw e : await ok;
     public Task<IReadOnlyList<ThreadRow>> ListThreadsAsync(string channel) => Read(inner.ListThreadsAsync(channel));
     public Task<ThreadDetail?> ReadThreadAsync(int id) { ThreadCalls++; return Thread is { } t ? t(id) : inner.ReadThreadAsync(id); }
     public Task<IReadOnlyList<ThreadRow>> OpenQuestionsAsync() => Read(inner.OpenQuestionsAsync());
     public Task ReplyAsync(int id, string body) => Write(inner.ReplyAsync(id, body));
-    public Task CloseAsync(int id) => Write(inner.CloseAsync(id));
-    public Task UnarchiveAsync(int id) => Write(inner.UnarchiveAsync(id));
+    public Task<bool> CloseAsync(int id) => Write(inner.CloseAsync(id));
+    public Task<bool> UnarchiveAsync(int id) => Write(inner.UnarchiveAsync(id));
     public Task<int> PostAsync(string channel, string subject, string body) => inner.PostAsync(channel, subject, body);
     public async Task<BoardStatus> StatusAsync() => Status() is { } e ? throw e : await inner.StatusAsync();
     public Task<IReadOnlyList<Identity>> IdentitiesAsync() => inner.IdentitiesAsync();
@@ -39,6 +40,7 @@ sealed class FaultyBoard : IBoard
 }
 
 /// <summary>The window and its connection survive a core that is down, restarting or answering badly.</summary>
+[Collection("window")] // one WPF Application per process: window tests run one after another
 public sealed class CoreDownTests
 {
     static string Text(MainWindow w) => new TextRange(w.Doc.ContentStart, w.Doc.ContentEnd).Text;

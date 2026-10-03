@@ -65,8 +65,10 @@ public interface IBoard
     Task<ThreadDetail?> ReadThreadAsync(int id);
     Task<IReadOnlyList<ThreadRow>> OpenQuestionsAsync();
     Task ReplyAsync(int id, string body);
-    Task CloseAsync(int id);
-    Task UnarchiveAsync(int id);
+    /// <summary>False when there was nothing to do: not an open question, or already archived.</summary>
+    Task<bool> CloseAsync(int id);
+    /// <summary>False when there was nothing to do: the thread is not archived.</summary>
+    Task<bool> UnarchiveAsync(int id);
     Task<int> PostAsync(string channel, string subject, string body);
     Task<BoardStatus> StatusAsync();
     Task<IReadOnlyList<Identity>> IdentitiesAsync();
@@ -236,11 +238,19 @@ public sealed class SampleBoard : IBoard
         Store(id, t.Channel, t.Channel == "question" ? "answered" : t.Status, t.Subject, t.Channel == "question" ? "pending" : null,
             [.. threads[i].Messages, new Message(John, DateTimeOffset.Now, body)], i));
 
-    public Task CloseAsync(int id) =>
+    public Task<bool> CloseAsync(int id)
+    {
+        var open = threads.Exists(t => t.Thread.Id == id && t.Thread.Channel == "question" && t.Thread.Status != "archived");
         Update(id, (t, i) => threads[i] = threads[i] with { Thread = t with { Status = "closed", Waiting = false } });
+        return Task.FromResult(open);
+    }
 
-    public Task UnarchiveAsync(int id) =>
+    public Task<bool> UnarchiveAsync(int id)
+    {
+        var archived = threads.Exists(t => t.Thread.Id == id && t.Thread.Status == "archived");
         Update(id, (t, i) => threads[i] = threads[i] with { Thread = t with { Status = "answered" } });
+        return Task.FromResult(archived);
+    }
 
     public Task<int> PostAsync(string channel, string subject, string body)
     {
