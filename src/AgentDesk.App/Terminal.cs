@@ -269,6 +269,7 @@ public partial class MainWindow
     }
 
     readonly HashSet<int> loading = [];
+    readonly Dictionary<int, string> readFailed = []; // threads whose read failed: shown, not asked for again until reopened
 
     /// <summary>The thread, from the cache or the core; null while it is on its way (<see cref="loading"/>), when it is gone, or when the read
     /// failed. A failure is cached as nothing, so the next Render asks again, but one request per id is in flight at a time.</summary>
@@ -276,7 +277,7 @@ public partial class MainWindow
     {
         if (threads.TryGetValue(id, out var cached))
             return cached;
-        if (loading.Contains(id))
+        if (loading.Contains(id) || readFailed.ContainsKey(id))
             return null;
         var task = board.ReadThreadAsync(id);
         if (task.IsCompleted)
@@ -287,8 +288,12 @@ public partial class MainWindow
             loading.Remove(id);
             if (!t.IsCompletedSuccessfully)
             {
+                readFailed[id] = t.Exception?.GetBaseException().Message ?? "cancelled";
                 if (screen == "read" && readTid == id)
-                    Flash($"Couldn't read #{id}: " + (t.Exception?.GetBaseException().Message ?? "cancelled"), "pk b");
+                {
+                    Flash($"Couldn't read #{id}: " + readFailed[id], "pk b");
+                    Render();
+                }
                 return;
             }
             threads[id] = t.Result;
@@ -344,7 +349,7 @@ public partial class MainWindow
             "compose" => [.. K("↵", "subject → body"), .. K("Ctrl+↵", "post"), .. K("Ctrl+D", "dictate"), .. K("Esc", Subject.Text.Length + Reply.Text.Length > 0 ? "twice: discard" : "cancel")],
             "agents" => [.. K("↑↓", "move"),
                 .. SelGoal is { } sg
-                    ? (Seg[])[.. K("↵", "read"), .. K("A", "approve"), .. K("X", "stop goal"), .. K("L", "goal's lead"), .. If(!sg.Standing, K("+ -", "members (Shift ±10)"))]
+                    ? (Seg[])[.. K("↵", "read"), .. K("A", "approve"), .. K("X", "stop goal"), .. K("L", "goal's lead"), .. If(!sg.Standing, K("+ -", "members (] [ ±10)"))]
                     : [.. K("↵", "attach"), .. K("S", "start/stop"), .. K("A", "adopt"), .. K("F", "forget")],
                 .. K("N", "new agent"), .. K("G", "new goal"), .. K("Esc", "menu")],
             "adopt" => [.. K("↑↓", "move"), .. K("↵", "adopt"), .. K("Esc", "agents")],
@@ -515,7 +520,7 @@ public partial class MainWindow
     {
         var data = readTid is { } tid ? Thread(tid) : null;
         if (data is null)
-            return [[S(readTid is { } wait && loading.Contains(wait) ? " Loading..." : " That thread is no longer on the board.", "mu")]];
+            return [[S(readTid is { } wait && loading.Contains(wait) ? " Loading..." : readTid is { } bad && readFailed.TryGetValue(bad, out var why) ? $" Couldn't read #{bad}: {why}. Esc, then open it again." : " That thread is no longer on the board.", "mu")]];
         var (t, msgs) = (data.Thread, data.Messages);
         var key = (t.Id, msgs.Count);
         scrollToEnd = readerKey is null || readerKey.Value.Tid != t.Id || readerKey.Value.Count < msgs.Count;
@@ -1271,6 +1276,7 @@ public partial class MainWindow
 
     void OpenThread(int tid, string back = "list")
     {
+        readFailed.Remove(tid);
         SetDraftAside();
         (readTid, readBack, readerKey) = (tid, back, null);
         channel = Thread(tid)?.Thread.Channel ?? channel;
@@ -1721,10 +1727,10 @@ public partial class MainWindow
             Page();
         else if (s == "options" && ch == 'c')
             OpenConsole();
-        else if (s == "goal" && SelGoal is null && (ch is 'a' or 'x' or 'l' || key is Key.OemPlus or Key.Add or Key.OemMinus or Key.Subtract))
+        else if (s == "goal" && SelGoal is null && (ch is 'a' or 'x' or 'l' || key is Key.OemPlus or Key.Add or Key.OemMinus or Key.Subtract or Key.OemOpenBrackets or Key.OemCloseBrackets))
             Flash("Still reading the goal's log. Try again in a moment.", "mu"); // not A: with no goal under it, A on Agents means adopt
-        else if (s is "agents" or "goal" && key is Key.OemPlus or Key.Add or Key.OemMinus or Key.Subtract)
-            Members((key is Key.OemPlus or Key.Add ? 1 : -1) * (mods.HasFlag(ModifierKeys.Shift) ? 10 : 1));
+        else if (s is "agents" or "goal" && key is Key.OemPlus or Key.Add or Key.OemMinus or Key.Subtract or Key.OemOpenBrackets or Key.OemCloseBrackets)
+            Members(key switch { Key.OemPlus or Key.Add => 1, Key.OemMinus or Key.Subtract => -1, Key.OemCloseBrackets => 10, _ => -10 }); // + needs Shift on a US keyboard, so Shift cannot mean "by ten"
         else if (s is "agents" or "goal" && ch is 'a' or 'x' or 'l' || s == "agents" && ch is 's' or 'n' or 'f' or 'g')
             ((Action)(ch switch
             {

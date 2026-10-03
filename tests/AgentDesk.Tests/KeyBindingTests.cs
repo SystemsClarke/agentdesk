@@ -317,7 +317,7 @@ public sealed class KeyBindingTests
     }
 
     [Fact]
-    public void Plus_and_minus_move_a_goals_members_by_one_and_Shift_by_ten_with_no_ceiling_and_once_per_press()
+    public void Plus_and_minus_move_a_goals_members_by_one_and_brackets_by_ten_with_no_ceiling_and_once_per_press()
     {
         var board = new RecordingBoard();
         KeyHarness.Run(board, w =>
@@ -325,12 +325,13 @@ public sealed class KeyBindingTests
             OnGoalRow(w); // build-speed: 3 members at most
             w.Press(Key.OemPlus);
             w.Press(Key.Add);
-            w.Press(Key.OemPlus, ModifierKeys.Shift);
-            w.Press(Key.OemMinus, ModifierKeys.Shift);
+            w.Press(Key.OemPlus, ModifierKeys.Shift); // Shift+= is the "+" glyph: still one
+            w.Press(Key.OemCloseBrackets);
+            w.Press(Key.OemOpenBrackets);
             w.Press(Key.Subtract);
             var wanted = board.Acts.Where(a => a.Request == "ui:goal_budget")
                 .Select(a => JsonSerializer.Deserialize<JsonElement>(Args(a.Args)).GetProperty("max_members").GetInt32()).ToList();
-            Assert.Equal([4, 4, 13, 1, 2], wanted);
+            Assert.Equal([4, 4, 4, 13, 1, 2], wanted);
 
             board.Acts.Clear();
             var release = new TaskCompletionSource();
