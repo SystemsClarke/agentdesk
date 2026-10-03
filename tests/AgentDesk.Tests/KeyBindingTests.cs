@@ -31,6 +31,21 @@ public sealed class KeyBindingTests
     }
 
     [Fact]
+    public void S_on_a_goals_row_starts_or_stops_its_lead()
+    {
+        var board = new RecordingBoard();
+        KeyHarness.Run(board, w =>
+        {
+            OnGoalRow(w); // build-speed, whose lead is running
+            Assert.Contains("start/stop lead", Hints(w));
+            w.Press(Key.S);
+            DictateWindowTests.Pump(300);
+            var act = Assert.Single(board.Acts, a => a.Request == "ui:identity_stop");
+            Assert.Contains("build-speed-lead", Args(act.Args));
+        });
+    }
+
+    [Fact]
     public void A_modifier_key_does_not_answer_a_question_and_Ctrl_W_and_R_wait_for_it()
     {
         var board = new RecordingBoard();
@@ -295,7 +310,7 @@ public sealed class KeyBindingTests
             OnGoalRow(w);
             Assert.Contains("members", Hints(w));
             Assert.DoesNotContain("forget", Hints(w));
-            foreach (var (key, said) in new[] { (Key.F, "F forgets an agent"), (Key.S, "S starts or stops an agent") })
+            foreach (var (key, said) in new[] { (Key.F, "F forgets an agent") })
             {
                 w.Press(key);
                 Assert.Contains(said, Bar(w));
