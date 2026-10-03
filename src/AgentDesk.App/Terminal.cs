@@ -349,7 +349,7 @@ public partial class MainWindow
             "compose" => [.. K("↵", "subject → body"), .. K("Ctrl+↵", "post"), .. K("Ctrl+D", "dictate"), .. K("Esc", Subject.Text.Length + Reply.Text.Length > 0 ? "twice: discard" : "cancel")],
             "agents" => [.. K("↑↓", "move"),
                 .. SelGoal is { } sg
-                    ? (Seg[])[.. K("↵", "read"), .. K("A", "approve"), .. K("X", "stop goal"), .. K("L", "goal's lead"), .. If(!sg.Standing, K("+ -", "members (] [ ±10)"))]
+                    ? (Seg[])[.. K("↵", "read"), .. K("A", "approve"), .. K("X", "stop goal"), .. K("S", "start/stop lead"), .. K("L", "goal's lead"), .. If(!sg.Standing, K("+ -", "members (] [ ±10)"))]
                     : [.. K("↵", "attach"), .. K("S", "start/stop"), .. K("A", "adopt"), .. K("F", "forget")],
                 .. K("N", "new agent"), .. K("G", "new goal"), .. K("Esc", "menu")],
             "adopt" => [.. K("↑↓", "move"), .. K("↵", "adopt"), .. K("Esc", "agents")],
@@ -1093,9 +1093,11 @@ public partial class MainWindow
 
     async void StartStop()
     {
-        if (SelAgent is not { } a)
+        // On a goal's row, S starts or stops its lead: a goal that is running with its lead stopped (the Concierge, which wakes its
+        // lead only when there is work) has no other way to start it from here.
+        if ((SelAgent ?? (SelGoal is { } sg ? LeadOf(sg) : null)) is not { } a)
         {
-            Flash("S starts or stops an agent. A goal starts with A and stops with X.", "ye");
+            Flash("S starts or stops an agent, or a goal's lead. A goal starts with A and stops with X.", "ye");
             return;
         }
         if (busyStartStop)
