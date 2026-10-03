@@ -14,15 +14,18 @@ Set-Location $PSScriptRoot
 $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer"
 if ((Test-Path $vswhere) -and ($env:PATH -notlike "*$vswhere*")) { $env:PATH = "$vswhere;$env:PATH" }
 
+# A test that leaves a process running (a core or a window) from a build folder keeps its DLLs locked, and the build below then
+# fails with MSB3027 after ten retries (the 0.1.18x releases did). Nothing built under tests\ or src\ is meant to outlive the
+# tests, so stop it first. (Not .venv\: the Slack bridge and the plugin host run from there.)
+$mine = @('tests', 'src') | ForEach-Object { (Join-Path $PSScriptRoot $_) + [IO.Path]::DirectorySeparatorChar }
+Get-Process | Where-Object { $p = $_.Path; $p -and ($mine | Where-Object { $p.StartsWith($_, [StringComparison]::OrdinalIgnoreCase) }) } |
+    ForEach-Object { Write-Host "stopping leftover test process $($_.Name) ($($_.Id))"; Stop-Process -Id $_.Id -Force -ErrorAction Ignore }
+
 dotnet build -v q --nologo
 if ($LASTEXITCODE) { exit $LASTEXITCODE }
 if ($Test) { dotnet test --no-build -v q --nologo; if ($LASTEXITCODE) { exit $LASTEXITCODE } }
 
 if ($Package) {
-    # A test that leaves a process running (a core or a window) from tests\ keeps its DLLs locked, and the build below then
-    # fails with MSB3027 after ten retries (the 0.1.18x release did). Nothing in tests\ is meant to outlive the tests.
-    Get-Process | Where-Object { $_.Path -and $_.Path.StartsWith((Join-Path $PSScriptRoot 'tests'), [StringComparison]::OrdinalIgnoreCase) } |
-        ForEach-Object { Write-Host "stopping leftover test process $($_.Name) ($($_.Id))"; Stop-Process -Id $_.Id -Force -ErrorAction Ignore }
     $stage = Join-Path $PSScriptRoot 'obj\package'
     Remove-Item $stage -Recurse -ErrorAction Ignore
     # The window (AgentDesk.App, WPF) publishes framework-dependent (the default with -r): ~0.4 MB against ~140 MB
