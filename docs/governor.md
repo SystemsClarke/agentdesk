@@ -164,7 +164,7 @@ latest reading, so history starts when the core starts recording samples.
 
 The aim is to finish each week near 100%, with the Work to Hire queue as where the spare budget goes.
 
-- **Pace.** The even spread `spendable / hours left` is multiplied by `Governor.Pace`: `governor_floor` (default 0.3) at the start of the week,
+- **Pace.** The even spread `spendable / hours left` is multiplied by `Governor.Pace`: `governor_floor` (default 0.6) at the start of the week,
   rising to 1 at the reset (`governor_ramp`, default 1; 0 is the old flat spread). Spendable is recomputed from what is really left each time, so
   the cushion held back early is spent later, harder. More cushion early, a push at the end.
 - **Tracking.** `ui:governor` gains `plan_end_pct` (where the plan lands, from `PlanPath`: John's expected burn plus the allowance, hour by hour to the

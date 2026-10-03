@@ -122,6 +122,28 @@ public sealed class GovernorTests(ITestOutputHelper output)
     }
 
     [Fact]
+    public void Cheap_sessions_early_in_a_fresh_week_are_allowed_not_rounded_down_to_none()
+    {
+        // The week John saw "0 sessions": long-lived sessions that mostly idle burn 0.05%/h each over his 0.3%/h, and the new week has just begun.
+        var samples = new List<UsageSample>();
+        var pct = 0.0;
+        for (var t = Mon; t < Mon.AddDays(14); t = t.AddMinutes(5))
+        {
+            var sessions = 1 + (int)((t - Mon).TotalHours / 3) % 3 * 8; // 1, 9, 17 sessions in 3-hour blocks
+            var weekStart = Mon.AddDays(7 * (int)((t - Mon).TotalDays / 7));
+            if (t == weekStart) pct = 0;
+            samples.Add(new(t, pct, weekStart.AddDays(7), 0, null, sessions));
+            pct += (0.3 + sessions * 0.05) / 12;
+        }
+        var m = Governor.Train(samples, S);
+        Assert.InRange(m.PerSession(S), BurnModel.MinSessionRate, 0.15); // the measured cost, not the old 0.25 floor
+        var weekOne = Mon.AddDays(7).AddHours(6);
+        var latest = new UsageSample(weekOne, 4, Mon.AddDays(14), 3, weekOne.AddHours(2), 20);
+        var a = Governor.Advise(m, latest, 20, weekOne, S);
+        Assert.True(a.TotalSessions >= 2, $"allowance {a.TotalSessions} sessions: {a.Reason}");
+    }
+
+    [Fact]
     public void Starved_of_session_free_hours_johns_baseline_is_estimated()
     {
         // Three weeks in which the swarm never stops: 1 to 3 sessions in 3-hour blocks, each burning 1.2%/h, over John's 0.4%/h.
@@ -146,7 +168,7 @@ public sealed class GovernorTests(ITestOutputHelper output)
         // A swarm that never changes size cannot be told apart from John: the per-session default stands, and so does the estimate it implies.
         var flat = Governor.Train([.. samples.Select(x => x with { SwarmSessions = 2 })], S);
         Assert.False(flat.SlopeOk);
-        Assert.Equal(Math.Max(0.25, flat.SessionRate), flat.PerSession(S)); // measured against the default baseline, as before
+        Assert.Equal(Math.Max(BurnModel.MinSessionRate, flat.SessionRate), flat.PerSession(S)); // measured against the default baseline, as before
         Assert.True(double.IsFinite(flat.Rate(10, S)));
     }
 
@@ -179,7 +201,7 @@ public sealed class GovernorTests(ITestOutputHelper output)
         var m = Governor.Train(samples, S);
         var a = Governor.Advise(m, samples[^1], 4, now, S);
         Assert.Equal(("estimated", true), (m.Source, m.GlobalN < 6)); // too few session-free hours to measure John
-        Assert.True(m.Slope < 0 && m.PerSession(S) == 0.25, $"slope {m.Slope}, per session {m.PerSession(S)}");
+        Assert.True(m.Slope < 0 && m.PerSession(S) == BurnModel.MinSessionRate, $"slope {m.Slope}, per session {m.PerSession(S)}");
         Assert.True(m.EstMean * a.ResetInHours > 100, $"the unshrunk estimate forecasts {m.EstMean * a.ResetInHours:0}%: the bug needs more than the whole plan");
 
         output.WriteLine($"used {a.Used}%, {a.ResetInHours:0.#} h to the reset: unshrunk {m.EstMean:0.###}%/h x T = {m.EstMean * a.ResetInHours:0.#}%, now {m.Rate(0, S):0.###}%/h, forecast {a.Baseline:0.#}%, reserve {a.Reserve:0.#}%");

@@ -11,7 +11,7 @@ public sealed record UsageSample(DateTimeOffset Ts, double WeeklyPct, DateTimeOf
 /// <summary>settings.json's governor_* keys (governor_ramp and governor_floor shape the week: see <see cref="Governor.Pace"/>). The defaults are conservative: they assume John is busy and sessions are expensive
 /// until the samples say otherwise.</summary>
 public sealed record GovernorSettings(double K = 2, double Margin = 2, double DefaultRate = 0.3, double DefaultSigma = 0.5,
-    double DefaultSessionRate = 3, int MaxSessions = 12, int MaxMembers = 4, int MaxSwarms = 10, bool Enforce = false, double Ramp = 1, double Floor = 0.3, bool Learn = true)
+    double DefaultSessionRate = 3, int MaxSessions = 12, int MaxMembers = 4, int MaxSwarms = 10, bool Enforce = false, double Ramp = 1, double Floor = 0.6, bool Learn = true)
 {
     public static GovernorSettings From(JsonObject? s)
     {
@@ -49,6 +49,11 @@ public sealed class BurnModel
     /// <summary>The weight, in observed hours, of the default rate a young global rate or estimate is shrunk toward.</summary>
     public const double PriorHours = 24;
 
+    /// <summary>The least one identity session is taken to cost, in weekly-% per session-hour. John's own samples put a session far under
+    /// the old 0.25 floor (a fleet of idle long-lived sessions burned about 0.08%/h each at the very most), and a floor above the real
+    /// cost made the week's allowance round down to no sessions at all.</summary>
+    public const double MinSessionRate = 0.05;
+
     static double Shrunk(double mean, int n, GovernorSettings s) => (n * mean + PriorHours * s.DefaultRate) / (n + PriorHours);
 
     /// <summary>Per-hour sigma, from the global variance: it includes the daily pattern, so it errs high (a bigger reserve).</summary>
@@ -59,8 +64,8 @@ public sealed class BurnModel
 
     /// <summary>Measured against John's session-free hours; with too few of those (starved), the regression slope when the session
     /// count varied, since (rate - an assumed baseline) would only echo the default rate back.</summary>
-    public double PerSession(GovernorSettings s) => GlobalN < 6 && SlopeOk ? Math.Clamp(Slope, 0.25, 20)
-        : SessionN >= 3 ? Math.Max(0.25, SessionRate) : s.DefaultSessionRate;
+    public double PerSession(GovernorSettings s) => GlobalN < 6 && SlopeOk ? Math.Clamp(Slope, MinSessionRate, 20)
+        : SessionN >= 3 ? Math.Max(MinSessionRate, SessionRate) : s.DefaultSessionRate;
 }
 
 /// <summary>What the governor recommends now. Identities enforces it when settings.json's governor_enforce is true (milestone 7).</summary>
@@ -205,7 +210,7 @@ public static class Governor
         var elapsed = Math.Clamp((now - reset.AddDays(-7)).TotalHours / 168, 0, 1);
         var pace = Pace(elapsed, s.Ramp, s.Floor);
         var rate = spendable / hours * pace;
-        var per = m.Learned is { Ok: true } learned ? Math.Clamp(learned.Blend(latest), 0.05, 20) : m.PerSession(s);
+        var per = m.Learned is { Ok: true } learned ? Math.Clamp(learned.Blend(latest), BurnModel.MinSessionRate, 20) : m.PerSession(s);
         var five = latest.FiveHourReset is { } f && f <= now ? 0 : latest.FiveHourPct ?? 0;
         var affordable = rate / per;
         var total = (int)Math.Min(s.MaxSessions, Math.Floor(affordable + 1e-9));
@@ -213,7 +218,7 @@ public static class Governor
         string reason;
         if (five >= 90) { (total, newSessions) = (0, 0); reason = $"the 5-hour window is at {five:0}%: no swarm sessions (shed them) until it resets"; }
         else if (spendable <= 0) reason = $"nothing spendable: John's forecast {baseline:0.#}% plus a {reserve:0.#}% reserve covers the {remaining:0.#}% left";
-        else if (total == 0) reason = $"{spendable:0.#}% spendable over {Usage.Span(hours * 3600)} ({pace * 100:0}% of an even spread this far into the week) funds {affordable:0.00} sessions at {per:0.##}%/session-hour; the reserve shrinks as the reset nears";
+        else if (total == 0) reason = $"{spendable:0.#}% spendable over {Usage.Span(hours * 3600)} ({pace * 100:0}% of an even spread this far into the week) funds {affordable:0.00} sessions (about {affordable * 24:0} session-hours a day) at {per:0.##}%/session-hour; the reserve shrinks as the reset nears";
         else reason = $"{spendable:0.#}% spendable over {Usage.Span(hours * 3600)}, {pace * 100:0}% of an even spread this far into the week: {rate:0.00}%/h funds {total} sessions at {per:0.##}%/session-hour"
             + (total == s.MaxSessions && affordable >= s.MaxSessions + 1 ? " (held at governor_max_sessions)" : "");
         var members = total <= 1 ? 0 : Math.Min(s.MaxMembers, total - 1);
