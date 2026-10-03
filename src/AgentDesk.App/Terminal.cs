@@ -136,6 +136,8 @@ public partial class MainWindow
 
     IReadOnlyList<PrRow> Prs => [.. (st?.Prs ?? []).Where(p => showSettled || p.State == "open")];
     IReadOnlyList<Post> Callers => [.. (st?.Callers ?? []).Where(c => c.Author != Human)];
+    /// <summary>The sessions the core lets run at once now (the governor's ceiling, which is Options' setting unless the plan holds it lower).</summary>
+    int Ceiling => st?.MaxSessions is > 0 and var m ? m : Pref("max_sessions", 3);
     ThreadRow? HeldRow => rows["work"].FirstOrDefault(r => r.Id == st?.HeldId); // the newest item the Concierge holds
     bool SlackUp => st?.SlackTs is { } t && DateTimeOffset.Now - t < TimeSpan.FromSeconds(90);
     string SelKey => screen == "list" ? channel : screen;
@@ -309,28 +311,32 @@ public partial class MainWindow
         return screen switch
         {
             "main" => [.. K("Q D W J", "message bases"), .. K("P", "PRs"), .. K("S", "SysOp"), .. K("B", "who's on"), .. K("A", "agents & goals"), .. K("O", "options"),
-                .. K("G", "hang up")],
+                .. K("T", "theme"), .. K("G", "hang up")],
             "list" => [.. K("↑↓", "move"), .. K("↵", "read"), .. K("N", "new post"),
                 .. If(q, [.. K("H", showArchived ? "active" : "archived"), .. K("Ctrl+R", "wake agent")]), .. K("Esc", "main menu")],
             "read" => [.. K("type", "to reply"), .. K("Ctrl+↵", "send"), .. K("Ctrl+D", "dictate"), .. K("PgUp/PgDn", "scroll"),
                 .. K("Alt+N/P", "next/prev"), .. If(q, [.. K("Alt+C", "close"), .. If(readTid is int t && threads.GetValueOrDefault(t)?.Thread.Status == "archived", K("Alt+U", "bring back"))]),
                 .. K("Esc", "back")],
-            "prs" => [.. K("↑↓", "move"), .. K("↵", "open on GitHub"), .. K("C", "check now"), .. K("H", showSettled ? "open only" : "settled"), .. K("Esc", "menu")],
-            "sysop" => [.. K("Ctrl+W", st?.ConciergeOn == true ? "stop the Concierge" : "start the Concierge"), .. K("R", "reload code"),
-                .. K("J", "job board"), .. K("L", "read held item"), .. K("Esc", "menu")],
+            "prs" => [.. K("↑↓", "move"), .. K("↵ O", "open on GitHub"), .. K("C", "check now"), .. K("H", showSettled ? "open only" : "settled"), .. K("Esc", "menu")],
+            "sysop" => [.. K("Ctrl+W", st?.ConciergeOn == true ? "stop the Concierge" : "start the Concierge"),
+                .. K("J", "job board"), .. If(HeldRow is not null, K("L", "read held item")), .. K("Esc", "menu")],
             "who" => [.. K("↑↓", "pick a caller"), .. K("↵", "read bio"), .. K("P", "page them"), .. K("Esc", "menu")],
             "options" => [.. K("↑↓", "move"), .. K("↵", "change"), .. K("←→", "adjust"), .. K("C", "ops console"), .. K("Esc", "menu")],
-            "compose" => [.. K("↵", "subject → body"), .. K("Ctrl+↵", "post"), .. K("Ctrl+D", "dictate"), .. K("Esc", "cancel")],
-            "agents" => [.. K("↑↓", "move"), .. K("↵", "attach / read"), .. K("S", "start/stop"), .. K("N", "new agent"), .. K("G", "new goal"),
-                .. K("A", "adopt / approve"), .. K("X", "stop goal"), .. K("L", "goal's lead"), .. K("F", "forget"), .. K("Esc", "menu")],
+            "compose" => [.. K("↵", "subject → body"), .. K("Ctrl+↵", "post"), .. K("Ctrl+D", "dictate"), .. K("Esc", Subject.Text.Length + Reply.Text.Length > 0 ? "twice: discard" : "cancel")],
+            "agents" => [.. K("↑↓", "move"),
+                .. SelGoal is { } sg
+                    ? (Seg[])[.. K("↵", "read"), .. K("A", "approve"), .. K("X", "stop goal"), .. K("L", "goal's lead"), .. If(!sg.Standing, K("+ -", "members (Shift ±10)"))]
+                    : [.. K("↵", "attach"), .. K("S", "start/stop"), .. K("A", "adopt"), .. K("F", "forget")],
+                .. K("N", "new agent"), .. K("G", "new goal"), .. K("Esc", "menu")],
             "adopt" => [.. K("↑↓", "move"), .. K("↵", "adopt"), .. K("Esc", "agents")],
-            "goal" => [.. K("A", "approve"), .. K("+ -", "members"), .. K("X", "stop"), .. K("L", "attach to lead"), .. K("↑↓", "scroll"), .. K("Esc", "agents")],
+            "goal" => [.. K("A", "approve"), .. If(SelGoal?.Standing != true, K("+ -", "members (Shift ±10)")), .. K("X", "stop"), .. K("L", "attach to lead"), .. K("↑↓", "scroll"), .. K("Esc", "agents")],
             "ask" => [.. K("↵", "next"), .. K("Esc", "cancel")],
             _ => [],
         };
     }
 
-    internal Line BarLine(int W) => flash is { } f ? Pad([S(" " + f.Text, f.Tags + " inv")], W, "inv") : Pad(Hints(), W, "inv");
+    /// <summary>A flash, unless a question is being asked: that is never hidden behind an old one.</summary>
+    internal Line BarLine(int W) => confirm is null && flash is { } f ? Pad([S(" " + f.Text, f.Tags + " inv")], W, "inv") : Pad(Hints(), W, "inv");
 
     // --- shared pieces -----------------------------------------------------------
 
@@ -431,7 +437,7 @@ public partial class MainWindow
         var phrases = st?.UsageLines ?? [];
         var phrase = phrases.Count > 0 ? phrases[(int)(DateTimeOffset.Now.ToUnixTimeSeconds() / 6 % phrases.Count)] : null;
         L.Add(phrase is null ? [S(" (time left: unlimited, you're the SysOp)", "fa")] : [S(" (" + phrase + ")", phrase.Contains("week") ? "or" : "fa")]);
-        L.Add([S(" Main menu ", "fg"), S("[", "mu"), S("Q,D,W,J,P,S,B,O,A,E,G", "ye"), S("]", "mu"), S(": "), S(" ", "cur")]);
+        L.Add([S(" Main menu ", "fg"), S("[", "mu"), S("Q,D,W,J,P,S,B,O,A,G", "ye"), S("]", "mu"), S(": "), S(" ", "cur")]);
         return L;
     }
 
@@ -709,7 +715,7 @@ public partial class MainWindow
                 : i == gs.Count && i < es.Count ? [S("  " + Fit("AGENT", 20) + Fit("STATE", 9) + Fit("GEN", 5) + Fit("HOST", 13) + Fit("MODEL", 8) + "FOLDER", "mu")] : null,
             head: budget);
         L.Add([S($" {agents.Count(a => a.State == "running")} running", "gr"), S(" · "), S($"{agents.Count(a => a.State == "queued")} queued", "ye"), S(" · "),
-            S($"{agents.Count(a => a.State == "stopped")} stopped", "fa"), S($" · {gs.Count(g => g.State == "draft")} draft goals", "ye"), S($" · at most {Pref("max_sessions", 3)} at once (Options)", "mu"),
+            S($"{agents.Count(a => a.State == "stopped")} stopped", "fa"), S($" · {gs.Count(g => g.State == "draft")} draft goals", "ye"), S($" · at most {Ceiling} at once", "mu"),
             .. If(window.Count > window.Visible, S($" · rows {window.Top + 1}–{window.End} of {window.Count}", "fa"))]);
         L.AddRange([[], [S(" ↵", "ye"), S(" on an agent attaches (", "mu"), S("agentdesk attach <name>", "cy"), S("; Ctrl+] detaches); on a goal it reads it. ", "mu"),
                 S("A", "ye"), S(" adopts a Claude session, or approves a goal; ", "mu"), S("X", "ye"), S(" stops one.", "mu")]]);
@@ -868,7 +874,7 @@ public partial class MainWindow
             SetDraftAside();
         channel = ch ?? channel;
         screen = to;
-        confirm = null;
+        (confirm, discardArmed) = (null, null);
         if (to != "read")
             readTid = null; // a closed reader leaves no thread for Alt+C or Alt+U to act on
         if (to == "compose" && composeDraft is { } d)
@@ -910,16 +916,31 @@ public partial class MainWindow
         }
     }
 
+    /// <summary>Esc. A post with words in it asks for a second Esc: one slip of the key should not throw away what was typed.</summary>
     void GoBack()
     {
+        if (screen == "compose" && Subject.Text.Length + Reply.Text.Length > 0 && discardArmed != (Subject.Text, Reply.Text))
+        {
+            discardArmed = (Subject.Text, Reply.Text);
+            Flash("Esc again to throw this post away.", "ye");
+            Render();
+            return;
+        }
         if (screen is "compose" or "ask")
             Subject.Clear();
         if (screen == "compose")
             Reply.Clear();
         if (screen == "agents")
             adoptNote = null;
-        Goto(screen switch { "read" => readBack, "compose" => "list", "ask" => ask!.Back, "adopt" or "goal" => "agents", _ => "main" });
+        var back = screen == "compose" ? composeBack : null;
+        if (screen == "compose")
+            (channel, composeFrom) = (composeFrom ?? channel, null);
+        Goto(screen switch { "read" => readBack, "compose" => back!, "ask" => ask!.Back, "adopt" or "goal" => "agents", _ => "main" });
     }
+
+    (string Subject, string Body)? discardArmed; // the unsent post the last Esc asked about: the same words and another Esc discard it
+    string composeBack = "list"; // where Esc leaves New post: the list it was started from, or Who's on when it came from a page
+    string? composeFrom; // the channel to go back to when a page borrowed Discussion
 
     void AskFor(Ask a, string prefill = "")
     {
@@ -1029,6 +1050,8 @@ public partial class MainWindow
         Flash($"Attached to {a.Name} in a new console. Ctrl+] detaches; it keeps running.", "cy");
     }
 
+    bool busyStartStop, busyMembers, busyConcierge, sending; // one of each in flight: a held key must not ask the core twice
+
     async void StartStop()
     {
         if (SelAgent is not { } a)
@@ -1036,6 +1059,9 @@ public partial class MainWindow
             Flash("S starts or stops an agent. A goal starts with A and stops with X.", "ye");
             return;
         }
+        if (busyStartStop)
+            return;
+        busyStartStop = true;
         var stop = a.State != "stopped";
         Flash(stop ? $"Stopping {a.Name}..." : $"Starting {a.Name}...", "ye");
         try
@@ -1046,7 +1072,7 @@ public partial class MainWindow
             Flash(now switch
             {
                 "running" => $"{a.Name} is running. ↵ attaches.",
-                "queued" => $"{a.Name} is queued: {Pref("max_sessions", 3)} already running. It starts when one stops.",
+                "queued" => $"{a.Name} is queued: {Ceiling} already running. It starts when one stops.",
                 _ => $"{a.Name} stopped. Its conversation is kept; S resumes it.",
             }, now == "running" ? "gr" : "ye");
         }
@@ -1054,12 +1080,19 @@ public partial class MainWindow
         {
             Flash("Not done: " + e.Message, "pk b");
         }
+        finally
+        {
+            busyStartStop = false;
+        }
     }
 
     void Forget()
     {
         if (SelAgent is not { } who)
+        {
+            Flash("F forgets an agent: pick an agent's row. A goal stops with X.", "mu");
             return;
+        }
         var name = who.Name;
         confirm = ($"Forget {name}? It stops and leaves the list; its Claude conversation stays on disk.", async () =>
         {
@@ -1088,6 +1121,11 @@ public partial class MainWindow
     {
         if (SelGoal is not { } g)
             return;
+        if (!g.Standing && g.State is "running" or "succeeded")
+        {
+            Flash($"{g.Name} is already {g.State}. X stops it.", "mu");
+            return;
+        }
         try
         {
             await (g.Standing ? board.ActAsync("ui:concierge", new { on = true }) : board.ActAsync("ui:goal_approve", new { name = g.Name }));
@@ -1105,12 +1143,18 @@ public partial class MainWindow
     async void Members(int delta)
     {
         if (SelGoal is not { } g)
+        {
+            Flash("+ and - set a goal's members: pick a goal's row.", "mu");
             return;
+        }
         if (g.Standing)
         {
             Flash("The Concierge sizes its own swarm.", "mu");
             return;
         }
+        if (busyMembers)
+            return;
+        busyMembers = true;
         var n = Math.Max(g.MaxMembers + delta, 1);
         try
         {
@@ -1122,12 +1166,19 @@ public partial class MainWindow
         {
             Flash("Not changed: " + e.Message, "pk b");
         }
+        finally
+        {
+            busyMembers = false;
+        }
     }
 
     void StopGoal()
     {
         if (SelGoal is not { } g)
+        {
+            Flash("X stops a goal: pick a goal's row. S stops an agent.", "mu");
             return;
+        }
         confirm = ($"Stop {g.Name}? Its members are forgotten and its lead stops; the log stays.", async () =>
         {
             try
@@ -1163,7 +1214,10 @@ public partial class MainWindow
     void AttachLead()
     {
         if (SelGoal is not { } g)
+        {
+            Flash("L attaches to a goal's lead: pick a goal's row.", "mu");
             return;
+        }
         if (LeadOf(g) is { } lead)
             Attach(lead);
         else
@@ -1244,7 +1298,8 @@ public partial class MainWindow
                 Flash($"Up to {N(n, "agent session")} at once. Takes effect on the next start.", "ye");
                 break;
             case "concierge":
-                ToggleConcierge();
+                if (delta == 0) // Enter, not the arrows that browse the rows above and below
+                    ToggleConcierge();
                 break;
             case "theme":
                 SetTheme(ThemeOrder[(Array.IndexOf(ThemeOrder, Theme) + step + ThemeOrder.Length) % ThemeOrder.Length]);
@@ -1275,6 +1330,9 @@ public partial class MainWindow
 
     async Task SendAsync()
     {
+        if (sending)
+            return;
+        sending = true;
         try
         {
             await Send();
@@ -1282,6 +1340,10 @@ public partial class MainWindow
         catch (Exception e) when (e is InvalidOperationException or NotSupportedException or IOException)
         {
             Flash("Not sent: " + e.Message, "pk b");
+        }
+        finally
+        {
+            sending = false;
         }
     }
 
@@ -1296,7 +1358,7 @@ public partial class MainWindow
             var tid = await board.PostAsync(channel, subject.Length > 0 ? subject : "(no subject)", body);
             if (screen == "compose")
                 (Subject.Text, Reply.Text) = ("", "");
-            composeDraft = null; // sent: wherever the draft was set aside, it is gone
+            (composeDraft, composeFrom) = (null, null); // sent: wherever the draft was set aside, it is gone
             await RefreshAsync();
             if (screen == "compose") // the sender may have moved on while the post was in flight
                 OpenThread(tid);
@@ -1312,10 +1374,23 @@ public partial class MainWindow
         }
     }
 
-    /// <summary>Ctrl+W: John turns the Concierge on or off (ui:concierge); turning it on is its approval.</summary>
-    async void ToggleConcierge()
+    /// <summary>Ctrl+W: John turns the Concierge on or off (ui:concierge); turning it on is its approval. Turning it off stops its swarm, so it asks first.</summary>
+    void ToggleConcierge()
     {
-        var on = st?.ConciergeOn != true;
+        if (st?.ConciergeOn != true)
+        {
+            SetConcierge(true);
+            return;
+        }
+        confirm = ("Turn the Concierge off? Its swarm is stopped and the items it held go back on the queue.", () => SetConcierge(false));
+        Render();
+    }
+
+    async void SetConcierge(bool on)
+    {
+        if (busyConcierge)
+            return;
+        busyConcierge = true;
         Flash(on ? "Turning the Concierge on..." : "Concierge off: its swarm is stopped and the items it held go back on the queue.", "ye");
         try
         {
@@ -1326,6 +1401,10 @@ public partial class MainWindow
         catch (Exception e) when (e is not OperationCanceledException)
         {
             Flash(e.Message, "pk b");
+        }
+        finally
+        {
+            busyConcierge = false;
         }
     }
 
@@ -1432,10 +1511,10 @@ public partial class MainWindow
         if (Callers.Count == 0)
             return;
         var name = Callers[Sel].Author;
-        channel = "discussion";
+        (composeBack, composeFrom, channel) = ("who", channel, "discussion");
         Goto("compose"); // brings back an unsent post, if one was set aside
         if (Subject.Text.Length > 0 || Reply.Text.Length > 0)
-            Flash("Your unsent post is still here. Post it, or Esc throws it away, then P again.", "ye");
+            Flash("Your unsent post is still here. Post it, or Esc twice throws it away, then P again.", "ye");
         else
             (Subject.Text, Reply.Text) = ($"page: {Label(name)}", $"@{name} ");
         Reply.Focus();
@@ -1445,7 +1524,7 @@ public partial class MainWindow
     // --- keys --------------------------------------------------------------------
 
     /// <summary>Keys while the reply or subject box has focus: typing goes to the box, these reach the reader.</summary>
-    internal bool BoxKey(Key key, bool ctrl, bool alt)
+    internal bool BoxKey(Key key, bool ctrl, bool alt, bool shift = false)
     {
         if (Dictating && key is Key.Escape or Key.Enter)
         {
@@ -1457,9 +1536,14 @@ public partial class MainWindow
         else if (ctrl && key == Key.Enter)
             _ = screen == "ask" ? AskNext() : SendAsync();
         else if (ctrl)
-            return CtrlKey(key);
+            return CtrlKey(key, inBox: true);
         else if (key == Key.Escape)
             GoBack();
+        else if (key == Key.Tab && Reply.IsKeyboardFocused)
+        {
+            if (shift && screen == "compose") // Tab would leave the box for the screen, whose letters then navigate away
+                Subject.Focus();
+        }
         else if (Subject.IsKeyboardFocused && FolderKey(key))
         {
         }
@@ -1485,13 +1569,22 @@ public partial class MainWindow
         return true;
     }
 
-    internal bool CtrlKey(Key key)
+    /// <summary>A key held down repeats: Enter and Space on the screen, Ctrl+Enter and Enter in the subject box must act once, not once per repeat.</summary>
+    internal static bool HeldKeyIgnored(Key key, bool ctrl, bool inBox, bool inSubject) =>
+        key == Key.Enter && (ctrl || !inBox || inSubject) || key == Key.Space && !inBox;
+
+    static bool IsModifier(Key key) => key is Key.LeftShift or Key.RightShift or Key.LeftCtrl or Key.RightCtrl or Key.LeftAlt or Key.RightAlt
+        or Key.LWin or Key.RWin or Key.CapsLock or Key.System;
+
+    internal bool CtrlKey(Key key, bool inBox = false)
     {
+        if (confirm != null && key is Key.W or Key.R) // a question is open: neither may run under it
+            return true;
         switch (key)
         {
             case Key.OemPlus or Key.Add: Zoom(1); break;
             case Key.OemMinus or Key.Subtract: Zoom(-1); break;
-            case Key.W: ToggleConcierge(); break;
+            case Key.W when !inBox: ToggleConcierge(); break; // in a box it is not advertised and not wanted
             case Key.R: Wake(); break;
             case Key.D: ToggleDictation(); break;
             default: return false;
@@ -1506,6 +1599,10 @@ public partial class MainWindow
             return CtrlKey(key) || key is not (Key.C or Key.A or Key.Insert);
         var ch = key is >= Key.A and <= Key.Z ? (char)('a' + (key - Key.A)) : '\0';
         var s = screen;
+        if (mods.HasFlag(ModifierKeys.Alt) && !(s == "read" && key is Key.N or Key.P or Key.C or Key.U))
+            return false; // Alt+Space, Alt+F4, the system menu: not ours
+        if (confirm != null && IsModifier(key))
+            return true; // pressing Shift on the way to a chord is not an answer
         if (confirm is { } c)
         {
             confirm = null;
@@ -1530,6 +1627,8 @@ public partial class MainWindow
             Move(key == Key.Home ? -10_000 : 10_000);
         else if (key is Key.Left or Key.Right && s == "options")
             ChangeOption(key == Key.Left ? -1 : 1, mods);
+        else if (s is "compose" or "ask" && key is Key.Enter or Key.Tab) // the screen has the keyboard (a click): back to the box
+            (s == "compose" && Subject.Text.Length > 0 ? Reply : Subject).Focus();
         else if (key is Key.Enter or Key.Space && s is not ("read" or "main"))
             ActivateRow();
         else if (s == "read")
@@ -1549,6 +1648,7 @@ public partial class MainWindow
             Goto("list", channelName);
         else if (s == "list" && ch == 'n')
         {
+            (composeBack, composeFrom) = ("list", null);
             Goto("compose");
             Subject.Focus();
         }
@@ -1576,8 +1676,6 @@ public partial class MainWindow
         }
         else if (s == "prs" && ch == 'o')
             ActivateRow();
-        else if (s == "sysop" && ch == 'r')
-            Flash("Nothing to reload: this window is compiled. Restart it to pick up a new build.", "ye");
         else if (s == "sysop" && ch == 'l' && HeldRow is { } held)
             OpenThread(held.Id, "sysop");
         else if (s == "who" && ch == 'p')
@@ -1599,7 +1697,7 @@ public partial class MainWindow
             Goto(ch switch { 'p' => "prs", 's' => "sysop", 'b' => "who", 'o' => "options", _ => "main" });
         else if (ch == 't')
             SetTheme(ThemeOrder[(Array.IndexOf(ThemeOrder, Theme) + 1) % ThemeOrder.Length]);
-        else if (ch == 'g')
+        else if (ch == 'g' && s == "main") // elsewhere it is a stray letter, and a hang-up is not what a stray letter should do
         {
             Flash("+++ATH0 · NO CARRIER", "or b");
             Task.Delay(350).ContinueWith(_ => hide(), TaskScheduler.FromCurrentSynchronizationContext());

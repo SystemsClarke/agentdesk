@@ -226,8 +226,14 @@ public partial class MainWindow : Window
     {
         var key = e.Key == Key.System ? e.SystemKey : e.Key;
         var ctrl = Keyboard.Modifiers.HasFlag(ModifierKeys.Control);
-        e.Handled = Reply.IsKeyboardFocused || Subject.IsKeyboardFocused
-            ? BoxKey(key, ctrl, Keyboard.Modifiers.HasFlag(ModifierKeys.Alt))
+        var inBox = Reply.IsKeyboardFocused || Subject.IsKeyboardFocused;
+        if (e.IsRepeat && HeldKeyIgnored(key, ctrl, inBox, Subject.IsKeyboardFocused))
+        {
+            e.Handled = true;
+            return;
+        }
+        e.Handled = inBox
+            ? BoxKey(key, ctrl, Keyboard.Modifiers.HasFlag(ModifierKeys.Alt), Keyboard.Modifiers.HasFlag(ModifierKeys.Shift))
             : ScreenKey(key, Keyboard.Modifiers);
     }
 

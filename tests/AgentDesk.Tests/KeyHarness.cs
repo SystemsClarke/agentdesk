@@ -24,7 +24,9 @@ sealed class RecordingBoard : IBoard
     public Task ReplyAsync(int id, string body) => inner.ReplyAsync(id, body);
     public Task<bool> CloseAsync(int id) => inner.CloseAsync(id);
     public Task<bool> UnarchiveAsync(int id) => inner.UnarchiveAsync(id);
-    public Task<int> PostAsync(string channel, string subject, string body) => inner.PostAsync(channel, subject, body);
+    /// <summary>Holds back or counts posts: null is the sample board's own answer.</summary>
+    public Func<string, string, string, Task<int>>? Posting;
+    public Task<int> PostAsync(string channel, string subject, string body) => Posting?.Invoke(channel, subject, body) ?? inner.PostAsync(channel, subject, body);
     public Task<BoardStatus> StatusAsync() => inner.StatusAsync();
     public Task<IReadOnlyList<Identity>> IdentitiesAsync() => Identities?.Invoke() ?? inner.IdentitiesAsync();
     public Task<IReadOnlyList<Adoptable>> AdoptableAsync() => inner.AdoptableAsync();
@@ -33,10 +35,14 @@ sealed class RecordingBoard : IBoard
     public Task<GoalDetail?> SampleGoal(string name) => inner.GoalAsync(name);
     public IReadOnlyList<Identity> SampleIdentities() => inner.IdentitiesAsync().Result;
     public Task<string?> WebUrlAsync() => inner.WebUrlAsync();
-    public Task<string?> ActAsync(string request, object? args = null)
+    /// <summary>Holds every action until it completes, as a core a pipe away does: null answers at once.</summary>
+    public Task? Hold;
+    public async Task<string?> ActAsync(string request, object? args = null)
     {
         Acts.Add((request, args));
-        return inner.ActAsync(request, args);
+        if (Hold is not null)
+            await Hold;
+        return await inner.ActAsync(request, args);
     }
     public Task<DictationState> DictateAsync(string action) => inner.DictateAsync(action);
     public Task<IReadOnlyList<FolderPick>> FoldersAsync() => inner.FoldersAsync();
