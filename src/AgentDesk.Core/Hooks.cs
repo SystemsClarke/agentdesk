@@ -69,7 +69,7 @@ public sealed class Hooks(BoardStore store)
         if (sid == "") return "";
         var since = DateTimeOffset.UtcNow.AddDays(-3).ToString("yyyy-MM-dd'T'HH:mm:ss'+00:00'");
         var rows = db.Rows("""
-            SELECT m.id, m.thread_id, m.body, t.subject, m.author_kind = 'human' AS john FROM messages m JOIN threads t ON t.id = m.thread_id
+            SELECT m.id, m.thread_id, m.body, t.subject, m.author_kind = 'human' AS john FROM messages m INDEXED BY idx_messages_ts JOIN threads t ON t.id = m.thread_id
             WHERE (m.author_kind = 'human' OR (json_valid(m.meta) AND json_extract(m.meta, '$.kind') IN ('pr-merged', 'pr-closed')))
               AND m.ts >= $since
               AND NOT EXISTS (SELECT 1 FROM deliveries d WHERE d.message_id = m.id)
