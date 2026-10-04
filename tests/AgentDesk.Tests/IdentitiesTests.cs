@@ -92,6 +92,31 @@ public sealed class IdentitiesTests : IDisposable
     }
 
     [Fact]
+    public async Task Requeue_is_instant_and_launches_nothing_and_DrainQueued_then_starts_Johns_own_first()
+    {
+        var (_, ids) = Core();
+        await ids.Create("swarm", dir, null, null);
+        await ids.Create("mine", dir, null, null);
+        await ids.Create("mine2", dir, null, null);
+        using (var db = store.Open())
+        {
+            db.Exec("INSERT INTO goals (name, objective, measure_folder, lead, created_ts, updated_ts) VALUES ('g', 'o', $d, 'g-lead', '2026-01-01', '2026-01-01')", ("d", dir));
+            db.Exec("INSERT INTO goal_members (identity, goal, task, created_ts) VALUES ('swarm', 'g', 't', '2026-01-01')");
+            db.Exec("UPDATE identities SET state='running', pid=1 WHERE 1=1");
+            db.Exec("UPDATE identities SET updated_ts='2026-01-01T00:00:00+00:00' WHERE name='swarm'"); // the oldest: first in line unless John's come first
+        }
+
+        var (_, restarted) = Core();
+        restarted.Requeue();
+        Assert.All(States(restarted), kv => Assert.Equal("queued", kv.Value)); // nothing launched, and nothing left claiming to run
+        restarted.DrainQueued(); // max_sessions is 2
+        var after = States(restarted);
+        Assert.Equal("running", after["mine"]);
+        Assert.Equal("running", after["mine2"]);
+        Assert.Equal("queued", after["swarm"]);
+    }
+
+    [Fact]
     public async Task A_restarted_core_resumes_what_was_running()
     {
         var (_, ids) = Core();
