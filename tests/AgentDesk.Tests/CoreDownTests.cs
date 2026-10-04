@@ -53,7 +53,7 @@ public sealed class CoreDownTests
         KeyHarness.Run(board, w =>
         {
             DictateWindowTests.Pump(300);
-            Assert.Contains("isn't answering", Bar(w));
+            Assert.Contains("Starting the AgentDesk core", Bar(w)); // never read yet: a core that is starting, not one that went away
             Assert.DoesNotContain("Something broke", Bar(w));
             Assert.Same(w.Body, FocusManager.GetFocusedElement(w)); // the first refresh failed and the window still took focus
             Assert.True(w.Press(Key.P));

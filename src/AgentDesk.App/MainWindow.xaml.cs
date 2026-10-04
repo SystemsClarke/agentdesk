@@ -92,17 +92,16 @@ public partial class MainWindow : Window
         SourceInitialized += (_, _) => ColourTitleBar();
         Loaded += async (_, _) =>
         {
+            clock.Start();
+            Body.Focus(); // before the first read: a core that is slow to start must not leave the window unusable
             try
             {
                 await RefreshQuietly();
             }
-            finally // a core that is down must not leave the window unfocused, its clock stopped and --thread unopened
+            finally // a core that is down must not leave --thread unopened
             {
-                clock.Start();
                 if (openThread is int tid)
                     OpenThread(tid);
-                else
-                    Body.Focus();
             }
         };
     }

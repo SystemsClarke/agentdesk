@@ -18,6 +18,8 @@ public sealed class CoreConnection : IDisposable
     readonly Caller caller;
     Link? link;
     int nextId;
+    Exception? failure; // the last dial that failed, and when: callers queued behind it fail with it instead of each dialling for 15 s
+    long failedAt, spawnedAt = long.MinValue / 2;
 
     /// <summary>A call waiting for its reply, and the link it was written to: when a link dies only its own calls fail, never one
     /// already resent on the link that replaced it. Link is null while the call is between links.</summary>
@@ -41,7 +43,13 @@ public sealed class CoreConnection : IDisposable
     /// connection up while idle (the window needs that for its pushes); otherwise it reconnects on the next call.</summary>
     public event Action? Reconnected;
 
+    /// <summary>How long a dial waits for a core that is starting (a hook or MCP server waits it out; tests shorten it).</summary>
+    public TimeSpan Patience { get; set; } = TimeSpan.FromSeconds(15);
+
     CoreConnection(Caller caller) => this.caller = caller;
+
+    /// <summary>A connection that has not dialled yet: the first call does, so a window can show itself while the core is still starting.</summary>
+    public static CoreConnection Create(Caller caller) => new(caller);
 
     public static async Task<CoreConnection> Connect(Caller caller)
     {
@@ -81,8 +89,11 @@ public sealed class CoreConnection : IDisposable
         try
         {
             if (link is { Dead: false }) return link;
+            if (failure is { } last && Environment.TickCount64 - failedAt < 2000) throw new IOException(last.Message, last); // one dialler at a time; the rest hear its answer
             var again = link is not null;
-            link = await Open();
+            try { link = await Open(); }
+            catch (Exception e) when (e is TimeoutException or IOException) { (failure, failedAt) = (e, Environment.TickCount64); throw; }
+            failure = null;
             if (again) _ = Task.Run(() => Reconnected?.Invoke());
             return link;
         }
@@ -95,8 +106,8 @@ public sealed class CoreConnection : IDisposable
         try { await pipe.ConnectAsync(500); }
         catch (TimeoutException)
         {
-            Process.Start(new ProcessStartInfo(Path.Combine(AppContext.BaseDirectory, "AgentDesk.Core.exe"), "--background") { UseShellExecute = false });
-            await pipe.ConnectAsync(15_000); // the core keeps itself to one instance
+            SpawnCore();
+            await pipe.ConnectAsync((int)Patience.TotalMilliseconds); // the core keeps itself to one instance
         }
         var l = new Link(pipe);
         _ = Task.Run(async () =>
@@ -116,6 +127,15 @@ public sealed class CoreConnection : IDisposable
                     try { await Task.Delay(wait * 1000); await Live(); break; } catch { } // core not back yet
         });
         return l;
+    }
+
+    /// <summary>Starts the core, at most once in 30 seconds: a slow start is waited for, not started again by every call that notices it.</summary>
+    void SpawnCore()
+    {
+        if (Environment.TickCount64 - spawnedAt < 30_000) return;
+        spawnedAt = Environment.TickCount64;
+        var exe = Environment.GetEnvironmentVariable("AGENTDESK_CORE_EXE") is { Length: > 0 } o ? o : Path.Combine(AppContext.BaseDirectory, "AgentDesk.Core.exe");
+        Process.Start(new ProcessStartInfo(exe, "--background") { UseShellExecute = false });
     }
 
     volatile bool disposed;

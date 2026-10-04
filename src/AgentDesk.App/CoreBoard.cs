@@ -14,22 +14,38 @@ public sealed class CoreBoard : IBoard, IDisposable
     {
         this.core = core;
         core.Pushed += text => { if (text.Contains("board.changed")) Changed?.Invoke(this, EventArgs.Empty); };
-        core.Reconnected += async () => // the core restarted (an update): subscribe again and redraw
+        core.Reconnected += () => _ = Subscribe(); // the core restarted (an update): subscribe again and redraw
+    }
+
+    static readonly Caller Me = new(null, null, Environment.CurrentDirectory, "ui", Environment.ProcessId);
+
+    /// <summary>The board before the core has answered: the window shows itself at once and the first calls wait for the connection.
+    /// Subscribes (and so starts the core, if it is not running) in the background, trying until it is up.</summary>
+    public static CoreBoard Create()
+    {
+        var board = new CoreBoard(CoreConnection.Create(Me));
+        _ = board.Subscribe();
+        return board;
+    }
+
+    volatile bool disposed;
+
+    /// <summary>Asks for the core's pushes, until it answers: a core that is starting, or restarting after an update, is tried again with a
+    /// growing pause (up to 5 s). Nothing may escape it: it runs on a pool thread.</summary>
+    async Task Subscribe()
+    {
+        for (var attempt = 1; !disposed; attempt++)
         {
-            // An async void on a pool thread: nothing may escape it, or the process ends. A core that is slow to answer is tried again.
-            for (var attempt = 1; attempt <= 5; attempt++)
-            {
-                try { await core.Call("ui:subscribe"); }
-                catch (Exception) { await Task.Delay(attempt * 1000); continue; }
-                Changed?.Invoke(this, EventArgs.Empty);
-                return;
-            }
-        };
+            try { await core.Call("ui:subscribe"); }
+            catch (Exception) { await Task.Delay(Math.Min(attempt, 5) * 1000); continue; }
+            Changed?.Invoke(this, EventArgs.Empty);
+            return;
+        }
     }
 
     public static async Task<CoreBoard> Connect()
     {
-        var board = new CoreBoard(await CoreConnection.Connect(new Caller(null, null, Environment.CurrentDirectory, "ui", Environment.ProcessId)));
+        var board = new CoreBoard(await CoreConnection.Connect(Me));
         await board.core.Call("ui:subscribe");
         return board;
     }
@@ -221,5 +237,9 @@ public sealed class CoreBoard : IBoard, IDisposable
         return new(Str(r, "state") ?? "done", Str(r, "text") ?? "", Str(r, "error"), Num(r, "progress") ?? 0);
     }
 
-    public void Dispose() => core.Dispose();
+    public void Dispose()
+    {
+        disposed = true;
+        core.Dispose();
+    }
 }
