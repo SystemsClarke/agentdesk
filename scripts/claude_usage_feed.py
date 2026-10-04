@@ -64,9 +64,13 @@ def main():
             out.update({"source": "claude code status line",
                         "captured_ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                         "five_hour": five, "seven_day": week})
-            tmp = DATA_DIR / "claude_usage.json.tmp"
-            tmp.write_text(json.dumps(out, indent=2), encoding="utf-8")
-            os.replace(tmp, DATA_DIR / "claude_usage.json")
+            # Every session's status line runs this: a temp name of its own, so two at once cannot replace each other's half-written file.
+            tmp = DATA_DIR / f"claude_usage.json.{os.getpid()}.tmp"
+            try:
+                tmp.write_text(json.dumps(out, indent=2), encoding="utf-8")
+                os.replace(tmp, DATA_DIR / "claude_usage.json")
+            finally:
+                tmp.unlink(missing_ok=True)
     except OSError:
         pass
     cwd = (data.get("workspace") or {}).get("current_dir") or data.get("cwd") or ""

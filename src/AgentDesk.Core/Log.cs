@@ -4,6 +4,7 @@ namespace AgentDesk.Core;
 public static class Log
 {
     static readonly Lock Gate = new();
+    const long MaxBytes = 2 * 1024 * 1024;
     public static string Path { get; set; } =
         System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "AgentDesk", "core.log");
 
@@ -29,6 +30,11 @@ public static class Log
     {
         var line = $"{DateTimeOffset.UtcNow:yyyy-MM-ddTHH:mm:ssZ} {level} {msg}{Environment.NewLine}";
         lock (Gate)
-            try { File.AppendAllText(Path, line); } catch (IOException) { } // logging must never take the core down
+            try
+            {
+                if (new FileInfo(Path) is { Exists: true, Length: > MaxBytes }) File.Move(Path, Path + ".1", true); // one older log is kept; the rest is gone
+                File.AppendAllText(Path, line);
+            }
+            catch (IOException) { } // logging must never take the core down
     }
 }

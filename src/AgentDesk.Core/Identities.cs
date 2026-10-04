@@ -355,9 +355,13 @@ public sealed partial class Identities
     /// <summary>The Stop hook. Once the turn really ends (the hook did not block it), a session that handed off is restarted.</summary>
     public async Task<string> AfterTurn(JsonElement input, Task<string> hook)
     {
-        var result = await hook;
+        string result;
+        System.Runtime.ExceptionServices.ExceptionDispatchInfo? failed = null;
+        try { result = await hook; }
+        catch (Exception e) { (result, failed) = ("", System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(e)); } // a hook that failed did not block the stop: the handoff still goes ahead
         if (!result.Contains("\"block\"") && input.TryGetProperty("session_id", out var s) && s.GetString() is { Length: > 0 } sid)
             _ = Task.Run(() => Phoenix(sid)).ContinueWith(t => Log.Warn($"phoenix for session {sid} failed: {t.Exception?.InnerException?.Message}"), TaskContinuationOptions.OnlyOnFaulted);
+        failed?.Throw(); // the hook's own failure still reaches the caller, after the handoff was scheduled
         return result;
     }
 

@@ -177,8 +177,12 @@ public static class Setup
 
     static void Edit(string path, Action<JsonObject> change)
     {
-        var root = File.Exists(path) ? JsonNode.Parse(File.ReadAllText(path))!.AsObject() : new JsonObject();
+        var before = File.Exists(path) ? File.ReadAllText(path) : null;
+        var root = before is not null ? JsonNode.Parse(before)!.AsObject() : new JsonObject();
         change(root);
-        File.WriteAllText(path, root.ToJsonString(new JsonSerializerOptions { WriteIndented = true, Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping }));
+        var after = root.ToJsonString(new JsonSerializerOptions { WriteIndented = true, Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping });
+        if (after == before) return; // nothing to change: do not rewrite John's ~/.claude.json for it
+        if (before is not null) File.Copy(path, path + ".bak", true); // one step back, for the day a rewrite is wrong
+        Atomic.Write(path, after);
     }
 }
