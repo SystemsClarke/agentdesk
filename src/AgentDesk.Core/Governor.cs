@@ -294,8 +294,7 @@ public static class Governor
         var file = Path.Combine(data, "settings.json");
         var d = AgentBoard.Load(file) ?? [];
         d["governor_enforce"] = on;
-        File.WriteAllText(file + ".tmp", d.ToJsonString(AgentDesk.Contracts.Wire.Indented));
-        File.Move(file + ".tmp", file, true);
+        Atomic.Write(file, d.ToJsonString(AgentDesk.Contracts.Wire.Indented));
     }
 
     /// <summary>ui:governor, and ui:status's governor section: the last five weeks of samples (the EWMAs have forgotten older ones).</summary>

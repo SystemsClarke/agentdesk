@@ -181,7 +181,15 @@ public sealed class Hooks(BoardStore store)
         }
     }
 
-    static IEnumerable<string> ReadLines(string path) => File.Exists(path) ? File.ReadLines(path) : [];
+    /// <summary>The transcript's lines, read while claude is still writing it: File.ReadLines asks for FileShare.Read and is refused (the
+    /// IO_SharingViolation seen in core.log), so open it the way <see cref="Tail"/> does.</summary>
+    internal static IEnumerable<string> ReadLines(string path)
+    {
+        if (!File.Exists(path)) yield break;
+        using var f = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        using var r = new StreamReader(f);
+        while (r.ReadLine() is { } line) yield return line;
+    }
 
     static string[] Tail(string path, int bytes = 400_000)
     {

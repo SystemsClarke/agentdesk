@@ -22,8 +22,12 @@ public sealed class Dispatcher(BoardStore store, Goals goals, string data)
     /// <summary>Every <paramref name="every"/>: <see cref="Tick"/>.</summary>
     public async Task Run(TimeSpan every, CancellationToken ct = default)
     {
-        using (var db = store.Open()) // the lead is woken for triage only, not for every open item
+        try
+        {
+            using var db = store.Open(); // the lead is woken for triage only, not for every open item
             db.Exec("UPDATE goals SET measure_cmd='internal:open_triage' WHERE name=$n AND measure_cmd='internal:open_work'", ("n", Concierge.Name));
+        }
+        catch (Exception e) { Log.Warn($"dispatcher start failed: {e.Message}"); } // a locked db at boot must not end the dispatcher for the whole run
         using var timer = new PeriodicTimer(every);
         while (await timer.WaitForNextTickAsync(ct))
             try { await Tick(); }

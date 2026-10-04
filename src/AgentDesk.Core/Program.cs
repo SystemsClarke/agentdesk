@@ -20,6 +20,8 @@ var data = Environment.GetEnvironmentVariable("AGENTDESK_DATA")
            ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "AgentDesk");
 Directory.CreateDirectory(data);
 Log.Path = Path.Combine(data, "core.log");
+AppDomain.CurrentDomain.UnhandledException += (_, e) => Log.Warn($"unhandled exception (the core is going down): {e.ExceptionObject}"); // else the log says nothing about why it ended
+TaskScheduler.UnobservedTaskException += (_, e) => { Log.Warn($"unobserved task exception: {e.Exception}"); e.SetObserved(); };
 var python = Environment.GetEnvironmentVariable("AGENTDESK_PYTHON")
              ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "NoOneDrive", "AgentDesk");
 var store = new BoardStore(Path.Combine(data, "agentdesk.db"));

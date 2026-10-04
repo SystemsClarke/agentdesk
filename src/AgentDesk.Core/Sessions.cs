@@ -61,7 +61,7 @@ public sealed class Sessions(int viewerQueue = 256)
             foreach (var (k, v) in extra) env[k] = v;
             var s = all[name] = new Session(name, folder, command, Pty.Start(command, folder, env, 120, 30));
             _ = Task.Run(() => Pump(s)); // reads block: never on this thread
-            Log.Info($"session {name} started: {command} in {folder} (pid {s.Pty.Pid})");
+            Log.Info($"session {name} started: {(command.Length > 200 ? command[..200] + "..." : command)} in {folder} (pid {s.Pty.Pid})"); // the system prompt in it is pages long
             return s.Pty.Pid;
         }
     }
