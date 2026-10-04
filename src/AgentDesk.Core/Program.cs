@@ -41,7 +41,7 @@ var jobs = new Jobs(store, identities);
 var dispatcher = new Dispatcher(store, goals, data);
 var concierge = new Concierge(store, goals, python); // its lead works from the AgentDesk checkout, as the crew did
 _ = prs.Run(TimeSpan.FromSeconds(5));
-identities.Resume();
+identities.Requeue(); // the states, now; the launching (about a second each) waits until the pipe is listening
 using var bridge = SlackBridge.For(data, python); // the Slack bridge lives and dies with the core
 var started = DateTimeOffset.UtcNow;
 try { Tray.WebUrl = await Web.Start(data, WebCall); }
@@ -52,6 +52,7 @@ _ = identities.Run(TimeSpan.FromSeconds(tick > 0 ? tick : 15)); // the governor:
 _ = jobs.Run(TimeSpan.FromSeconds(double.TryParse(Environment.GetEnvironmentVariable("AGENTDESK_JOB_TICK"), out var jt) ? jt : 30)); // recurring jobs: fires what is due
 
 Log.Info($"core starting (pid {Environment.ProcessId})");
+_ = Task.Run(() => { try { identities.DrainQueued(); } catch (Exception e) { Log.Warn($"resume failed: {e}"); } }); // John's own first, one launch at a time
 await PipeServer.Run((req, push, gone) => req.Tool switch
 {
     "hook:stop" => identities.AfterTurn(req.Args, hooks.Run("stop", req.Args)), // Phoenix: a handoff restarts the identity after the turn

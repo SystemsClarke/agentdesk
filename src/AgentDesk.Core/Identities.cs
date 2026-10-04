@@ -31,6 +31,7 @@ public sealed partial class Identities
     readonly Sessions sessions;
     readonly string data, claude;
     readonly Lock gate = new();
+    int lastAttempts; // how many identities the last Drain tried to launch (launched or failed), under gate
     readonly Dictionary<string, string> prompts = new(StringComparer.OrdinalIgnoreCase); // first messages for their next launch (Start)
     readonly HashSet<string> urgent = new(StringComparer.OrdinalIgnoreCase); // started with a message (a reply, a wake): first in line for a slot, under gate
 
@@ -144,11 +145,38 @@ public sealed partial class Identities
     /// launched as slots allow, resuming its conversation.</summary>
     public void Resume()
     {
+        Requeue();
+        DrainQueued();
+    }
+
+    /// <summary>The first half of <see cref="Resume"/>: one statement, instant. The core does it before anything else looks at the
+    /// identities, so a session that was running before the restart is never mistaken for one that still is.</summary>
+    public void Requeue()
+    {
         lock (gate)
         {
             using var db = store.Open();
             db.Exec("UPDATE identities SET state='queued', pid=NULL WHERE state IN ('running', 'queued') OR autostart=1");
-            foreach (var (name, why) in Drain(db)) Log.Warn($"identity {name} did not start: {why}");
+        }
+    }
+
+    /// <summary>The second half: launches what is queued, John's own identities first, as slots allow. Starting a claude.exe costs about a
+    /// second each (a core with 30 identities spent half a minute here before it listened on its pipe), so this runs after the pipe is up
+    /// and takes the gate once per launch, never across them: a request that needs the gate waits for one launch, not for all of them.</summary>
+    public void DrainQueued()
+    {
+        for (var launches = 0; launches < 10_000; launches++)
+        {
+            Dictionary<string, string> failed;
+            int attempts;
+            lock (gate)
+            {
+                using var db = store.Open();
+                failed = Drain(db, max: 1);
+                attempts = lastAttempts;
+            }
+            foreach (var (name, why) in failed) Log.Warn($"identity {name} did not start: {why}");
+            if (attempts == 0) return; // nothing left that may start now: held, or the pool is full
         }
     }
 
@@ -381,12 +409,16 @@ public sealed partial class Identities
     /// max_members. Enforcing, the ceiling is the governor's; advisory, it is max_sessions and the core logs what the governor's
     /// would have queued. A held identity stays queued, and the next drain (a session ending, the tick) tries again. Returns the
     /// ones that failed to launch, which are stopped.</summary>
-    Dictionary<string, string> Drain(BoardDb db)
+    Dictionary<string, string> Drain(BoardDb db, int max = int.MaxValue)
     {
         var failed = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         var hard = MaxSessions(data);
         Governor.Verdict? v = null;
-        foreach (var next in db.Rows("SELECT * FROM identities WHERE state='queued' ORDER BY updated_ts, name").OrderBy(r => urgent.Contains(r["name"]!.ToString()!) ? 0 : 1))
+        var attempts = 0;
+        lastAttempts = 0;
+        // Urgent first (a reply or a wake), then John's own identities before a goal's, then the oldest.
+        foreach (var next in db.Rows("SELECT * FROM identities WHERE state='queued' ORDER BY updated_ts, name")
+                     .OrderBy(r => urgent.Contains(r["name"]!.ToString()!) ? 0 : 1).ThenBy(r => Role(db, r["name"]!.ToString()!).Goal is null ? 0 : 1).ToList())
         {
             v ??= Judge(db);
             var pool = Budget.Read(db, hard, v);
@@ -414,6 +446,8 @@ public sealed partial class Identities
             held.Remove(name);
             try { Launch(db, next, model: model); }
             catch (ArgumentException e) { failed[name] = e.Message; Mark(db, name, "stopped"); }
+            lastAttempts = ++attempts;
+            if (attempts >= max) break;
         }
         return failed;
     }
