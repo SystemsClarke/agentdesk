@@ -9,11 +9,31 @@ namespace AgentDesk.Core.Board;
 public sealed class BoardError(string message) : Exception(message);
 
 /// <summary>Where the board lives. Every tool call opens its own connection (as db.connect() does) and closes it before returning.</summary>
-public sealed class BoardStore(string path, Func<DateTimeOffset>? clock = null)
+public sealed class BoardStore(string path, Func<DateTimeOffset>? clock = null) : IDisposable
 {
+    SqliteConnection? anchor;
+
     public BoardDb Open() => new(path, clock ?? (() => DateTimeOffset.UtcNow));
 
+    public void Dispose()
+    {
+        anchor?.Dispose();
+        anchor = null;
+    }
+
     public void Init() { using var db = Open(); db.InitDb(); }
+
+    /// <summary>Keeps one idle connection to the database for the life of the process (the core calls this once). Every call opens and
+    /// closes its own connection, and the last one to close checkpoints the write-ahead log and deletes its files, so with nothing held
+    /// open each write paid for that and for re-creating them. The anchor never holds a transaction, so it blocks nobody.</summary>
+    public void Anchor()
+    {
+        if (anchor is not null) return;
+        var c = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = path, Pooling = false, DefaultTimeout = 30 }.ToString());
+        c.Open();
+        using (var cmd = c.CreateCommand()) { cmd.CommandText = "PRAGMA busy_timeout=30000; PRAGMA user_version"; cmd.ExecuteScalar(); } // a statement, so the file is really open
+        anchor = c;
+    }
 }
 
 /// <summary>One connection, and the parts of agentdesk/db.py the MCP tools reach. SQL is kept textually identical to Python's.</summary>
@@ -129,7 +149,7 @@ public sealed partial class BoardDb : IDisposable
         db = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = path, Pooling = false, DefaultTimeout = 30 }.ToString());
         db.Open();
         // journal_mode=WAL is stored in the database file, so InitDb sets it once; asserting it on every open (every tool call) took a lock each time.
-        Exec("PRAGMA busy_timeout=30000; PRAGMA foreign_keys=ON");
+        Exec("PRAGMA busy_timeout=30000; PRAGMA foreign_keys=ON; PRAGMA temp_store=MEMORY; PRAGMA cache_size=-16000"); // sorts and temp b-trees in memory; 16 MB of page cache, used only as pages are read
     }
 
     public void Dispose() => db.Dispose();
@@ -168,11 +188,18 @@ public sealed partial class BoardDb : IDisposable
         return rows;
     }
 
+    int txDepth;
+
+    /// <summary>One transaction around <paramref name="body"/>: one commit (one fsync) instead of one per statement. Inside another
+    /// transaction it simply runs, so a write that is itself a transaction can be called from one.</summary>
     T Tx<T>(Func<T> body)
     {
+        if (txDepth > 0) return body();
         Exec("BEGIN IMMEDIATE");
+        txDepth++;
         try { var r = body(); Exec("COMMIT"); return r; }
         catch { Exec("ROLLBACK"); throw; }
+        finally { txDepth--; }
     }
 
     static JsonObject? ParseObject(string? json)
@@ -185,9 +212,26 @@ public sealed partial class BoardDb : IDisposable
 
     // ---- schema
 
+    /// <summary>The schema's version, from its own text: any change to a table, index, trigger or view changes it, so nobody has to remember to bump a
+    /// number. Add a column in <see cref="InitDb"/> (an ALTER below) and change <see cref="MigrationRevision"/> with it.</summary>
+    static readonly int SchemaVersion = Fnv(Schema + OpenQuestionsView + Governor.Schema + MigrationRevision);
+
+    /// <summary>Change this whenever InitDb gains or changes an ALTER TABLE or a data fix: it makes every board run InitDb once more.</summary>
+    const string MigrationRevision = "2026-10-04.1";
+
+    static int Fnv(string text)
+    {
+        var h = 2166136261u;
+        foreach (var ch in text) h = (h ^ ch) * 16777619u;
+        return (int)(h & 0x7fffffff) | 1; // positive, never 0 (an unversioned board)
+    }
+
+    /// <summary>Creates and migrates the board. A board already at this schema version is left alone: the DROP and CREATE of the view took a
+    /// write lock on every start, three times a start, and every other part was a read that found nothing to do.</summary>
     public void InitDb()
     {
         Exec("PRAGMA journal_mode=WAL");
+        if (Scalar("PRAGMA user_version") is long have && have == SchemaVersion) return;
         Exec(Schema);
         Exec("DROP VIEW IF EXISTS open_questions;");  // so an edited view definition reaches boards that already have one
         Exec(OpenQuestionsView);
@@ -203,6 +247,7 @@ public sealed partial class BoardDb : IDisposable
         if (!Rows("PRAGMA table_info(goal_members)").Any(r => Str(r["name"]) == "work_id")) Exec("ALTER TABLE goal_members ADD COLUMN work_id INTEGER");
         if (!ids.Contains("running_model")) Exec("ALTER TABLE identities ADD COLUMN running_model TEXT"); // the tier its session was launched at
         Governor.Migrate(this); // the usage governor's samples
+        Exec($"PRAGMA user_version={SchemaVersion}");
     }
 
     // ---- writes
@@ -256,6 +301,11 @@ public sealed partial class BoardDb : IDisposable
     {
         if (!Channels.Contains(channel)) throw new BoardError($"channel must be one of ('question', 'discussion', 'wiki', 'work'), got {Py.Repr(channel)}");
         EnforceQuestionLength(channel, kind, body);
+        return Tx(() => StartThreadIn(channel, subject, openedBy, kind, body, meta, threadId));
+    }
+
+    long StartThreadIn(string channel, string subject, string openedBy, string kind, string body, JsonObject? meta, long? threadId)
+    {
         var ts = NowIso();
         if (threadId is null)
             threadId = Insert("INSERT INTO threads (created_ts, updated_ts, channel, subject, opened_by, status, meta) VALUES ($ts,$ts,$channel,$subject,$by,$status,$meta)",
@@ -272,11 +322,14 @@ public sealed partial class BoardDb : IDisposable
     public long Reply(long threadId, string author, string kind, string body, long? replyTo = null, JsonObject? meta = null)
     {
         if (Scalar("SELECT channel FROM threads WHERE id=$id", ("id", threadId)) is string channel) EnforceQuestionLength(channel, kind, body);
-        var ts = NowIso();
-        var id = Insert(InsertMessage, ("ts", ts), ("tid", threadId), ("author", author), ("kind", kind), ("body", body), ("replyTo", replyTo), ("meta", MessageMeta(meta, body)));
-        Exec("UPDATE threads SET updated_ts=$ts WHERE id=$id", ("ts", ts), ("id", threadId));
-        TouchPresence(author, kind);
-        return id;
+        return Tx(() =>
+        {
+            var ts = NowIso();
+            var id = Insert(InsertMessage, ("ts", ts), ("tid", threadId), ("author", author), ("kind", kind), ("body", body), ("replyTo", replyTo), ("meta", MessageMeta(meta, body)));
+            Exec("UPDATE threads SET updated_ts=$ts WHERE id=$id", ("ts", ts), ("id", threadId));
+            TouchPresence(author, kind);
+            return id;
+        });
     }
 
     // ---- the work queue: claim and complete are each one conditional UPDATE, so racing agents resolve in SQLite
@@ -449,7 +502,11 @@ public sealed partial class BoardDb : IDisposable
         if (!string.IsNullOrEmpty(channel)) where.Add("t.channel = $channel");
         if (!string.IsNullOrEmpty(status)) where.Add("t.status = $status");
         if (!includeArchived && status != "archived") where.Add("t.status <> 'archived'");  // an explicit status='archived' wins
-        return Rows((lastBody ? ListThreadsSql : ListThreadsBriefSql) + (where.Count > 0 ? " WHERE " + string.Join(" AND ", where) : "") + " GROUP BY t.id ORDER BY t.updated_ts DESC LIMIT $limit",
+        var filter = where.Count > 0 ? " WHERE " + string.Join(" AND ", where) : "";
+        // The page of threads is chosen first and the per-thread subqueries (last body, last author, delivery, waiting) run for those rows only;
+        // joined to every thread first, they ran for all of them before the LIMIT cut the list. id breaks ties, so a page is always the same page.
+        var page = $"(SELECT * FROM threads t{filter} ORDER BY t.updated_ts DESC, t.id DESC LIMIT $limit) t";
+        return Rows((lastBody ? ListThreadsSql : ListThreadsBriefSql).Replace(" FROM threads t LEFT JOIN", " FROM " + page + " LEFT JOIN") + " GROUP BY t.id ORDER BY t.updated_ts DESC, t.id DESC",
             ("channel", channel), ("status", status), ("limit", limit));
     }
 
