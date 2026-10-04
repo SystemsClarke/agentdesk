@@ -11,7 +11,7 @@ public partial class App : Application
     static readonly string PipeName = "AgentDesk.App." + Environment.UserName;
     Mutex? mutex;
 
-    protected override async void OnStartup(StartupEventArgs e)
+    protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
         Environment.CurrentDirectory = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile); // never the install folder: it would block the next update
@@ -26,17 +26,8 @@ public partial class App : Application
             Shutdown();
             return;
         }
-        IBoard board;
-        try
-        {
-            board = sample ? new SampleBoard() : await CoreBoard.Connect();
-        }
-        catch (Exception ex) when (ex is IOException or TimeoutException or System.ComponentModel.Win32Exception)
-        {
-            MessageBox.Show($"AgentDesk couldn't reach its core: {ex.Message}", "AgentDesk");
-            Shutdown();
-            return;
-        }
+        // The window shows itself now; the core is dialled (and started if need be) behind it, and the screen says so while it waits.
+        IBoard board = sample ? new SampleBoard() : CoreBoard.Create();
         var window = new MainWindow(board, tid);
         DispatcherUnhandledException += (_, ex) =>
         {

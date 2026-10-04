@@ -189,6 +189,11 @@ public partial class MainWindow
         try
         {
             await ReadBoardAsync(pushed);
+            if (!coreSeen)
+            {
+                coreSeen = true;
+                PaintLine(BarText, BarLine(cols));
+            }
         }
         finally
         {
@@ -198,15 +203,17 @@ public partial class MainWindow
 
     /// <summary>A refresh nobody awaits for its result (the timers, Loaded, a toggle): a core that is down or restarting shows one quiet
     /// line and keeps the last screen; anything else is a bug and says so. Actions that need to know it failed call RefreshAsync.</summary>
+    bool coreSeen; // a read has succeeded: until then a core that does not answer is one still starting, not one that went away
+
     async Task RefreshQuietly(bool pushed = false)
     {
         try
         {
             await RefreshAsync(pushed);
         }
-        catch (Exception e) when (e is IOException or TimeoutException or InvalidOperationException)
+        catch (Exception e) when (e is IOException or TimeoutException or InvalidOperationException or System.ComponentModel.Win32Exception)
         {
-            Flash("The AgentDesk core isn't answering: " + e.Message + " Showing what was last read.", "or");
+            if (coreSeen) Flash("The AgentDesk core isn't answering: " + e.Message + " Showing what was last read.", "or"); // before the first read the bar says "Starting"
         }
         catch (Exception e) when (e is not OperationCanceledException)
         {
@@ -360,7 +367,9 @@ public partial class MainWindow
     }
 
     /// <summary>A flash, unless a question is being asked: that is never hidden behind an old one.</summary>
-    internal Line BarLine(int W) => confirm is null && flash is { } f ? Pad([S(" " + f.Text, f.Tags + " inv")], W, "inv") : Pad(Shorten(Hints(), W), W, "inv");
+    internal Line BarLine(int W) => confirm is null && flash is { } f ? Pad([S(" " + f.Text, f.Tags + " inv")], W, "inv")
+        : !coreSeen ? Pad([S(" Starting the AgentDesk core... (a few seconds after an update)", "mu inv")], W, "inv") // until a read has landed: not an error, and not silence
+        : Pad(Shorten(Hints(), W), W, "inv");
 
     /// <summary>The footer is one unwrapped line, so what does not fit is cut off at the window's edge, and Esc is last. Past the width, drop
     /// whole hints from the right, never Esc or F (forget). A line made of anything but hints (a question) is left alone.</summary>
