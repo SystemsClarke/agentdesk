@@ -28,6 +28,9 @@ public partial class App : Application
         }
         // The window shows itself now; the core is dialled (and started if need be) behind it, and the screen says so while it waits.
         IBoard board = sample ? new SampleBoard() : CoreBoard.Create();
+        if (!sample) // a sample window must not read or overwrite the real drafts
+            AgentDesk.App.MainWindow.DraftsFile = Path.Combine(Environment.GetEnvironmentVariable("AGENTDESK_DATA") is { Length: > 0 } data ? data
+            : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "AgentDesk"), "drafts.json");
         var window = new MainWindow(board, tid);
         DispatcherUnhandledException += (_, ex) =>
         {
