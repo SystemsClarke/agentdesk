@@ -13,8 +13,8 @@ KEY FACTS to keep verbatim (ids, paths, exact strings, commands) and WHO owns wh
 folder so it can edit the file without asking.
 
 When a handoff restarts the identity, the successor's first prompt is: the handoff, then the state file exactly as it was left, then the
-core's usual context. The file is cut at 12,000 characters (a note says where to read the rest): the prompt is a command line, and Windows
-allows 32,767 characters in all.
+core's usual context. The file is cut at 12,000 characters (a note says where to read the rest; `"phoenix_state_chars"` in `settings.json`
+changes it, 500 to 20,000): the prompt is a command line, and Windows allows 32,767 characters in all.
 
 The state file does not replace the handoff, and it does not change anything else: an identity that is resumed (not handed off) keeps its
 whole conversation as before.

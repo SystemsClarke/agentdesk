@@ -375,7 +375,9 @@ public sealed partial class Identities
     /// <summary>settings.json's phoenix_state_file: on unless it is false.</summary>
     bool StateFileOn() => AgentBoard.Load(Path.Combine(data, "settings.json"))?["phoenix_state_file"]?.ToString().Equals("false", StringComparison.OrdinalIgnoreCase) != true;
 
-    const int StateFileLimit = 12_000; // the successor is started with this on its command line, which Windows limits to 32,767 characters in all (charter and handoff included)
+    /// <summary>How much of the state file goes inline into the successor's prompt: settings.json's phoenix_state_chars (500 to 20,000), default
+    /// 12,000. The prompt is on a command line, which Windows limits to 32,767 characters in all (the charter and the handoff included).</summary>
+    int StateFileLimit() => int.TryParse(AgentBoard.Load(Path.Combine(data, "settings.json"))?["phoenix_state_chars"]?.ToString(), out var n) ? Math.Clamp(n, 500, 20_000) : 12_000;
 
     const string StateCharter = """
         Your state file is {0}. It is your working memory across generations, and the one thing that survives you whole: a handoff written
@@ -396,7 +398,8 @@ public sealed partial class Identities
             if (!File.Exists(path)) return null;
             var text = File.ReadAllText(path).Trim();
             if (text.Length == 0) return null;
-            if (text.Length > StateFileLimit) text = text[..StateFileLimit] + $"\n[... cut here: the file is {text.Length:N0} characters; read the rest at {path}]";
+            var limit = StateFileLimit();
+            if (text.Length > limit) text = text[..limit] + $"\n[... cut here: the file is {text.Length:N0} characters; read the rest at {path}]";
             return $"Your state file ({path}), exactly as your previous generation left it. Trust it over the handoff where they differ, and keep it current:\n\n{text}";
         }
         catch (IOException e) { Log.Warn($"identity {name}: could not read its state file: {e.Message}"); return null; }

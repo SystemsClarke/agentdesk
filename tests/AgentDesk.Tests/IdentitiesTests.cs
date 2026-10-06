@@ -188,10 +188,12 @@ public sealed class IdentitiesTests : IDisposable
     [Fact]
     public async Task A_huge_state_file_is_cut_so_the_successor_still_starts()
     {
-        var (_, huge) = await HandOff("big", new string('x', 40_000) + "TAIL-MARKER");
+        // phoenix_state_chars is small here: the stand-in for claude runs under cmd.exe, whose command line is limited to 8,191 characters.
+        var (_, huge) = await HandOff("big", new string('x', 5_000) + "TAIL-MARKER", """{"max_sessions": 2, "phoenix_state_chars": 1000}""");
         Assert.Contains("cut here", huge);
         Assert.DoesNotContain("TAIL-MARKER", huge);
-        Assert.True(huge.Length < 20_000, $"the successor's prompt is {huge.Length:N0} characters");
+        Assert.Contains(new string('x', 1000), huge);
+        Assert.DoesNotContain(new string('x', 1001), huge); // cut at the setting
     }
 
     [Fact]
