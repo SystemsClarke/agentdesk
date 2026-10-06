@@ -241,10 +241,12 @@ public static class Governor
             ("fr", x.FiveHourReset is { } fr ? Iso(fr) : null), ("n", x.SwarmSessions), ("h", tiers.Haiku), ("s", tiers.Sonnet), ("o", tiers.Opus));
 
     public static List<UsageSample> Load(BoardDb db, DateTimeOffset since) =>
-        [.. db.Rows("SELECT * FROM usage_samples WHERE ts >= $since ORDER BY ts", ("since", Iso(since))).Select(r => new UsageSample(
-            Time(r["ts"])!.Value, r["weekly_pct"]!.GetValue<double>(), Time(r["weekly_reset_ts"]), r["five_hour_pct"]?.GetValue<double>(),
-            Time(r["five_hour_reset_ts"]), (int)r["swarm_sessions"]!.GetValue<long>(), (int)r["haiku_sessions"]!.GetValue<long>(),
-            (int)r["sonnet_sessions"]!.GetValue<long>(), (int)r["opus_sessions"]!.GetValue<long>()))];
+        [.. db.Rows("SELECT * FROM usage_samples WHERE ts >= $since ORDER BY ts", ("since", Iso(since))).Select(Sample)];
+
+    static UsageSample Sample(JsonObject r) => new(
+        Time(r["ts"])!.Value, r["weekly_pct"]!.GetValue<double>(), Time(r["weekly_reset_ts"]), r["five_hour_pct"]?.GetValue<double>(),
+        Time(r["five_hour_reset_ts"]), (int)r["swarm_sessions"]!.GetValue<long>(), (int)r["haiku_sessions"]!.GetValue<long>(),
+        (int)r["sonnet_sessions"]!.GetValue<long>(), (int)r["opus_sessions"]!.GetValue<long>());
 
     static int Running(BoardDb db) => Convert.ToInt32(db.Scalar("SELECT COUNT(*) FROM identities WHERE state='running'"), Inv);
 
@@ -280,9 +282,9 @@ public static class Governor
     {
         var s = GovernorSettings.From(AgentBoard.Load(Path.Combine(data, "settings.json")));
         if (Trained(db, s, now) is not { } trained) return new(s, null, false, "no usage samples yet: no new swarm sessions (fail closed)");
-        var (samples, model) = trained;
-        var a = Advise(model, samples[^1], Running(db), now, s);
-        var age = (now - samples[^1].Ts).TotalMinutes;
+        var (_, latest, model) = trained;
+        var a = Advise(model, latest, Running(db), now, s);
+        var age = (now - latest.Ts).TotalMinutes;
         return usageFailing ? new(s, a, false, "/usage is failing: no new swarm sessions (fail closed)")
             : age > StaleMinutes ? new(s, a, false, $"the latest usage sample is {age:0} minutes old: no new swarm sessions (fail closed)")
             : new(s, a, true, a.Reason);
@@ -296,20 +298,23 @@ public static class Governor
     /// it is kept until a sample is added, the settings change or the hour turns (the window is five weeks back from the hour); what changes
     /// call to call (now, the sessions running) goes into <see cref="Advise"/>, which is cheap. Null when there are no samples.
     /// The samples are never changed after they are loaded: callers only read them.</summary>
-    static (List<UsageSample> Samples, BurnModel Model)? Trained(BoardDb db, GovernorSettings s, DateTimeOffset now)
+    static (List<UsageSample> Samples, UsageSample Latest, BurnModel Model)? Trained(BoardDb db, GovernorSettings s, DateTimeOffset now)
     {
         var hour = now.ToUnixTimeSeconds() / 3600;
         var since = DateTimeOffset.FromUnixTimeSeconds(hour * 3600).AddDays(-35);
-        var sig = db.Rows("SELECT COUNT(*) AS n, MAX(id) AS mx, MAX(ts) AS t, SUM(weekly_pct) AS w FROM usage_samples WHERE ts >= $since", ("since", Iso(since)))[0];
+        var sig = db.Rows("SELECT COUNT(*) AS n, MAX(id) AS mx, MIN(ts) AS t0, MAX(ts) AS t, SUM(weekly_pct) AS w, SUM(five_hour_pct) AS f, SUM(swarm_sessions) AS s,"
+            + " SUM(haiku_sessions) AS h, SUM(sonnet_sessions) AS so, SUM(opus_sessions) AS o FROM usage_samples WHERE ts >= $since", ("since", Iso(since)))[0];
         if (sig["n"]!.GetValue<long>() == 0) return null;
-        var key = string.Join('|', sig["n"], sig["mx"], sig["t"], sig["w"], hour, s);
+        // The newest sample is what a verdict is about (the 5-hour window, the sessions then): always read fresh, never from the kept list.
+        var latest = Sample(db.Rows("SELECT * FROM usage_samples WHERE ts >= $since ORDER BY ts DESC LIMIT 1", ("since", Iso(since)))[0]);
+        var key = string.Join('|', sig.Select(kv => kv.Value?.ToString()).Append(hour.ToString()).Append(s.ToString()));
         lock (TrainGate)
         {
-            if (lastTrained is { } c && c.Key == key) return (c.Samples, c.Model);
+            if (lastTrained is { } c && c.Key == key) return (c.Samples, latest, c.Model);
             var samples = Load(db, since);
             var model = Train(samples, s);
             lastTrained = (key, samples, model);
-            return (samples, model);
+            return (samples, latest, model);
         }
     }
 
@@ -340,10 +345,10 @@ public static class Governor
     {
         if (Trained(db, s, now) is not { } trained)
             return new() { ["samples"] = 0, ["reason"] = "no usage samples yet", ["summary"] = "governor: no usage samples yet" };
-        var (samples, m) = trained;
-        var a = Advise(m, samples[^1], Running(db), now, s);
+        var (samples, latest, m) = trained;
+        var a = Advise(m, latest, Running(db), now, s);
         static double R(double v) => Math.Round(v, 2);
-        var path = PlanPath(m, samples[^1], now, s);
+        var path = PlanPath(m, latest, now, s);
         var trend = TrendEnd(samples, now, a);
         var plan = path.Count > 0 ? path[^1] : Math.Min(100, a.Used + a.Baseline + a.Spendable);
         return new()
@@ -358,7 +363,7 @@ public static class Governor
             } : null,
             ["samples"] = samples.Count, ["baseline_hours"] = m.BaselineHours, ["session_hours"] = m.SessionN,
             ["estimated_hours"] = m.EstN, ["baseline_source"] = m.Source,
-            ["sample_age_minutes"] = R((now - samples[^1].Ts).TotalMinutes),
+            ["sample_age_minutes"] = R((now - latest.Ts).TotalMinutes),
             ["used"] = R(a.Used), ["remaining"] = R(a.Remaining), ["reset_in_hours"] = R(a.ResetInHours), ["baseline"] = R(a.Baseline),
             ["sigma"] = R(a.Sigma), ["reserve"] = R(a.Reserve), ["k"] = s.K, ["spendable"] = R(a.Spendable), ["allowed_rate"] = R(a.AllowedRate),
             ["session_rate"] = R(a.SessionRate), ["projected_end_pct"] = R(a.ProjectedEnd), ["five_hour_pct"] = R(a.FiveHourPct),
