@@ -46,7 +46,7 @@ public sealed record Slot(int N, string? Goal);
 /// running of the ceiling and why, then running by owner (ui:governor's pool.summary).</summary>
 public sealed record Budget(int Samples, double Remaining, double ResetInHours, double ProjectedEnd, int Sessions, int Swarms, int Members,
     string Reason, IReadOnlyList<double> Series, string? Mode, string Pool = "", string Status = "", double PlanEnd = 0,
-    IReadOnlyList<double>? Forecast = null, string Learned = "");
+    IReadOnlyList<double>? Forecast = null);
 
 /// <summary>Everything the main menu, SysOp, Who's On and Options screens show besides the channel lists.</summary>
 public sealed record BoardStatus(
