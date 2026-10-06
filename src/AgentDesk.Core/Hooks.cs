@@ -155,14 +155,12 @@ public sealed class Hooks(BoardStore store)
         return null;
     }
 
-    static string Stop(BoardDb db, string sid, string transcript, bool alreadyBlocked)
+    string Stop(BoardDb db, string sid, string transcript, bool alreadyBlocked)
     {
         var replies = Replies(db, sid);
         if (replies != "") return Block("Not yet: " + replies); // an unread reply from John outranks finishing
         if (alreadyBlocked || transcript == "") return "";
-        var tools = ToolNames(transcript).ToList();
-        var edited = tools.Any(EditTools.Contains);
-        var posted = tools.Any(n => n.StartsWith("mcp__agentdesk__") && BoardWrites.Contains(n.Split("__")[^1]));
+        var (edited, posted) = Scan(transcript);
         return edited && !posted
             ? Block("Before you finish: you changed files this session but haven't told the swarm. Post a short note to the AgentDesk "
                     + "board (post_message on discussion, or answer_thread on the thread you worked from): what you changed, what you "
@@ -170,9 +168,41 @@ public sealed class Hooks(BoardStore store)
             : "";
     }
 
-    static IEnumerable<string> ToolNames(string transcript)
+    /// <summary>What a transcript has done so far: how far it has been read, and whether it edited files and wrote to the board.</summary>
+    sealed class Scanned { public long Offset; public bool Edited, Posted; }
+
+    readonly ConcurrentDictionary<string, Scanned> scanned = new();
+
+    /// <summary>Whether the session edited a file and whether it posted to the board, reading only what is new since the last Stop hook: a long
+    /// session's transcript is tens of megabytes and the hook runs at the end of every turn. Only whole lines count (claude may be mid-write),
+    /// and a transcript that got shorter is a different file and is read again from the start.</summary>
+    (bool Edited, bool Posted) Scan(string transcript)
     {
-        foreach (var line in ReadLines(transcript).Where(l => l.Contains("\"tool_use\"")))
+        var state = scanned.GetOrAdd(transcript, _ => new());
+        lock (state)
+        {
+            if (!File.Exists(transcript)) return (state.Edited, state.Posted);
+            using var f = new FileStream(transcript, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            if (f.Length < state.Offset) (state.Offset, state.Edited, state.Posted) = (0, false, false);
+            f.Seek(state.Offset, SeekOrigin.Begin);
+            var bytes = new byte[f.Length - state.Offset];
+            var n = 0;
+            while (n < bytes.Length && f.Read(bytes, n, bytes.Length - n) is > 0 and var got) n += got;
+            var end = Array.LastIndexOf(bytes, (byte)'\n', n - 1 < 0 ? 0 : n - 1);
+            if (n == 0 || end < 0) return (state.Edited, state.Posted);
+            foreach (var name in ToolNames(System.Text.Encoding.UTF8.GetString(bytes, 0, end + 1).Split('\n')))
+            {
+                state.Edited |= EditTools.Contains(name);
+                state.Posted |= name.StartsWith("mcp__agentdesk__") && BoardWrites.Contains(name.Split("__")[^1]);
+            }
+            state.Offset += end + 1;
+            return (state.Edited, state.Posted);
+        }
+    }
+
+    static IEnumerable<string> ToolNames(IEnumerable<string> lines)
+    {
+        foreach (var line in lines.Where(l => l.Contains("\"tool_use\"")))
         {
             JsonArray? parts = null;
             try { parts = JsonNode.Parse(line)?["message"]?["content"] as JsonArray; } catch (JsonException) { }
