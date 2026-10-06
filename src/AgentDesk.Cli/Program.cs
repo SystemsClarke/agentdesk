@@ -123,6 +123,5 @@ static string? Opt(string[] opts, string flag) => Array.IndexOf(opts, flag) is v
 namespace AgentDesk.Cli
 {
     [System.Text.Json.Serialization.JsonSerializable(typeof(int))]
-    [System.Text.Json.Serialization.JsonSerializable(typeof(IDictionary<string, JsonElement>))]
     sealed partial class CliJson : System.Text.Json.Serialization.JsonSerializerContext;
 }

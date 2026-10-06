@@ -8,6 +8,7 @@ using AgentDesk.Core.Host;
 namespace AgentDesk.Tests;
 
 /// <summary>The requests AgentDesk's window sends (docs/ui-api.md).</summary>
+[Collection("window")] // these set AGENTDESK_PIPE for the whole process: one class at a time, like the window tests
 public sealed class UiTests : IDisposable
 {
     readonly string path = Path.Combine(Path.GetTempPath(), $"ui-{Guid.NewGuid():N}.db");
