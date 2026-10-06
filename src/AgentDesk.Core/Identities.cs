@@ -367,6 +367,41 @@ public sealed partial class Identities
 
     /// <summary>Records the generation in phoenix_chain, ends the session, and launches its successor in the same slot:
     /// a new conversation whose first prompt is the handoff. At most one per identity per <see cref="Cooldown"/>.</summary>
+    /// <summary>Where an identity keeps its state file: its working memory across generations (docs/phoenix.md). One per identity, in the
+    /// core's data folder, and the session is given the folder (--add-dir) so it may edit it without asking.</summary>
+    public static string StatePath(string data, string name) =>
+        Path.Combine(data, "state", string.Concat(name.Select(c => Path.GetInvalidFileNameChars().Contains(c) || c == ' ' ? '_' : c)) + ".md");
+
+    /// <summary>settings.json's phoenix_state_file: on unless it is false.</summary>
+    bool StateFileOn() => AgentBoard.Load(Path.Combine(data, "settings.json"))?["phoenix_state_file"]?.ToString().Equals("false", StringComparison.OrdinalIgnoreCase) != true;
+
+    const int StateFileLimit = 12_000; // the successor is started with this on its command line, which Windows limits to 32,767 characters in all (charter and handoff included)
+
+    const string StateCharter = """
+        Your state file is {0}. It is your working memory across generations, and the one thing that survives you whole: a handoff written
+        in a hurry loses things, and this does not have to. Keep it current by EDITING it in place (rewrite a line, delete what stopped being
+        true; never just append a log), kept short and structured: DECISIONS (each with why), OPEN (what is mid-flight and its next step),
+        TRIED and UNTRIED (ideas, with what happened), KEY FACTS to keep verbatim (ids, paths, exact commands and strings, numbers), and WHO
+        owns what. Update it after each decision and before pass_the_torch. Your successor is given it verbatim along with your handoff.
+        """;
+
+    /// <summary>The state file as the last generation left it, to put in front of the next (null when there is none or it is off), cut at
+    /// <see cref="StateFileLimit"/> characters with a note, so one runaway file cannot fill the successor's context.</summary>
+    string? StateForSuccessor(string name)
+    {
+        if (!StateFileOn()) return null;
+        var path = StatePath(data, name);
+        try
+        {
+            if (!File.Exists(path)) return null;
+            var text = File.ReadAllText(path).Trim();
+            if (text.Length == 0) return null;
+            if (text.Length > StateFileLimit) text = text[..StateFileLimit] + $"\n[... cut here: the file is {text.Length:N0} characters; read the rest at {path}]";
+            return $"Your state file ({path}), exactly as your previous generation left it. Trust it over the handoff where they differ, and keep it current:\n\n{text}";
+        }
+        catch (IOException e) { Log.Warn($"identity {name}: could not read its state file: {e.Message}"); return null; }
+    }
+
     async Task Phoenix(string sid)
     {
         string name, handoff;
@@ -401,7 +436,7 @@ public sealed partial class Identities
             // A replacement in the same pool slot, not a new session: never gated or counted twice, but launched at the governor's
             // tier when it steps down.
             var model = Role(db, name) is { Goal: not null } role ? Tier(Judge(db), row, role.Lead) : null;
-            try { Launch(db, row, model: model, prompt: $"You are {name}, generation {gen + 1}. Your previous generation handed off with:\n\n{handoff}" + (Context?.Invoke(name) is { } more ? "\n\n" + more : "")); }
+            try { Launch(db, row, model: model, prompt: $"You are {name}, generation {gen + 1}. Your previous generation handed off with:\n\n{handoff}" + (StateForSuccessor(name) is { } state ? "\n\n" + state : "") + (Context?.Invoke(name) is { } more ? "\n\n" + more : "")); }
             catch (ArgumentException e) { Log.Warn($"identity {name} did not restart: {e.Message}"); Mark(db, name, "stopped"); Drain(db); return; }
             db.Reply((long)db.Scalar("SELECT thread_id FROM messages WHERE id=$m", ("m", msg))!, name, BoardDb.Agent,
                 $"generation {gen + 1} started from handoff #{msg}", msg, new JsonObject { ["kind"] = "phoenix" });
@@ -614,11 +649,13 @@ public sealed partial class Identities
         var id = row["claude_session_id"]?.ToString();
         var resume = id is not null && (wsl || Transcript(id) is not null); // claude writes no transcript until the first message
         id ??= Guid.NewGuid().ToString();
-        var charter = string.Format(Chain, name) + (row["charter"]?.ToString() is { Length: > 0 } own ? "\n\n" + own : "");
+        var stateOn = !wsl && StateFileOn();
+        if (stateOn) Directory.CreateDirectory(Path.GetDirectoryName(StatePath(data, name))!);
+        var charter = string.Format(Chain, name) + (stateOn ? "\n" + string.Format(StateCharter, StatePath(data, name)) : "") + (row["charter"]?.ToString() is { Length: > 0 } own ? "\n\n" + own : "");
         model ??= row["model"]?.ToString(); // its tier (haiku|sonnet|opus), unless the governor stepped it down
         if (model is not null && !Governor.Models.Contains(model)) model = null;
         var tier = model is null ? "" : " --model " + model;
-        var args = (resume ? "--resume " : "--session-id ") + id + tier + " --append-system-prompt " + quote(charter) + (prompt is null ? "" : " " + quote(prompt));
+        var args = (resume ? "--resume " : "--session-id ") + id + tier + (stateOn ? " --add-dir " + quote(Path.GetDirectoryName(StatePath(data, name))!) : "") + " --append-system-prompt " + quote(charter) + (prompt is null ? "" : " " + quote(prompt));
         var env = new Dictionary<string, string?> { ["AGENTDESK_IDENTITY"] = name, ["AGENTDESK_AUTHOR"] = name };
         int pid;
         if (resume && !wsl) Host.StaleSessions.Stop(id, sessions.Pids()); // two processes on one conversation corrupt its transcript

@@ -71,8 +71,9 @@ public sealed class IdentitiesTests : IDisposable
         var row = Json(ids.Start("alpha"));
         Assert.Equal("running", row.GetProperty("state").GetString());
         var id = row.GetProperty("claude_session_id").GetString()!;
-        await Sees(s, "alpha", $"author=alpha --session-id {id} --model opus --append-system-prompt \"You are one generation of alpha, a long-lived AgentDesk agent.");
-        Assert.EndsWith("conversation intact.\n\nbe brief\"", Command(s));
+        await Sees(s, "alpha", $"author=alpha --session-id {id} --model opus --add-dir ");
+        Assert.Contains(" --append-system-prompt \"You are one generation of alpha, a long-lived AgentDesk agent.", Command(s));
+        Assert.EndsWith("\n\nbe brief\"", Command(s)); // the identity's own charter is last, after the state file paragraph
         var pid = row.GetProperty("pid").GetInt32();
         Assert.Contains("\"forgotten\"", await ids.Forget("alpha"));
         Assert.Empty(States(ids));
@@ -141,6 +142,67 @@ public sealed class IdentitiesTests : IDisposable
 
     JsonElement Row(Identities ids, string name) => Json(ids.List()).GetProperty("identities").EnumerateArray().Single(r => r.GetProperty("name").GetString() == name);
 
+    /// <summary>One handoff, with the state file as the last generation left it (or none): the first launch's and the successor's command lines.</summary>
+    async Task<(string First, string Successor)> HandOff(string name, string? stateFile, string? settings = null)
+    {
+        if (settings is not null) File.WriteAllText(Path.Combine(dir, "settings.json"), settings);
+        var (s, ids) = Core();
+        var board = new AgentBoard(store, null!, "wait {0}");
+        await ids.Create(name, dir, null, null);
+        var sid = Json(ids.Start(name)).GetProperty("claude_session_id").GetString()!;
+        var first = Command(s);
+        if (stateFile is not null)
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(Identities.StatePath(dir, name))!);
+            File.WriteAllText(Identities.StatePath(dir, name), stateFile);
+        }
+        var me = new Caller(sid, name, dir, "claude-code", 1, name);
+        await ids.Torch(me, board.PassTheTorch(me, "Owns the parser.", null));
+        await ids.AfterTurn(Hook(sid), Task.FromResult(""));
+        for (var sw = Stopwatch.StartNew(); Row(ids, name).GetProperty("generation").GetInt32() != 2 || Row(ids, name).GetProperty("pid").ValueKind == JsonValueKind.Null; await Task.Delay(50))
+            Assert.True(sw.Elapsed < TimeSpan.FromSeconds(15), "never restarted");
+        return (first, Command(s));
+    }
+
+    [Fact]
+    public async Task The_state_file_is_in_the_charter_and_the_successor_is_given_it_verbatim()
+    {
+        var (firstLaunch, successor) = await HandOff("keeper", "DECISIONS\n- use the queue, because the lock was held for 30 s\nKEY FACTS\n- the id is 11111111-2222-3333-4444-555555555555");
+        var path = Identities.StatePath(dir, "keeper");
+        Assert.Contains($"Your state file is {path}", firstLaunch); // told where it is, from the first generation on
+        Assert.Contains(" --add-dir ", firstLaunch);
+        Assert.Contains("exactly as your previous generation left it", successor);
+        Assert.Contains("use the queue, because the lock was held for 30 s", successor); // verbatim, not paraphrased
+        Assert.Contains("11111111-2222-3333-4444-555555555555", successor);
+        Assert.Contains("Owns the parser.", successor); // the handoff is still there
+    }
+
+    [Fact]
+    public async Task A_successor_without_a_state_file_gets_just_the_handoff()
+    {
+        var (_, none) = await HandOff("bare", null);
+        Assert.DoesNotContain("exactly as your previous generation left it", none);
+        Assert.Contains("Owns the parser.", none);
+    }
+
+    [Fact]
+    public async Task A_huge_state_file_is_cut_so_the_successor_still_starts()
+    {
+        var (_, huge) = await HandOff("big", new string('x', 40_000) + "TAIL-MARKER");
+        Assert.Contains("cut here", huge);
+        Assert.DoesNotContain("TAIL-MARKER", huge);
+        Assert.True(huge.Length < 20_000, $"the successor's prompt is {huge.Length:N0} characters");
+    }
+
+    [Fact]
+    public async Task Switched_off_in_settings_there_is_no_state_file_text_and_no_added_folder()
+    {
+        var (first, successor) = await HandOff("quiet", "DECISIONS\n- secret", """{"max_sessions": 2, "phoenix_state_file": false}""");
+        Assert.DoesNotContain("Your state file", first + successor);
+        Assert.DoesNotContain("--add-dir", first + successor);
+        Assert.DoesNotContain("secret", successor);
+    }
+
     [Fact]
     public async Task A_handoff_restarts_the_identity_from_it_once_the_turn_ends()
     {
@@ -161,7 +223,8 @@ public sealed class IdentitiesTests : IDisposable
         var next = row.GetProperty("claude_session_id").GetString()!;
         Assert.NotEqual(sid, next);
         Assert.Equal("running", row.GetProperty("state").GetString());
-        Assert.StartsWith($"{Claude} --session-id {next} --model sonnet --append-system-prompt ", Command(s));
+        Assert.StartsWith($"{Claude} --session-id {next} --model sonnet --add-dir ", Command(s)); // the state folder, so the session may edit its state file
+        Assert.Contains(" --append-system-prompt ", Command(s));
         Assert.EndsWith("\"You are phx, generation 2. Your previous generation handed off with:\n\nOwns the parser. Next: its tests.\"", Command(s));
         lock (events) Assert.Contains(events, e => e.Contains("session.restarted"));
         using (var db = store.Open())
