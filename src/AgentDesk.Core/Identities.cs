@@ -619,6 +619,7 @@ public sealed partial class Identities
     /// (what enforcement would have done while advisory), and the identities it holds queued.</summary>
     public Task<string> GovernorUi()
     {
+        Usage.Looked();
         JsonObject extra;
         lock (gate)
             extra = new JsonObject
@@ -628,6 +629,17 @@ public sealed partial class Identities
                 ["pool"] = Counts(),
             };
         return Governor.Ui(store, data, UsageFailing(), extra);
+    }
+
+    /// <summary>A goal's lead or member is waiting in the queue: the governor needs a real /usage reading to let it start.</summary>
+    public bool SwarmQueued()
+    {
+        using var db = store.Open();
+        return Convert.ToInt32(db.Scalar("""
+            SELECT COUNT(*) FROM identities i LEFT JOIN goal_members m ON m.identity = i.name
+              LEFT JOIN goals g ON m.identity IS NULL AND g.lead = i.name COLLATE NOCASE
+            WHERE i.state = 'queued' AND COALESCE(m.goal, g.name) IS NOT NULL
+            """), CultureInfo.InvariantCulture) > 0;
     }
 
     /// <summary>ui:governor_enforce: John turns enforcement on or off (settings.json's governor_enforce).</summary>

@@ -278,6 +278,9 @@ public static class Governor
 
     }
 
+    /// <summary>settings.json's governor_enforce, read now.</summary>
+    public static bool Enforcing(string data) => GovernorSettings.From(AgentBoard.Load(Path.Combine(data, "settings.json"))).Enforce;
+
     public static Verdict Judge(BoardDb db, string data, DateTimeOffset now, bool usageFailing)
     {
         var s = GovernorSettings.From(AgentBoard.Load(Path.Combine(data, "settings.json")));

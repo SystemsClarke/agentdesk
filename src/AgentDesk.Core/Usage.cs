@@ -68,15 +68,27 @@ public static partial class Usage
         .SelectMany(d => new[] { Path.Combine(d, "claude.exe"), Path.Combine(d, "claude.cmd") })
         .Append(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".local", "bin", "claude.exe")).FirstOrDefault(File.Exists);
 
-    /// <summary>Every 5 minutes, window or not, because the governor samples every reading (<paramref name="sampled"/>);
-    /// a subscribed window is told when it lands.</summary>
-    public static async Task KeepFresh(string file, BoardWatch watch, Action? sampled = null)
+    public static long LookedTicks;
+
+    /// <summary>The governor screen asked for a document: the probe is worth its 10 seconds for the next while.</summary>
+    public static void Looked() => Interlocked.Exchange(ref LookedTicks, DateTime.UtcNow.Ticks);
+
+    /// <summary>Whether the 5-minute probe should run: the governor enforces, a goal's lead or member waits in the queue (it
+    /// must fail closed on a real reading), or someone looked at the governor screen in the last 10 minutes. Otherwise nobody
+    /// reads the number and every probe spawns a claude process for nothing.</summary>
+    public static bool Wanted(bool enforcing, bool swarmQueued, DateTime now, long lookedAtTicks) =>
+        enforcing || swarmQueued || (lookedAtTicks != 0 && now - new DateTime(lookedAtTicks, DateTimeKind.Utc) < TimeSpan.FromMinutes(10));
+
+    /// <summary>Every 5 minutes while <paramref name="wanted"/> (see <see cref="Wanted"/>), window or not, because the governor
+    /// samples every reading (<paramref name="sampled"/>); a subscribed window is told when it lands.</summary>
+    public static async Task KeepFresh(string file, BoardWatch watch, Action? sampled = null, Func<bool>? wanted = null)
     {
         var last = DateTime.MinValue;
         while (true)
         {
             await Task.Delay(TimeSpan.FromSeconds(5));
             if (DateTime.UtcNow - last < TimeSpan.FromMinutes(5)) continue;
+            if (wanted is not null && !wanted()) continue;
             last = DateTime.UtcNow;
             try
             {
