@@ -92,6 +92,19 @@ public sealed partial class Supervisor : IDisposable
         return command.IndexOf(' ') is var s and > 0 ? (command[..s], command[(s + 1)..].Trim()) : (command, "");
     }
 
+    /// <summary>The core's job: every session's process goes into it as well as the Slack bridge, so none outlives the core (a core that was
+    /// killed, or restarted for an update, used to leave its sessions running for the next core to resume a second time).</summary>
+    internal static nint CoreJob => Job.Value;
+
+    /// <summary>True when <paramref name="pid"/> is in the core's job (so it ends when the core does).</summary>
+    public static bool IsInCoreJob(int pid)
+    {
+        var h = OpenProcess(0x1000 /* PROCESS_QUERY_LIMITED_INFORMATION */, 0, pid);
+        if (h == 0) return false;
+        try { return IsProcessInJob(h, Job.Value, out var inJob) != 0 && inJob != 0; }
+        finally { CloseHandle(h); }
+    }
+
     /// <summary>One job for the core's lifetime, never closed: Windows closes it when the core exits and kills what is in it.</summary>
     static readonly Lazy<nint> Job = new(() =>
     {
@@ -118,6 +131,9 @@ public sealed partial class Supervisor : IDisposable
     [LibraryImport("kernel32.dll", SetLastError = true)] private static partial nint CreateJobObjectW(nint sa, nint name);
     [LibraryImport("kernel32.dll", SetLastError = true)] private static partial int SetInformationJobObject(nint job, int cls, ref JOBOBJECT_EXTENDED_LIMIT_INFORMATION info, uint len);
     [LibraryImport("kernel32.dll", SetLastError = true)] private static partial int AssignProcessToJobObject(nint job, nint process);
+    [LibraryImport("kernel32.dll", SetLastError = true)] private static partial int IsProcessInJob(nint process, nint job, out int result);
+    [LibraryImport("kernel32.dll", SetLastError = true)] private static partial nint OpenProcess(uint access, int inherit, int pid);
+    [LibraryImport("kernel32.dll")] private static partial int CloseHandle(nint h);
 }
 
 /// <summary>
