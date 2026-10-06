@@ -279,13 +279,38 @@ public static class Governor
     public static Verdict Judge(BoardDb db, string data, DateTimeOffset now, bool usageFailing)
     {
         var s = GovernorSettings.From(AgentBoard.Load(Path.Combine(data, "settings.json")));
-        var samples = Load(db, now.AddDays(-35));
-        if (samples.Count == 0) return new(s, null, false, "no usage samples yet: no new swarm sessions (fail closed)");
-        var a = Advise(Train(samples, s), samples[^1], Running(db), now, s);
+        if (Trained(db, s, now) is not { } trained) return new(s, null, false, "no usage samples yet: no new swarm sessions (fail closed)");
+        var (samples, model) = trained;
+        var a = Advise(model, samples[^1], Running(db), now, s);
         var age = (now - samples[^1].Ts).TotalMinutes;
         return usageFailing ? new(s, a, false, "/usage is failing: no new swarm sessions (fail closed)")
             : age > StaleMinutes ? new(s, a, false, $"the latest usage sample is {age:0} minutes old: no new swarm sessions (fail closed)")
             : new(s, a, true, a.Reason);
+    }
+
+    static readonly Lock TrainGate = new();
+    static (string Key, List<UsageSample> Samples, BurnModel Model)? lastTrained;
+
+    /// <summary>The last five weeks of samples and the burn model trained on them. Training (the EWMAs and the learned model) took about 100 ms
+    /// and ran for every verdict: every ui:status, every launch decision, every tick. The model depends only on the samples and the settings, so
+    /// it is kept until a sample is added, the settings change or the hour turns (the window is five weeks back from the hour); what changes
+    /// call to call (now, the sessions running) goes into <see cref="Advise"/>, which is cheap. Null when there are no samples.
+    /// The samples are never changed after they are loaded: callers only read them.</summary>
+    static (List<UsageSample> Samples, BurnModel Model)? Trained(BoardDb db, GovernorSettings s, DateTimeOffset now)
+    {
+        var hour = now.ToUnixTimeSeconds() / 3600;
+        var since = DateTimeOffset.FromUnixTimeSeconds(hour * 3600).AddDays(-35);
+        var sig = db.Rows("SELECT COUNT(*) AS n, MAX(id) AS mx, MAX(ts) AS t, SUM(weekly_pct) AS w FROM usage_samples WHERE ts >= $since", ("since", Iso(since)))[0];
+        if (sig["n"]!.GetValue<long>() == 0) return null;
+        var key = string.Join('|', sig["n"], sig["mx"], sig["t"], sig["w"], hour, s);
+        lock (TrainGate)
+        {
+            if (lastTrained is { } c && c.Key == key) return (c.Samples, c.Model);
+            var samples = Load(db, since);
+            var model = Train(samples, s);
+            lastTrained = (key, samples, model);
+            return (samples, model);
+        }
     }
 
     /// <summary>ui:governor_enforce: settings.json's governor_enforce, keeping every other key.</summary>
@@ -313,10 +338,9 @@ public static class Governor
 
     static JsonObject Build(BoardDb db, GovernorSettings s, DateTimeOffset now)
     {
-        var samples = Load(db, now.AddDays(-35));
-        if (samples.Count == 0)
+        if (Trained(db, s, now) is not { } trained)
             return new() { ["samples"] = 0, ["reason"] = "no usage samples yet", ["summary"] = "governor: no usage samples yet" };
-        var m = Train(samples, s);
+        var (samples, m) = trained;
         var a = Advise(m, samples[^1], Running(db), now, s);
         static double R(double v) => Math.Round(v, 2);
         var path = PlanPath(m, samples[^1], now, s);
