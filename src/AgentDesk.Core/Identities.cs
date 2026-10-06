@@ -405,6 +405,23 @@ public sealed partial class Identities
         catch (IOException e) { Log.Warn($"identity {name}: could not read its state file: {e.Message}"); return null; }
     }
 
+    string SuccessorPrompt(string name, long generation, string handoff) =>
+        $"You are {name}, generation {generation}. Your previous generation handed off with:\n\n{handoff}" + (StateForSuccessor(name) is { } state ? "\n\n" + state : "") + (Context?.Invoke(name) is { } more ? "\n\n" + more : "");
+
+    /// <summary>The prompt for a successor whose launch never happened: Phoenix had recorded the handoff and cleared the old session id, then the
+    /// core went down before the replacement started. Such an identity has no conversation, its generation is one past its latest chain row, and
+    /// that row names the handoff. Null when it is not in that gap.</summary>
+    public string? PendingSuccessorPrompt(BoardDb db, JsonObject row)
+    {
+        if (row["claude_session_id"] is not null) return null;
+        var name = row["name"]!.ToString()!;
+        var generation = (long)row["generation"]!;
+        if (db.Rows("SELECT generation, handoff_msg FROM phoenix_chain WHERE identity=$n ORDER BY generation DESC LIMIT 1", ("n", name)) is not [var last]
+            || last["handoff_msg"] is null || generation != (long)last["generation"]! + 1) return null;
+        if (db.Scalar("SELECT body FROM messages WHERE id=$m", ("m", (long)last["handoff_msg"]!)) is not string body) return null;
+        return SuccessorPrompt(name, generation, body[(body.IndexOf("\n\n") + 2)..]); // after pass_the_torch's "Handoff recorded" line
+    }
+
     async Task Phoenix(string sid)
     {
         string name, handoff;
@@ -439,7 +456,7 @@ public sealed partial class Identities
             // A replacement in the same pool slot, not a new session: never gated or counted twice, but launched at the governor's
             // tier when it steps down.
             var model = Role(db, name) is { Goal: not null } role ? Tier(Judge(db), row, role.Lead) : null;
-            try { Launch(db, row, model: model, prompt: $"You are {name}, generation {gen + 1}. Your previous generation handed off with:\n\n{handoff}" + (StateForSuccessor(name) is { } state ? "\n\n" + state : "") + (Context?.Invoke(name) is { } more ? "\n\n" + more : "")); }
+            try { Launch(db, row, model: model, prompt: SuccessorPrompt(name, gen + 1, handoff)); }
             catch (ArgumentException e) { Log.Warn($"identity {name} did not restart: {e.Message}"); Mark(db, name, "stopped"); Drain(db); return; }
             db.Reply((long)db.Scalar("SELECT thread_id FROM messages WHERE id=$m", ("m", msg))!, name, BoardDb.Agent,
                 $"generation {gen + 1} started from handoff #{msg}", msg, new JsonObject { ["kind"] = "phoenix" });
@@ -645,6 +662,7 @@ public sealed partial class Identities
     void Launch(BoardDb db, JsonObject row, string? prompt = null, string? model = null)
     {
         if (prompt is null && prompts.Remove(row["name"]!.ToString(), out var queued)) prompt = queued;
+        prompt ??= PendingSuccessorPrompt(db, row); // a Phoenix the core did not live to finish
         urgent.Remove(row["name"]!.ToString()!);
         var (name, folder, host) = (row["name"]!.ToString(), row["folder"]!.ToString(), row["host"]!.ToString());
         var wsl = host.StartsWith("wsl:");
