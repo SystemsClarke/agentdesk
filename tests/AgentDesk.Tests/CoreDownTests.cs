@@ -31,6 +31,7 @@ sealed class FaultyBoard : IBoard
     public async Task<BoardStatus> StatusAsync() => Status() is { } e ? throw e : await inner.StatusAsync();
     public Task<IReadOnlyList<Identity>> IdentitiesAsync() => inner.IdentitiesAsync();
     public Task<IReadOnlyList<Adoptable>> AdoptableAsync() => inner.AdoptableAsync();
+    public Task<IReadOnlyList<JobRow>> JobsAsync() => inner.JobsAsync();
     public Task<IReadOnlyList<Slot>> SlotsAsync() => inner.SlotsAsync();
     public Task<GoalDetail?> GoalAsync(string name) => inner.GoalAsync(name);
     public Task<string?> WebUrlAsync() => inner.WebUrlAsync();

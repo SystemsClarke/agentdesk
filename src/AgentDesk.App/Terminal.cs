@@ -53,6 +53,7 @@ public partial class MainWindow
     BoardStatus? st;
     internal int cols = 96, lines = 30;
     IReadOnlyList<Identity> agents = [];
+    IReadOnlyList<JobRow> jobs = [];
     IReadOnlyList<Adoptable>? adoptables; // read on the Adopt screen only: it scans ~/.claude/projects
     string? webUrl, adoptNote;
     IReadOnlyList<Slot> slots = [];
@@ -251,11 +252,12 @@ public partial class MainWindow
         var goalName = screen == "goal" ? goal?.Name : null;
         var goalCall = goalName is null ? null : board.GoalAsync(goalName);
         var adoptCall = screen == "adopt" ? board.AdoptableAsync() : null;
+        var jobsCall = screen == "jobs" ? Optional(board.JobsAsync, jobs) : null;
         // Re-read the open thread before dropping the cache. Clearing it first made Reader() paint "no longer on the board"
         // for a frame (the flicker) and shrink the document, which snapped the scroll back to the top.
         var open = screen == "read" ? readTid : null;
         var currentCall = open is int tid ? board.ReadThreadAsync(tid) : null;
-        await Task.WhenAll([.. listed, openQsCall, stCall, agentsCall, webUrlCall, slotsCall, .. new Task?[] { goalCall, adoptCall, currentCall }.OfType<Task>()]);
+        await Task.WhenAll([.. listed, openQsCall, stCall, agentsCall, webUrlCall, slotsCall, .. new Task?[] { goalCall, adoptCall, jobsCall, currentCall }.OfType<Task>()]);
         for (var i = 0; i < Channels.Length; i++)
         {
             var (ch, all) = (Channels[i], await listed[i]);
@@ -267,6 +269,8 @@ public partial class MainWindow
             goal = (cur.Name, await goalCall ?? GoalDetailOf(cur.Name));
         if (adoptCall is not null)
             adoptables = await adoptCall;
+        if (jobsCall is not null)
+            jobs = await jobsCall;
         var current = currentCall is null ? null : await currentCall;
         threads.Clear();
         if (open is int id && current is not null)
@@ -316,7 +320,7 @@ public partial class MainWindow
     {
         var title = screen switch
         {
-            "main" => "Main menu", "list" => Titles[channel], "prs" => "Pull Requests", "sysop" => "SysOp console", "who" => "Who's on",
+            "main" => "Main menu", "list" => Titles[channel], "prs" => "Pull Requests", "jobs" => "Recurring jobs", "sysop" => "SysOp console", "who" => "Who's on",
             "options" => "Options", "compose" => $"New post in {Titles[channel]}", "agents" => "Agents", "adopt" => "Adopt a session",
             "goal" => $"Goal {goal?.Name}", "ask" => ask?.Title ?? "", _ => $"Reading #{readTid}",
         };
@@ -341,7 +345,7 @@ public partial class MainWindow
         var q = channel == "question";
         return screen switch
         {
-            "main" => [.. K("Q D W J", "message bases"), .. K("P", "PRs"), .. K("S", "SysOp"), .. K("B", "who's on"), .. K("A", "agents & goals"), .. K("O", "options"),
+            "main" => [.. K("Q D W J", "message bases"), .. K("P", "PRs"), .. K("S", "SysOp"), .. K("B", "who's on"), .. K("A", "agents & goals"), .. K("R", "recurring jobs"), .. K("O", "options"),
                 .. K("T", "theme"), .. K("G", "hang up")],
             "list" => [.. K("↑↓", "move"), .. K("↵", "read"), .. K("N", "new post"),
                 .. If(q, [.. K("H", showArchived ? "active" : "archived"), .. K("Ctrl+R", "wake agent")]), .. K("Esc", "main menu")],
@@ -351,6 +355,7 @@ public partial class MainWindow
             "prs" => [.. K("↑↓", "move"), .. K("↵ O", "open on GitHub"), .. K("C", "check now"), .. K("H", showSettled ? "open only" : "settled"), .. K("Esc", "menu")],
             "sysop" => [.. K("Ctrl+W", st?.ConciergeOn == true ? "stop the Concierge" : "start the Concierge"),
                 .. K("J", "job board"), .. If(HeldRow is not null, K("L", "read held item")), .. K("Esc", "menu")],
+            "jobs" => [.. K("↑↓", "move"), .. K("R", "run now"), .. K("E", "on/off"), .. K("N", "new job"), .. K("X", "delete"), .. K("Esc", "menu")],
             "who" => [.. K("↑↓", "pick a caller"), .. K("↵", "read bio"), .. K("P", "page them"), .. K("Esc", "menu")],
             "options" => [.. K("↑↓", "move"), .. K("↵", "change"), .. K("←→", "adjust"), .. K("C", "ops console"), .. K("Esc", "menu")],
             "compose" => [.. K("↵", "subject → body"), .. K("Ctrl+↵", "post"), .. K("Ctrl+D", "dictate"), .. K("Esc", Subject.Text.Length + Reply.Text.Length > 0 ? "twice: discard" : "cancel")],
@@ -461,6 +466,7 @@ public partial class MainWindow
             ("P", "Pull Requests", prsOpen > 0 ? S($"{prsOpen} to merge", "gr") : S("nothing to merge", "mu")),
             ("W", "Wiki", S($"{rows["wiki"].Count} articles", "mu")),
             ("S", "SysOp console", sysop),
+            ("R", "Recurring jobs", S("scheduled prompts", "mu")),
             ("B", "Who's on", S($"{N(agents, "agent")} today", "pu")),
             ("O", "Options", S(Palettes[Theme].Label, "ye")),
             ("A", "Agents & goals", this.agents.Count == 0 && Goals.Count == 0 ? S("none signed up", "mu")
@@ -597,6 +603,80 @@ public partial class MainWindow
                 L.Add([S($" a notice goes to thread #{p.ThreadId} when it merges.", "fa")]);
         }
         return L;
+    }
+
+    /// <summary>"08:00 weekdays" or "every 120 min": when a job runs.</summary>
+    internal static string Schedule(JobRow j) => j.EveryMinutes is { } m ? $"every {m:0.#} min" : $"{j.At} {j.Days}";
+
+    List<Line> JobsScreen(int W)
+    {
+        var js = jobs;
+        var nameW = Math.Max(12, Math.Min(26, W - 70));
+        var L = Rows(Bar("RECURRING JOBS  ·  prompts the core runs on a schedule  ·  each run is a fresh session that retires when done"),
+            "  " + Fit("JOB", nameW) + Fit("SCHEDULE", 20) + Fit("MODEL", 8) + Fit("NEXT", 12) + Fit("LAST", 12) + "RUNS", js.Count, i =>
+            {
+                var j = js[i];
+                return [S("  "), S(Fit(j.Name, nameW), j.Enabled ? "cy" : "fa"), S(Fit(Schedule(j), 20), j.Enabled ? "fg" : "fa"), S(Fit(j.Model, 8), "mu"),
+                    S(Fit(j.Enabled ? When(j.NextRun) : "off", 12), j.Enabled ? "gr" : "or"), S(Fit(When(j.LastRun) is { Length: > 0 } w ? w : "never", 12), "mu"), S(j.Runs.ToString(), "mu")];
+            },
+            [S("   No recurring jobs. ", "mu"), S("N", "ye"), S(" makes one.", "mu")], 12);
+        if (js.Count > 0 && js[Sel] is var s)
+        {
+            L.AddRange([[], [S(" " + s.Name, "fg b"), S("  in " + s.Folder, "mu")], [S(" prompt: ", "mu"), S(s.Prompt)]]);
+            if (s.LastStatus != null)
+                L.Add([S(" last: ", "mu"), S(s.LastStatus, s.LastStatus.StartsWith("failed") || s.LastStatus.StartsWith("missed") ? "pk" : "fg")]);
+        }
+        return L;
+    }
+
+    internal void NewJob() => AskFor(new("New job", "NEW RECURRING JOB  ·  a prompt the core runs on a schedule, as a fresh session each time", "jobs",
+        [("name", "What to call it: letters, digits, - _ . only. Each run is an identity of this name.", false),
+         ("folder", "The folder each run works in, e.g. C:\\Users\\you\\src\\repo.", false),
+         ("prompt", "What each run is told to do, in one line.", false),
+         ("when", "08:00 (daily), 08:00 weekdays, 09:30 mon,thu, or every 120 (minutes).", false),
+         ("model", "haiku, sonnet or opus. Enter for sonnet.", true)],
+        async a =>
+        {
+            var w = a[3].Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            if (w is ["every", var mins] && double.TryParse(mins, System.Globalization.CultureInfo.InvariantCulture, out var every))
+                await board.ActAsync("ui:job_create", new { name = a[0], folder = a[1], prompt = a[2], every_minutes = every, model = a[4].Length > 0 ? a[4] : null });
+            else if (w.Length is 1 or 2)
+                await board.ActAsync("ui:job_create", new { name = a[0], folder = a[1], prompt = a[2], at = w[0], days = w.Length > 1 ? w[1] : null, model = a[4].Length > 0 ? a[4] : null });
+            else
+                throw new InvalidOperationException("when is 08:00, 08:00 weekdays, or every 120.");
+            await RefreshAsync();
+            Flash($"{a[0]} is scheduled.", "gr");
+        }));
+
+    async void JobAct(string request, string name, string done, object? args = null)
+    {
+        try
+        {
+            await board.ActAsync(request, args ?? new { name });
+            await RefreshAsync();
+            Flash(done, "gr");
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            Flash("Not done: " + e.Message, "pk b");
+        }
+    }
+
+    /// <summary>R, E, X and N on Recurring jobs. Run now and delete ask first; on/off flips at once.</summary>
+    void JobKey(char ch)
+    {
+        if (ch == 'n') { NewJob(); return; }
+        if (jobs.Count == 0)
+            return;
+        var j = jobs[Math.Clamp(Sel, 0, jobs.Count - 1)];
+        if (ch == 'e')
+            JobAct("ui:job_enable", j.Name, j.Enabled ? $"{j.Name} is off." : $"{j.Name} is on, as scheduled.", new { name = j.Name, on = !j.Enabled });
+        else
+        {
+            confirm = ch == 'r' ? ($"Run {j.Name} now? It starts a session at once; the schedule is unchanged.", () => JobAct("ui:job_run", j.Name, $"{j.Name} started: see its last status."))
+                : ($"Delete {j.Name}? The schedule goes; any identity it made stays.", () => JobAct("ui:job_delete", j.Name, $"{j.Name} deleted."));
+            Render();
+        }
     }
 
     List<Line> SysopScreen(int W)
@@ -1297,7 +1377,7 @@ public partial class MainWindow
 
     int ItemCount() => screen switch
     {
-        "list" => rows[channel].Count, "prs" => Prs.Count, "who" => Callers.Count, "options" => OptionItems().Count, "agents" => Entries.Count,
+        "list" => rows[channel].Count, "prs" => Prs.Count, "jobs" => jobs.Count, "who" => Callers.Count, "options" => OptionItems().Count, "agents" => Entries.Count,
         "adopt" => adoptables?.Count ?? 0, _ => 0,
     };
 
@@ -1700,6 +1780,8 @@ public partial class MainWindow
             else if (ch == 'o' && (st?.Prs ?? []).FirstOrDefault(p => p.ThreadId == readTid) is { } pr)
                 Process.Start(new ProcessStartInfo(pr.Url) { UseShellExecute = true });
         }
+        else if (s == "jobs" && ch is 'r' or 'e' or 'x' or 'n')
+            JobKey(ch);
         else if (ChannelKeys.TryGetValue(ch, out var channelName))
             Goto("list", channelName);
         else if (s == "list" && ch == 'n')
@@ -1749,8 +1831,12 @@ public partial class MainWindow
             }))();
         else if (ch == 'a')
             Goto("agents");
-        else if (ch is 'p' or 's' or 'b' or 'o' or 'm')
-            Goto(ch switch { 'p' => "prs", 's' => "sysop", 'b' => "who", 'o' => "options", _ => "main" });
+        else if (ch is 'p' or 's' or 'b' or 'o' or 'm' or 'r')
+        {
+            Goto(ch switch { 'p' => "prs", 's' => "sysop", 'b' => "who", 'o' => "options", 'r' => "jobs", _ => "main" });
+            if (ch == 'r')
+                _ = RefreshQuietly();
+        }
         else if (ch == 't')
             SetTheme(ThemeOrder[(Array.IndexOf(ThemeOrder, Theme) + 1) % ThemeOrder.Length]);
         else if (ch == 'g' && s == "main") // elsewhere it is a stray letter, and a hang-up is not what a stray letter should do

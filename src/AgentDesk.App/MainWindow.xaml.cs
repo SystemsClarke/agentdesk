@@ -131,7 +131,7 @@ public partial class MainWindow : Window
             Doc.PageWidth = width;
         var body = screen switch
         {
-            "main" => MainScreen(cols), "list" => ChannelList(cols), "prs" => PrsScreen(cols), "sysop" => SysopScreen(cols),
+            "main" => MainScreen(cols), "list" => ChannelList(cols), "prs" => PrsScreen(cols), "jobs" => JobsScreen(cols), "sysop" => SysopScreen(cols),
             "who" => WhoScreen(cols), "options" => OptionsScreen(cols), "compose" => Compose(cols), "agents" => AgentsScreen(cols),
             "adopt" => AdoptScreen(cols), "ask" => AskScreen(cols), "goal" => GoalScreen(cols), _ => Reader(cols),
         };

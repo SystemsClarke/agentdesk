@@ -82,6 +82,8 @@ Several agents often work on this repo at once, next to John's live install. The
 A recurring job is a prompt the core runs itself on a schedule, so a chore no longer waits for someone to type "go". Each run is a
 fresh session of an identity named after the job; it does the work and calls `retire`. The core does not know what a job does.
 
+In the window, press `R` on the main menu for the Recurring jobs screen: `R` runs the job now, `E` turns it on or off, `X` deletes it, `N` makes a new one. The same from the command line:
+
 ```
 agentdesk job new gocd-morning-brief C:\path	o\work --at 08:00 --days weekdays --model sonnet --prompt "Read SKILL.md and follow it"
 agentdesk job new patrol C:\path --every 120 --prompt "..."       # or every N minutes
