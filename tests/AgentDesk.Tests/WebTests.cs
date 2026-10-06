@@ -4,7 +4,6 @@ using System.Text.Json;
 using AgentDesk.Contracts;
 using AgentDesk.Core;
 using AgentDesk.Core.Host;
-using Microsoft.AspNetCore.Builder;
 
 namespace AgentDesk.Tests;
 
@@ -14,7 +13,7 @@ public sealed class WebTests : IAsyncLifetime
     const string Key = "k3y-for-tests-only_0123456789abcdefghijklmn";
     readonly List<string> calls = [];
     readonly HttpClient http = new(new HttpClientHandler { UseCookies = false, AllowAutoRedirect = false });
-    WebApplication app = null!;
+    Web.WebServer app = null!;
     string root = "";
 
     public async Task InitializeAsync()
@@ -24,11 +23,12 @@ public sealed class WebTests : IAsyncLifetime
             lock (calls) calls.Add($"{op} {args.GetRawText()}");
             return Task.FromResult(op == "identity_list" ? """{"identities": [{"name": "builder", "state": "running"}]}""" : Tools.Error($"unknown request: {op}"));
         });
-        await app.StartAsync();
-        root = app.Urls.First();
+        app.Start();
+        root = app.Url;
+        await Task.CompletedTask;
     }
 
-    public async Task DisposeAsync() { http.Dispose(); await app.DisposeAsync(); }
+    public Task DisposeAsync() { http.Dispose(); app.Dispose(); return Task.CompletedTask; }
 
     Task<HttpResponseMessage> Send(HttpMethod method, string path, string? cookie = null, string? host = null, string? body = null, string? origin = null)
     {
@@ -92,6 +92,43 @@ public sealed class WebTests : IAsyncLifetime
         Assert.Equal("builder", JsonDocument.Parse(await r.Content.ReadAsStringAsync()).RootElement.GetProperty("identities")[0].GetProperty("name").GetString());
         Assert.Equal(["identity_list {\"x\": 1}"], calls);
         Assert.Contains("\"error\"", await (await Send(HttpMethod.Post, "/api/identity_list", cookie: Key, body: "{not json")).Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task Unknown_paths_and_wrong_methods_are_refused_after_the_key_check_and_never_reach_the_core()
+    {
+        Assert.Equal(HttpStatusCode.NotFound, (await Send(HttpMethod.Get, "/nope", cookie: Key)).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await Send(HttpMethod.Post, "/api/", cookie: Key, body: "{}")).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await Send(HttpMethod.Post, "/api/a/b", cookie: Key, body: "{}")).StatusCode);
+        Assert.Equal(HttpStatusCode.MethodNotAllowed, (await Send(HttpMethod.Get, "/api/identity_list", cookie: Key)).StatusCode);
+        Assert.Equal(HttpStatusCode.MethodNotAllowed, (await Send(HttpMethod.Post, "/", cookie: Key, body: "{}")).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await Send(HttpMethod.Get, "/nope")).StatusCode); // the key comes first, so a stranger learns nothing about paths
+        Assert.Empty(calls);
+    }
+
+    /// <summary>A raw request, for what HttpClient will not send.</summary>
+    async Task<string> Raw(string text, int bodyBytes = 0)
+    {
+        using var tcp = new System.Net.Sockets.TcpClient();
+        await tcp.ConnectAsync(IPAddress.Loopback, new Uri(root).Port);
+        var stream = tcp.GetStream();
+        await stream.WriteAsync(Encoding.ASCII.GetBytes(text));
+        if (bodyBytes > 0) await stream.WriteAsync(new byte[bodyBytes]);
+        using var reader = new StreamReader(stream, Encoding.ASCII);
+        return (await reader.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(10))) ?? "";
+    }
+
+    [Fact]
+    public async Task Malformed_or_oversized_requests_get_a_400_and_a_chunked_body_is_refused()
+    {
+        const string N = "\r\n";
+        var host = $"Host: 127.0.0.1:{new Uri(root).Port}{N}Cookie: k={Key}{N}";
+        Assert.StartsWith("HTTP/1.1 400", await Raw($"GARBAGE{N}{N}"));
+        Assert.StartsWith("HTTP/1.1 400", await Raw($"GET / HTTP/1.1{N}{host}X-Pad: {new string('a', 20_000)}{N}{N}")); // headers past 16 KB
+        Assert.StartsWith("HTTP/1.1 400", await Raw($"POST /api/x HTTP/1.1{N}{host}Content-Length: 2000000{N}{N}")); // a body past 1 MB, refused before it is read
+        Assert.StartsWith("HTTP/1.1 400", await Raw($"POST /api/x HTTP/1.1{N}{host}Transfer-Encoding: chunked{N}{N}0{N}{N}"));
+        Assert.StartsWith("HTTP/1.1 200", await Raw($"GET / HTTP/1.1{N}{host}{N}")); // and a well-formed one still works
+        Assert.Empty(calls);
     }
 
     [Fact]
