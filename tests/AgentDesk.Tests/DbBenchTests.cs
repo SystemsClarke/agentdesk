@@ -36,6 +36,9 @@ public class DbBenchTests(ITestOutputHelper output)
         var input = JsonSerializer.SerializeToElement(new { session_id = sid });
         var hooks = new Hooks(store);
         Row("hook:context (Replies, per tool)", Time(60, () => hooks.Run("context", input).GetAwaiter().GetResult()));
+        var data = Path.GetDirectoryName(copy)!;
+        Row("Governor.Judge (a verdict)", Time(30, () => { using var db = store.Open(); Governor.Judge(db, data, DateTimeOffset.UtcNow, false); }));
+        Row("Governor.Report (ui:governor)", Time(15, () => { using var db = store.Open(); Governor.Report(db, data, DateTimeOffset.UtcNow); }));
         var n = 0;
         Row("post_message (one write)", Time(30, () => { using var db = store.Open(); db.StartThread("discussion", "bench " + n++, "bench", "agent", "x"); }));
     }

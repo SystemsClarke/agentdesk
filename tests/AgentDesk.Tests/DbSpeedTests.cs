@@ -1,3 +1,4 @@
+using AgentDesk.Core;
 using AgentDesk.Core.Board;
 using Xunit;
 
@@ -83,5 +84,31 @@ public sealed class DbSpeedTests : IDisposable
         Assert.Equal(1L, (long)db.Scalar("SELECT COUNT(*) FROM messages")!);
         db.Reply(id, "a", "agent", "fine"); // and the connection is usable: the failed transaction was rolled back, not left open
         Assert.Equal(2L, (long)db.Scalar("SELECT COUNT(*) FROM messages")!);
+    }
+
+    [Fact]
+    public void The_governors_trained_model_is_kept_between_verdicts_but_never_outlives_a_new_sample_or_a_settings_change()
+    {
+        var store = new BoardStore(Db);
+        store.Init();
+        var now = new DateTimeOffset(2026, 10, 4, 12, 0, 0, TimeSpan.Zero);
+        var reset = now.AddDays(5);
+        using var db = store.Open();
+        for (var i = 40; i >= 1; i--) Governor.Insert(db, new(now.AddMinutes(-5 * i), 10 + (40 - i) * 0.05, reset, 1, null, 2));
+        Governor.Insert(db, new(now, 12.0, reset, 1, null, 2));
+        var first = Governor.Judge(db, dir, now, false);
+        Assert.Equal(12.0, first.Advice!.Used);
+        Assert.Equal(first.Advice.Reason, Governor.Judge(db, dir, now, false).Advice!.Reason); // the second is the kept model, the same answer
+        Governor.Insert(db, new(now.AddMinutes(5), 30.0, reset, 1, null, 2)); // a new sample: the next verdict sees it
+        Assert.Equal(30.0, Governor.Judge(db, dir, now.AddMinutes(5), false).Advice!.Used);
+        Assert.False(Governor.Judge(db, dir, now.AddMinutes(5), false).Enforce);
+        File.WriteAllText(Path.Combine(dir, "settings.json"), "{\"governor_enforce\": true, \"governor_max_sessions\": 1}"); // a settings change: seen at once
+        var after = Governor.Judge(db, dir, now.AddMinutes(5), false);
+        Assert.True(after.Enforce);
+        Assert.True(after.Advice!.TotalSessions <= 1);
+        var emptyStore = new BoardStore(Path.Combine(dir, "empty.db"));
+        emptyStore.Init();
+        using var empty = emptyStore.Open();
+        Assert.Null(Governor.Judge(empty, dir, now, false).Advice); // no samples: still the fail-closed answer
     }
 }
