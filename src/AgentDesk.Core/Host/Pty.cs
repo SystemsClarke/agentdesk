@@ -56,6 +56,9 @@ public sealed unsafe partial class Pty : IDisposable
                     throw new ArgumentException($"could not start '{commandLine}' in {folder} (error {err})");
                 }
             CloseHandle(pi.hThread);
+            // Into the core's job, so the session ends when the core does instead of being resumed a second time by the next one.
+            if (AssignProcessToJobObject(Supervisor.CoreJob, pi.hProcess) == 0)
+                Log.Warn($"pid {pi.dwProcessId} is not in the core's job ({Marshal.GetLastPInvokeError()}); it may outlive the core");
             var wait = new ManualResetEvent(false) { SafeWaitHandle = new SafeWaitHandle(pi.hProcess, true) };
             var exited = new TaskCompletionSource();
             ThreadPool.RegisterWaitForSingleObject(wait, (_, _) => { exited.TrySetResult(); wait.Dispose(); }, null, -1, true);
@@ -116,4 +119,5 @@ public sealed unsafe partial class Pty : IDisposable
     private static partial int CreateProcessW(char* app, char* cmd, nint pa, nint ta, int inherit, uint flags, char* env, char* cwd,
                                               StartupInfoEx* si, ProcessInfo* pi);
     [LibraryImport("kernel32.dll")] private static partial int CloseHandle(nint h);
+    [LibraryImport("kernel32.dll", SetLastError = true)] private static partial int AssignProcessToJobObject(nint job, nint process);
 }

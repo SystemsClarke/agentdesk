@@ -66,6 +66,12 @@ public sealed class Sessions(int viewerQueue = 256)
         }
     }
 
+    /// <summary>The pids of the sessions this core hosts.</summary>
+    public IReadOnlySet<int> Pids()
+    {
+        lock (gate) return all.Values.Select(s => s.Pty.Pid).ToHashSet();
+    }
+
     public Task<string> List()
     {
         lock (gate)

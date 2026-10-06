@@ -621,6 +621,7 @@ public sealed partial class Identities
         var args = (resume ? "--resume " : "--session-id ") + id + tier + " --append-system-prompt " + quote(charter) + (prompt is null ? "" : " " + quote(prompt));
         var env = new Dictionary<string, string?> { ["AGENTDESK_IDENTITY"] = name, ["AGENTDESK_AUTHOR"] = name };
         int pid;
+        if (resume && !wsl) Host.StaleSessions.Stop(id, sessions.Pids()); // two processes on one conversation corrupt its transcript
         if (wsl)
         {
             env["WSLENV"] = string.Join(':', new[] { Environment.GetEnvironmentVariable("WSLENV"), "AGENTDESK_IDENTITY", "AGENTDESK_AUTHOR" }.Where(v => !string.IsNullOrEmpty(v)));
