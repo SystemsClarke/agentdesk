@@ -1023,6 +1023,33 @@ public partial class MainWindow
             _ = RefreshQuietly();
     }
 
+    void LoadDrafts()
+    {
+        if (DraftsFile is not { } file || !File.Exists(file))
+            return;
+        var (replies, compose) = DraftStore.Load(file);
+        foreach (var (id, text) in replies)
+            drafts[id] = text;
+        composeDraft = compose;
+        savedDrafts = DraftStore.Serialize(drafts, composeDraft);
+    }
+
+    /// <summary>Writes the drafts to <see cref="DraftsFile"/> when they changed: the ones set aside, and what is in the boxes now.</summary>
+    void SaveDrafts()
+    {
+        if (DraftsFile is not { } file)
+            return;
+        var replies = new Dictionary<int, string>(drafts);
+        if (screen == "read" && readTid is int tid && Reply.Text.Length > 0)
+            replies[tid] = Reply.Text;
+        var compose = screen == "compose" ? (Subject.Text.Length + Reply.Text.Length > 0 ? (Subject.Text, Reply.Text) : ((string, string)?)null) : composeDraft;
+        var text = DraftStore.Serialize(replies, compose);
+        if (text == savedDrafts)
+            return;
+        DraftStore.Save(file, text);
+        savedDrafts = text;
+    }
+
     /// <summary>The reply being typed belongs to the thread it was typed on, and an unsent new post to its screen: put each where
     /// it can come back, and empty the boxes they shared. Called before the screen or the thread changes.</summary>
     void SetDraftAside()

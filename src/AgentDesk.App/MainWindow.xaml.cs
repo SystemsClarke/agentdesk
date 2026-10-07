@@ -55,11 +55,16 @@ public partial class MainWindow : Window
 
     string Theme => Palettes.ContainsKey(Pref("theme", "")) ? Pref("theme", "") : "monokai-pro";
 
+    /// <summary>Where unsent drafts are kept (the app sets it; null, as in tests, keeps them in memory only).</summary>
+    internal static string? DraftsFile;
+    string savedDrafts = "";
+
     public MainWindow(IBoard board, int? openThread)
     {
         this.board = board;
         hide = Hide;
         InitializeComponent();
+        LoadDrafts();
         ApplyFont();
         ApplyTheme();
         flashTimer.Tick += (_, _) => { flashTimer.Stop(); flash = null; Render(); };
@@ -68,6 +73,10 @@ public partial class MainWindow : Window
         var beats = new DispatcherTimer { Interval = TimeSpan.FromSeconds(30) };
         beats.Tick += async (_, _) => await RefreshQuietly();
         beats.Start();
+        var draftSave = new DispatcherTimer { Interval = TimeSpan.FromSeconds(5) }; // what is being typed reaches the file within seconds, not at some later screen change
+        draftSave.Tick += (_, _) => SaveDrafts();
+        draftSave.Start();
+        Closed += (_, _) => SaveDrafts();
         // A busy board pushes several changes a second; fold each burst into one refresh so the screen doesn't flicker.
         var changed = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(750) };
         changed.Tick += async (_, _) => { changed.Stop(); await RefreshQuietly(pushed: true); };
