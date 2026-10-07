@@ -68,7 +68,10 @@ def _bio_ids(conn: sqlite3.Connection) -> dict[str, int]:
     return out
 
 
-def render_thread(conn: sqlite3.Connection, tid: int, bios: dict[str, int]) -> str | None:
+def render_thread(conn: sqlite3.Connection, tid: int, bios: dict[str, int],
+                  known: set[int] | None = None) -> str | None:
+    """`known` is every thread id that has a note: a mention of any other number
+    (an example in someone's text, a typo) stays plain text, not a broken link."""
     t = conn.execute("SELECT * FROM threads WHERE id = ?", (tid,)).fetchone()
     if t is None:
         return None
@@ -104,7 +107,7 @@ def render_thread(conn: sqlite3.Connection, tid: int, bios: dict[str, int]) -> s
         reply = f" (reply to #{m['reply_to']})" if m["reply_to"] else ""
         body = _THREAD_REF.sub(
             lambda x: f"{x.group(1)} {link(int(x.group(2)), x.group(2))}"
-            if int(x.group(2)) != tid else x.group(0),
+            if int(x.group(2)) != tid and (known is None or int(x.group(2)) in known) else x.group(0),
             m["body"].replace("\r\n", "\n"))
         body = body.replace("\n", "\n  ")
         local = datetime.fromisoformat(m["ts"])
@@ -125,18 +128,17 @@ def _write_if_changed(path: Path, text: str) -> bool:
 
 
 def write_threads(conn: sqlite3.Connection, touched: set[int]) -> int:
-    """Write the note for every thread in `touched`, and for any thread that has
-    none yet (the first run backfills the whole board). Returns how many files
-    changed on disk."""
+    """Write the note for every thread. `touched` is what had a message today;
+    kept for callers, but every thread is checked. Returns how many files changed."""
     d = thread_dir()
     d.mkdir(parents=True, exist_ok=True)
-    have = {int(p.stem.split("-")[1]) for p in d.glob("thread-*.md")
-            if p.stem.split("-")[1].isdigit()}
     every = {r[0] for r in conn.execute("SELECT id FROM threads")}
     bios = _bio_ids(conn)
     changed = 0
-    for tid in sorted((touched & every) | (every - have)):
-        text = render_thread(conn, tid, bios)
+    # Every thread, not only today's: rendering is cheap, a file is written only when its text changed, and it heals a note a later fix
+    # of the renderer (or a thread that appeared after a mention of it) would leave stale.
+    for tid in sorted(every):
+        text = render_thread(conn, tid, bios, every)
         if text is not None and _write_if_changed(d / f"{thread_name(tid)}.md", text):
             changed += 1
     return changed
