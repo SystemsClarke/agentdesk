@@ -76,6 +76,7 @@ def main() -> int:
           sorted([f"thread-{bio}.md", f"thread-{t}.md"]))
     check("frontmatter has the subject as an alias", f'aliases: ["Fix \\"quotes\\" in the parser"]' in text, True)
     check("author links to their bio thread", f"[[agentdesk/threads/thread-{bio}|builder]]" in text, True)
+    check("'thread 999' (no such thread) stays plain text", "thread 999" in text and "thread-999" not in text, True)
     check("'thread N' in a body is a link", f"thread [[agentdesk/threads/thread-{bio}|{bio}]]" in text, True)
     day = next(paths.VAULT_AGENTDESK.glob("20*.md")).read_text(encoding="utf-8")
     check("the day file links to the thread note", f"[[agentdesk/threads/thread-{t}|thread {t}]]" in day, True)
