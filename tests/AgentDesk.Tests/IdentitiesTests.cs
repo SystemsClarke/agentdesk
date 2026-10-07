@@ -206,6 +206,26 @@ public sealed class IdentitiesTests : IDisposable
     }
 
     [Fact]
+    public async Task A_core_that_went_down_between_the_handoff_and_the_restart_still_gives_the_successor_the_handoff()
+    {
+        var (s, ids) = Core();
+        var board = new AgentBoard(store, null!, "wait {0}");
+        await ids.Create("crashy", dir, null, null);
+        var sid = Json(ids.Start("crashy")).GetProperty("claude_session_id").GetString()!;
+        var me = new Caller(sid, "crashy", dir, "claude-code", 1, "crashy");
+        await ids.Torch(me, board.PassTheTorch(me, "Owns the lexer. Next: fuzz it.", null));
+        await s.Stop("crashy");
+        using (var db = store.Open()) // Phoenix's bookkeeping done, the launch not: the state the core leaves when it dies in between
+        {
+            var msg = (long)db.Scalar("SELECT phoenix_msg FROM identities WHERE name='crashy'")!;
+            db.Exec("INSERT INTO phoenix_chain (identity, generation, claude_session_id, handoff_msg, ts) VALUES ('crashy',1,$s,$m,$ts)", ("s", sid), ("m", msg), ("ts", db.NowIso()));
+            db.Exec("UPDATE identities SET state='stopped', pid=NULL, claude_session_id=NULL, generation=2, phoenix_msg=NULL WHERE name='crashy'");
+        }
+        await ids.Start("crashy");
+        Assert.EndsWith("\"You are crashy, generation 2. Your previous generation handed off with:\n\nOwns the lexer. Next: fuzz it.\"", Command(s));
+    }
+
+    [Fact]
     public async Task A_handoff_restarts_the_identity_from_it_once_the_turn_ends()
     {
         var (s, ids) = Core();
