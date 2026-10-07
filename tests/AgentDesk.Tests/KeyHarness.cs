@@ -32,6 +32,7 @@ sealed class RecordingBoard : IBoard
     public Task<BoardStatus> StatusAsync() { StatusCalls++; return inner.StatusAsync(); }
     public Task<IReadOnlyList<Identity>> IdentitiesAsync() { IdentityCalls++; return Identities?.Invoke() ?? inner.IdentitiesAsync(); }
     public Task<IReadOnlyList<Adoptable>> AdoptableAsync() => inner.AdoptableAsync();
+    public Task<IReadOnlyList<JobRow>> JobsAsync() => inner.JobsAsync();
     public Task<IReadOnlyList<Slot>> SlotsAsync() { SlotCalls++; return inner.SlotsAsync(); }
     public Task<GoalDetail?> GoalAsync(string name) => Goal?.Invoke(name) ?? inner.GoalAsync(name);
     public Task<GoalDetail?> SampleGoal(string name) => inner.GoalAsync(name);

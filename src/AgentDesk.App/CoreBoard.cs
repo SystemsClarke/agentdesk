@@ -190,6 +190,11 @@ public sealed class CoreBoard : IBoard, IDisposable
     static GoalRow ToGoal(JsonElement g) => new(Str(g, "name") ?? "", Str(g, "state") ?? "draft", Str(g, "objective") ?? "", Str(g, "lead") ?? "",
         Str(g, "success"), Int(g, "experiments"), Num(g, "last_value"), Int(g, "members"), Int(g, "max_members"), Int(g, "standing") != 0);
 
+    public async Task<IReadOnlyList<JobRow>> JobsAsync() =>
+        [.. Arr(await Call("ui:job_list"), "jobs").Select(j => new JobRow(Str(j, "name") ?? "", Str(j, "folder") ?? "", Str(j, "prompt") ?? "", Str(j, "model") ?? "sonnet",
+            Str(j, "at"), Str(j, "days") ?? "daily", Num(j, "every_minutes"), Int(j, "enabled") != 0,
+            Str(j, "next_run_ts") is null ? null : Ts(j, "next_run_ts"), Str(j, "last_run_ts") is null ? null : Ts(j, "last_run_ts"), Str(j, "last_status"), Int(j, "runs")))];
+
     public async Task<IReadOnlyList<Slot>> SlotsAsync() =>
         [.. Arr(await Call("ui:slot_list"), "slots").Select(s => new Slot(Int(s, "n"), Str(s, "goal")))];
 

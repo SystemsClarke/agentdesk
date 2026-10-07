@@ -24,6 +24,10 @@ public sealed record SwarmMember(string Identity, string Task, int? WorkId = nul
 /// <summary>A long-lived agent (ui:identity_list). State is running, queued or stopped; Generation counts Phoenix restarts from 1.</summary>
 public sealed record Identity(string Name, string State, int Generation, string Host, string Folder, string? Model = null);
 
+/// <summary>A recurring job (ui:job_list): At ("08:00", local) with Days, or EveryMinutes; NextRun is null while it is off.</summary>
+public sealed record JobRow(string Name, string Folder, string Prompt, string Model, string? At, string Days, double? EveryMinutes, bool Enabled,
+    DateTimeOffset? NextRun, DateTimeOffset? LastRun, string? LastStatus, int Runs);
+
 /// <summary>A Claude Code conversation from the last 24 h that someone typed in (ui:adoptable): it can become an identity.</summary>
 public sealed record Adoptable(string SessionId, string Folder, DateTimeOffset LastActivity, string FirstMessage);
 
@@ -74,6 +78,7 @@ public interface IBoard
     Task<IReadOnlyList<Identity>> IdentitiesAsync();
     Task<IReadOnlyList<Adoptable>> AdoptableAsync();
     Task<IReadOnlyList<Slot>> SlotsAsync();
+    Task<IReadOnlyList<JobRow>> JobsAsync();
     Task<GoalDetail?> GoalAsync(string name);
     /// <summary>The ops console's URL with its key, or null if it did not start.</summary>
     Task<string?> WebUrlAsync();
@@ -308,6 +313,12 @@ public sealed class SampleBoard : IBoard
         new("docs-links", "succeeded", "No dead links in the AgentDesk docs", "docs-links-lead", "pass", 3, 1, 0, 2),
         new("installer-size", "exhausted", "Shrink the Fusion installer below 180 MB", "installer-size-lead", "value < 180", 9, 196, 0, 3),
     ];
+
+    public Task<IReadOnlyList<JobRow>> JobsAsync() => Task.FromResult<IReadOnlyList<JobRow>>(
+    [
+        new("gocd-morning-brief", @"C:\work\gocd", "Read SKILL.md and follow it", "sonnet", "08:00", "weekdays", null, true, now.Date.AddDays(1).AddHours(8), now.AddHours(-20), "started (schedule)", 41),
+        new("patrol", @"C:\work\agentdesk", "Look for stuck pipelines", "haiku", null, "daily", 120, false, null, now.AddDays(-3), "skipped (schedule): previous run still running", 7),
+    ]);
 
     public Task<IReadOnlyList<Slot>> SlotsAsync() => Task.FromResult<IReadOnlyList<Slot>>(
     [
