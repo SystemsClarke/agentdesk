@@ -34,11 +34,14 @@ var hooks = new Hooks(store);
 var watch = new BoardWatch(store);
 Tray.Start(store);
 var feed = Path.Combine(data, "claude_usage.json");
-_ = Usage.KeepFresh(feed, watch, () => Governor.Record(store, feed));
+Identities? identitiesForUsage = null; // built below; the probe asks it whether a swarm session waits
+_ = Usage.KeepFresh(feed, watch, () => Governor.Record(store, feed),
+    () => Usage.Wanted(Governor.Enforcing(data), identitiesForUsage?.SwarmQueued() ?? true, DateTime.UtcNow, Interlocked.Read(ref Usage.LookedTicks)));
 var prs = new PrChecker(store);
 var sessions = new Sessions();
 var identities = new Identities(store, sessions, data, Environment.GetEnvironmentVariable("AGENTDESK_CLAUDE") ?? "claude") // a stand-in, for tests
     { UsageFailing = () => Usage.Failing }; // the governor fails closed while /usage fails
+identitiesForUsage = identities;
 var goals = new Goals(store, identities, sessions);
 var slots = new Slots(store);
 var jobs = new Jobs(store, identities);
