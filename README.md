@@ -118,7 +118,7 @@ repo through `AGENTDESK_PYTHON` (default `~\NoOneDrive\AgentDesk`) and uses its
 | What | Runs as | Why it is still Python |
 |---|---|---|
 | `agentdesk/plugin.py` | started by the core (`python -m agentdesk.plugin`), JSON-RPC over stdio | vault mirroring (`vault.py`) and embedding search (`vault_search.py`) |
-| `agentdesk/backup.py` | the `AgentDesk-Backup` scheduled task (`scripts/Install-AgentDeskTask.ps1`) | hourly snapshot and vault transcript |
+| `agentdesk/backup.py` | the `AgentDesk-Backup` scheduled task (`scripts/Install-AgentDeskTask.ps1`) | hourly snapshot (thinned: all for 2 days, then one a day to 14), vault transcript, a linked note per thread (`vault_threads.py`: `agentdesk/threads/thread-N.md`, `maps/AgentDesk MOC.md`), then a commit as claude[bot] and a push of those paths to the vault's GitHub remote; a failed push is reported and retried next hour |
 | `scripts/slack_bridge.py` | its own process | relays questions to John's Slack and his replies back, via `slackfmt.py`, `mdrich.py`, `charts.py`, `identity.py`; `slackcmd.py` sends its phone commands (and `wake`) to the core |
 | `scripts/claude_usage_feed.py` | Claude Code status line | writes `claude_usage.json`, which the core's usage meter reads |
 

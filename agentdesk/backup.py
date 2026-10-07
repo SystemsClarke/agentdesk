@@ -8,7 +8,7 @@ import sqlite3
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 
-from . import db, paths
+from . import db, paths, vault_threads
 
 # The snapshot filename carries its UTC timestamp so prune_archive can be
 # judged by the name rather than by a file mtime, which a copy or a sync
@@ -138,7 +138,7 @@ def render_day(conn: sqlite3.Connection, local_date: date) -> str:
                 continue
             seen.add(r["thread_id"])
             lines.append(
-                f'- thread {r["thread_id"]}: "{r["subject"]}" - channel {r["channel"]},'
+                f'- {vault_threads.link(r["thread_id"], "thread " + str(r["thread_id"]))}: "{r["subject"]}" - channel {r["channel"]},'
                 f' status {r["status"]}, opened by {r["opened_by"]}'
             )
     else:
@@ -155,9 +155,16 @@ def render_day(conn: sqlite3.Connection, local_date: date) -> str:
         body = r["body"].replace("\r\n", "\n").replace("\n", "\n  ")
         lines.append(
             f'- {stamp_local} **{r["author"]}** ({r["author_kind"]})'
-            f' [thread {r["thread_id"]}]{reply_note} - {body}'
+            f' [{vault_threads.link(r["thread_id"], "thread " + str(r["thread_id"]))}]{reply_note} - {body}'
         )
     return "\n".join(lines).rstrip("\n") + "\n"
+
+
+def touched_threads(conn: sqlite3.Connection, local_date: date) -> set[int]:
+    """The ids of the threads that had a message on this local day."""
+    start, end = _day_bounds_utc(local_date)
+    return {r[0] for r in conn.execute(
+        "SELECT DISTINCT thread_id FROM messages WHERE ts >= ? AND ts < ?", (start, end))}
 
 
 def write_vault(conn: sqlite3.Connection, local_date: date | None = None) -> Path:
@@ -389,6 +396,11 @@ def run_once(json_out: bool = False, skip_vault: bool = False) -> dict:
         snap = snapshot(conn)
         integrity = verify_snapshot(snap)
         vault = None if skip_vault else write_vault(conn, today)
+        threads_written, git = 0, None
+        if not skip_vault:
+            threads_written = vault_threads.write_threads(conn, touched_threads(conn, today))
+            vault_threads.write_moc(conn)
+            git = vault_threads.vault_sync()
         pruned = prune_archive()
         n_messages = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
     finally:
@@ -401,6 +413,8 @@ def run_once(json_out: bool = False, skip_vault: bool = False) -> dict:
         "vault": str(vault) if vault is not None else None,
         "pruned": pruned,
         "integrity": integrity,
+        "threads_written": threads_written,
+        "git": git,
     }
     if json_out:
         print(json.dumps(result, ensure_ascii=False))
@@ -409,7 +423,12 @@ def run_once(json_out: bool = False, skip_vault: bool = False) -> dict:
             else "vault SKIPPED (--skip-vault)"
         print(f"agentdesk backup: day {result['day']}, {n_messages} message(s), "
               f"snapshot {snap.name}, {vault_note}, {pruned} pruned, "
-              f"integrity {integrity}")
+              f"integrity {integrity}"
+              + ("" if git is None else
+                 f", vault {threads_written} thread note(s), "
+                 + ("committed" if git["committed"] else "no change")
+                 + (", pushed" if git["pushed"] else f", {git['unpushed']} unpushed")
+                 + (f", GIT ERROR: {git['error']}" if git["error"] else "")))
     return result
 
 
