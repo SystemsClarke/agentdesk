@@ -215,19 +215,66 @@ def _archive_stamp(f: Path) -> datetime | None:
         return None
 
 
-def prune_archive(keep_days: int = 14) -> int:
-    """Delete snapshots older than keep_days, judged by the timestamp in the
-    filename. Returns how many went."""
-    cutoff = datetime.now(timezone.utc) - timedelta(days=keep_days)
-    pruned = 0
+def plan_prune(keep_all_days: int = 2, keep_days: int = 14,
+               now: datetime | None = None) -> list[Path]:
+    """The snapshots prune_archive would delete, judged by the filename stamp.
+
+    Everything newer than keep_all_days stays. Between keep_all_days and
+    keep_days only the NEWEST snapshot of each local calendar day stays (a
+    day's last snapshot is the one that holds the whole day). Older than
+    keep_days goes. A file that is not agentdesk-<stamp>.db is never listed.
+    """
+    now = now or datetime.now(timezone.utc)
+    all_cut = now - timedelta(days=keep_all_days)
+    old_cut = now - timedelta(days=keep_days)
+    dated: list[tuple[datetime, Path]] = []
     for f in paths.ARCHIVE_DIR.glob("agentdesk-*.db"):
         stamp = _archive_stamp(f)
-        if stamp is None:
-            continue  # not one of ours; leave it alone
-        if stamp < cutoff:
+        if stamp is not None:
+            dated.append((stamp, f))
+    newest_of_day: dict[date, tuple[datetime, Path]] = {}
+    for stamp, f in dated:
+        if all_cut <= stamp:
+            continue
+        day = stamp.astimezone().date()
+        if day not in newest_of_day or (stamp, f.name) > (
+                newest_of_day[day][0], newest_of_day[day][1].name):
+            newest_of_day[day] = (stamp, f)
+    keepers = {f for _, f in newest_of_day.values()}
+    return sorted(f for stamp, f in dated
+                  if stamp < all_cut and (stamp < old_cut or f not in keepers))
+
+
+def prune_archive(keep_days: int = 14, keep_all_days: int = 2,
+                  dry_run: bool = False) -> int:
+    """Thin the archive: every snapshot for keep_all_days, then one per local
+    day until keep_days. Returns how many went (or would go, with dry_run)."""
+    doomed = plan_prune(keep_all_days, keep_days)
+    if not dry_run:
+        for f in doomed:
             f.unlink()
-            pruned += 1
-    return pruned
+    return len(doomed)
+
+
+def verify_snapshot(path: Path) -> str:
+    """PRAGMA integrity_check on a snapshot: "ok", or what SQLite complained
+    about. A snapshot that fails is renamed to <name>.corrupt so it neither
+    counts as a restore candidate nor gets pruned as a good one."""
+    try:
+        c = sqlite3.connect(str(path))
+        try:
+            rows = [r[0] for r in c.execute("PRAGMA integrity_check")]
+        finally:
+            c.close()
+        verdict = "ok" if rows == ["ok"] else "; ".join(rows[:3])
+    except sqlite3.Error as e:
+        verdict = f"unreadable: {e}"
+    if verdict != "ok":
+        try:
+            path.rename(path.with_name(path.name + ".corrupt"))
+        except OSError:
+            pass
+    return verdict
 
 
 def _row_counts(conn: sqlite3.Connection) -> dict:
@@ -340,6 +387,7 @@ def run_once(json_out: bool = False, skip_vault: bool = False) -> dict:
         db.init_db(conn)
         today = datetime.now().astimezone().date()
         snap = snapshot(conn)
+        integrity = verify_snapshot(snap)
         vault = None if skip_vault else write_vault(conn, today)
         pruned = prune_archive()
         n_messages = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
@@ -352,6 +400,7 @@ def run_once(json_out: bool = False, skip_vault: bool = False) -> dict:
         "snapshot": str(snap),
         "vault": str(vault) if vault is not None else None,
         "pruned": pruned,
+        "integrity": integrity,
     }
     if json_out:
         print(json.dumps(result, ensure_ascii=False))
@@ -359,7 +408,8 @@ def run_once(json_out: bool = False, skip_vault: bool = False) -> dict:
         vault_note = f"vault {Path(result['vault']).name}" if vault is not None \
             else "vault SKIPPED (--skip-vault)"
         print(f"agentdesk backup: day {result['day']}, {n_messages} message(s), "
-              f"snapshot {snap.name}, {vault_note}, {pruned} pruned")
+              f"snapshot {snap.name}, {vault_note}, {pruned} pruned, "
+              f"integrity {integrity}")
     return result
 
 
@@ -438,6 +488,9 @@ def main() -> None:
                     "archive snapshot.")
     parser.add_argument("--json", action="store_true",
                         help="print the cycle result as JSON")
+    parser.add_argument("--prune-dry-run", action="store_true",
+                        help="list what the archive thinning would delete and "
+                             "the disk it would free, then exit")
     parser.add_argument("--restore", type=Path, metavar="ARCHIVE",
                         help="restore the live database from this archive "
                              "snapshot (dry run unless --yes is given)")
@@ -455,6 +508,12 @@ def main() -> None:
                              "VAULT_DIR comment for why this exists)")
     args = parser.parse_args()
 
+    if args.prune_dry_run:
+        doomed = plan_prune()
+        total = sum(f.stat().st_size for f in doomed)
+        print(f"would delete {len(doomed)} snapshot(s), freeing "
+              f"{total / 1_048_576:.1f} MB")
+        return
     if args.restore is not None:
         restore_cli(args.restore, yes=args.yes, force_newer=args.force_newer,
                    json_out=args.json)
