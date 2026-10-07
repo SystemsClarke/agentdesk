@@ -58,7 +58,11 @@ public sealed record BoardStatus(
     Post? JohnLast, int SincePosts, ThreadRow? LastFiled, bool ConciergeOn, int? HeldId, IReadOnlyList<SwarmMember> Swarm,
     DateTimeOffset? SlackTs, int SlackPollS, Post? SlackRelay, IReadOnlyList<string> DisabledSinks,
     IReadOnlyList<string> UsageLines, string UsageSummary, int LiveSessions = 0, int MaxSessions = 3, Budget? Budget = null,
-    IReadOnlyList<GoalRow>? Goals = null);
+    IReadOnlyList<GoalRow>? Goals = null, VaultHealth? Vault = null);
+
+/// <summary>The last hourly backup's commit and push of the vault (vault_state.json): when it ran, whether the push landed, and what is still
+/// only on this machine.</summary>
+public sealed record VaultHealth(DateTimeOffset Ts, bool Pushed, int? Unpushed, string? Error);
 
 /// <summary>What the window needs from the board. CoreBoard will map these onto list_threads, ui:thread, open_questions,
 /// ui:reply, ui:close and raise Changed on each board.changed pushed over ui:subscribe.</summary>

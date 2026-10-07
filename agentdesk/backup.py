@@ -369,6 +369,21 @@ def restore(archive_path: Path, live_conn: sqlite3.Connection,
     }
 
 
+def _write_vault_state(git: dict, threads_written: int) -> None:
+    """vault_state.json in the data folder: how the vault's git backup went this run, for the window's SysOp screen. Written beside the
+    file and moved in, and never allowed to fail the backup."""
+    try:
+        state = {"ts": datetime.now(timezone.utc).isoformat(timespec="seconds"), "committed": git["committed"],
+                 "pushed": git["pushed"], "unpushed": git["unpushed"], "error": git["error"],
+                 "threads_written": threads_written}
+        target = paths.DATA_DIR / "vault_state.json"
+        tmp = target.with_name(target.name + ".tmp")
+        tmp.write_text(json.dumps(state), encoding="utf-8")
+        tmp.replace(target)
+    except OSError:
+        pass
+
+
 def run_once(json_out: bool = False, skip_vault: bool = False) -> dict:
     """One full cycle: snapshot the database, rewrite the vault day file, prune
     old snapshots.
@@ -406,6 +421,8 @@ def run_once(json_out: bool = False, skip_vault: bool = False) -> dict:
     finally:
         conn.close()
 
+    if git is not None:
+        _write_vault_state(git, threads_written)
     result = {
         "day": today.isoformat(),
         "messages": n_messages,

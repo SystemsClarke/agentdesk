@@ -605,6 +605,21 @@ public partial class MainWindow
         return L;
     }
 
+    /// <summary>The vault's git backup in one line: pushed and how long ago, or what is wrong. A backup that has not reported for 3 hours is
+    /// as bad as one that failed, so it says so.</summary>
+    internal static Seg VaultSegs(VaultHealth? v, DateTimeOffset? now = null)
+    {
+        if (v is null)
+            return S("no report yet: the hourly backup has not run since this was added", "fa");
+        var age = (now ?? DateTimeOffset.Now) - v.Ts;
+        var ago = age.TotalMinutes < 90 ? $"{Math.Max(0, (int)age.TotalMinutes)} min ago" : $"{(int)age.TotalHours} h ago";
+        if (age > TimeSpan.FromHours(3))
+            return S($"⚠ the backup last ran {ago}: is the AgentDesk-Backup task running?", "pk");
+        if (v.Error is { Length: > 0 })
+            return S($"⚠ {ago}: {v.Error.Split('\n')[0]}" + (v.Unpushed is { } n and > 0 ? $" ({n} commit(s) not on GitHub)" : ""), "pk");
+        return S($"pushed to GitHub {ago}", "gr");
+    }
+
     /// <summary>"08:00 weekdays" or "every 120 min": when a job runs.</summary>
     internal static string Schedule(JobRow j) => j.EveryMinutes is { } m ? $"every {m:0.#} min" : $"{j.At} {j.Days}";
 
@@ -707,6 +722,7 @@ public partial class MainWindow
             Stat("Ringing for john", S("nothing", "gr"), prs with { Tags = "mu" });
         if (st?.LastFiled is { } f)
             Stat("Filed to the vault", S($"{When(f.UpdatedTs)} · #{f.Id} ", "mu"), S(f.Subject, "fa"));
+        Stat("Vault backup", VaultSegs(st?.Vault));
         Stat("Claude plan", S(st?.UsageSummary ?? "", "mu"));
         Stat("Usage governor", S(GovLine(st?.Budget), "mu"));
         L.Add([]);
