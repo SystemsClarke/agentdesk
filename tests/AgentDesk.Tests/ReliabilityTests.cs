@@ -76,6 +76,30 @@ public sealed class ReliabilityTests : IDisposable
     }
 
     [Fact]
+    public async Task The_stop_hook_reads_only_what_is_new_and_waits_for_a_whole_line()
+    {
+        var store = new BoardStore(Path.Combine(dir, "agentdesk.db"));
+        store.Init();
+        var transcript = Path.Combine(dir, "incremental.jsonl");
+        const string edit = """{"message":{"content":[{"type":"tool_use","name":"Edit"}]}}""", post = """{"message":{"content":[{"type":"tool_use","name":"mcp__agentdesk__post_message"}]}}""";
+        File.WriteAllText(transcript, "{\"type\":\"user\"}\n");
+        var hooks = new Hooks(store);
+        var input = JsonSerializer.SerializeToElement(new { session_id = "S10", stop_hook_active = false, transcript_path = transcript });
+        Assert.Equal("", await hooks.Run("stop", input)); // nothing edited yet
+
+        File.AppendAllText(transcript, edit[..30]); // claude is mid-line: not read yet
+        Assert.Equal("", await hooks.Run("stop", input));
+        File.AppendAllText(transcript, edit[30..] + "\n");
+        Assert.Contains("you changed files this session", await hooks.Run("stop", input)); // the edit, found without rereading the start
+
+        File.AppendAllText(transcript, post + "\n");
+        Assert.Equal("", await hooks.Run("stop", input)); // and the post that follows it clears the block
+
+        File.WriteAllText(transcript, edit + "\n"); // a shorter file is a new transcript: read from the start
+        Assert.Contains("you changed files this session", await hooks.Run("stop", input));
+    }
+
+    [Fact]
     public void The_log_keeps_one_older_file_and_does_not_grow_without_end()
     {
         var was = Log.Path;
