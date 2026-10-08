@@ -172,7 +172,9 @@ public sealed class CoreBoard : IBoard, IDisposable
             concierge.TryGetProperty("on", out var on) && on.ValueKind == JsonValueKind.True, held > 0 ? held : null, [.. swarm],
             slack.ValueKind == JsonValueKind.Object ? Ts(slack, "ts") : null, slack.ValueKind == JsonValueKind.Object && Int(slack, "poll_s") is var poll and > 0 ? poll : 15,
             relay, [], [.. Arr(usage, "lines").Select(l => l.GetString() ?? "")], Str(usage, "summary") ?? "",
-            Int(sessions, "running"), Int(sessions, "max"), ToBudget(Obj(beat, "governor")), [.. Arr(beat, "goals").Select(ToGoal)]);
+            Int(sessions, "running"), Int(sessions, "max"), ToBudget(Obj(beat, "governor")), [.. Arr(beat, "goals").Select(ToGoal)],
+            Obj(beat, "vault") is { ValueKind: JsonValueKind.Object } v && Str(v, "ts") is not null
+                ? new VaultHealth(Ts(v, "ts"), v.TryGetProperty("pushed", out var pu) && pu.ValueKind == JsonValueKind.True, v.TryGetProperty("unpushed", out var un) && un.ValueKind == JsonValueKind.Number ? un.GetInt32() : null, Str(v, "error")) : null);
     }
 
     static Budget ToBudget(JsonElement g)

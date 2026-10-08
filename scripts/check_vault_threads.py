@@ -85,6 +85,8 @@ def main() -> int:
     check("the map lists the thread", f"[[agentdesk/threads/thread-{t}|" in moc, True)
     check("committed", r["git"]["committed"], True)
     check("pushed", r["git"]["pushed"], True)
+    state = json.loads((paths.DATA_DIR / "vault_state.json").read_text(encoding="utf-8"))
+    check("vault_state.json tells the window how it went", (state["pushed"], state["unpushed"], state["error"]), (True, 0, None))
     check("the remote has it", "AgentDesk board backup" in git("log", "-1", "--format=%s", "Main", cwd=remote), True)
     check("author is claude[bot]", git("log", "-1", "--format=%an", "Main", cwd=remote), "claude[bot]")
     check("another session's file was not committed",

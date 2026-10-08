@@ -158,6 +158,7 @@ async Task<string> Status()
     s["goals"] = goals.Summaries();
     s["concierge"] = concierge.State();
     s["sessions"] = identities.Counts();
+    s["vault"] = AgentBoard.Load(Path.Combine(data, "vault_state.json")); // how the hourly vault commit + push last went (agentdesk.backup writes it)
     s["governor"] = JsonNode.Parse(await identities.GovernorUi()); // with enforcing, would_queue, would_shed and held
     return s.ToJsonString(Wire.Indented);
 }
