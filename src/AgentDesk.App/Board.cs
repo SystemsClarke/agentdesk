@@ -28,6 +28,13 @@ public sealed record Identity(string Name, string State, int Generation, string 
 public sealed record JobRow(string Name, string Folder, string Prompt, string Model, string? At, string Days, double? EveryMinutes, bool Enabled,
     DateTimeOffset? NextRun, DateTimeOffset? LastRun, string? LastStatus, int Runs);
 
+/// <summary>A permission rule an agent proposed (ui:permission_list): Status is pending, approved, rejected or reverted; Broad means it allows every use of the tool.</summary>
+public sealed record RuleProposal(int Id, string Rule, string Scope, string Reason, string? Blocked, string RequestedBy, string Status,
+    DateTimeOffset Created, DateTimeOffset? Decided, bool Broad, int? ThreadId, string? Path);
+
+/// <summary>The proposals, newest first, and what the user's settings.json allows now.</summary>
+public sealed record PermissionsView(IReadOnlyList<RuleProposal> Proposals, IReadOnlyList<string> Allow, string Settings);
+
 /// <summary>A Claude Code conversation from the last 24 h that someone typed in (ui:adoptable): it can become an identity.</summary>
 public sealed record Adoptable(string SessionId, string Folder, DateTimeOffset LastActivity, string FirstMessage);
 
@@ -83,6 +90,7 @@ public interface IBoard
     Task<IReadOnlyList<Adoptable>> AdoptableAsync();
     Task<IReadOnlyList<Slot>> SlotsAsync();
     Task<IReadOnlyList<JobRow>> JobsAsync();
+    Task<PermissionsView> PermissionsAsync();
     Task<GoalDetail?> GoalAsync(string name);
     /// <summary>The ops console's URL with its key, or null if it did not start.</summary>
     Task<string?> WebUrlAsync();
@@ -317,6 +325,13 @@ public sealed class SampleBoard : IBoard
         new("docs-links", "succeeded", "No dead links in the AgentDesk docs", "docs-links-lead", "pass", 3, 1, 0, 2),
         new("installer-size", "exhausted", "Shrink the Fusion installer below 180 MB", "installer-size-lead", "value < 180", 9, 196, 0, 3),
     ];
+
+    public Task<PermissionsView> PermissionsAsync() => Task.FromResult<PermissionsView>(new(
+    [
+        new(2, "Bash(python tools/trigger_pipeline.py:*)", "user", "John asked me to trigger mainline builds", "python tools/trigger_pipeline.py --run", "mainline-parity-lead", "pending", now.AddMinutes(-9), null, false, 656, null),
+        new(1, "Bash", "user", "needed to run one git command", null, "builder", "pending", now.AddHours(-3), null, true, null, null),
+        new(0, "mcp__agentdesk__post_message", "user", "post results", null, "verifier", "approved", now.AddDays(-2), now.AddDays(-2), false, null, @"C:\Users\you\.claude\settings.json"),
+    ], ["Read(*)", "mcp__agentdesk__post_message"], @"C:\Users\you\.claude\settings.json"));
 
     public Task<IReadOnlyList<JobRow>> JobsAsync() => Task.FromResult<IReadOnlyList<JobRow>>(
     [

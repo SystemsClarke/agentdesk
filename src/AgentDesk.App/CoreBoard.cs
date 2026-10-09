@@ -192,6 +192,15 @@ public sealed class CoreBoard : IBoard, IDisposable
     static GoalRow ToGoal(JsonElement g) => new(Str(g, "name") ?? "", Str(g, "state") ?? "draft", Str(g, "objective") ?? "", Str(g, "lead") ?? "",
         Str(g, "success"), Int(g, "experiments"), Num(g, "last_value"), Int(g, "members"), Int(g, "max_members"), Int(g, "standing") != 0);
 
+    public async Task<PermissionsView> PermissionsAsync()
+    {
+        var r = await Call("ui:permission_list");
+        return new([.. Arr(r, "proposals").Select(p => new RuleProposal(Int(p, "id"), Str(p, "rule") ?? "", Str(p, "scope") ?? "user", Str(p, "reason") ?? "", Str(p, "blocked"),
+            Str(p, "requested_by") ?? "", Str(p, "status") ?? "pending", Ts(p, "created_ts"), Str(p, "decided_ts") is null ? null : Ts(p, "decided_ts"),
+            p.TryGetProperty("broad", out var b) && b.ValueKind == JsonValueKind.True, Int(p, "thread_id") is var t and > 0 ? t : null, Str(p, "settings_path")))],
+            [.. Arr(r, "allow").Select(a => a.GetString() ?? "")], Str(r, "settings") ?? "");
+    }
+
     public async Task<IReadOnlyList<JobRow>> JobsAsync() =>
         [.. Arr(await Call("ui:job_list"), "jobs").Select(j => new JobRow(Str(j, "name") ?? "", Str(j, "folder") ?? "", Str(j, "prompt") ?? "", Str(j, "model") ?? "sonnet",
             Str(j, "at"), Str(j, "days") ?? "daily", Num(j, "every_minutes"), Int(j, "enabled") != 0,

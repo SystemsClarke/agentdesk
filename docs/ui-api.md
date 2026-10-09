@@ -56,6 +56,9 @@ Every reply is a JSON document. A failure is `{"error": "..."}` (bad or missing 
 | `ui:goal_status` | `name` | The goal row plus `experiments` (every row), `history` (measured values, oldest first), `members` (`identity`, `task`, `created_ts`, `work_id`) and `summary`, the text agents are woken with. | `{...goal, "experiments": [...], "history": [...], "members": [...], "summary": "..."}` |
 | `ui:slot_list` | none | The 10 swarm slots (board table `slots`), empty ones included, each joined with its goal. | `{"slots": [{"n", "channel_id", "channel_name", "persona_name", "persona_icon", "goal", "updated_ts", "state", "lead", "thread_id", "objective", "last_value", "members"}]}` |
 | `ui:slot_assign` | `n`, `goal?`, `persona?`, `persona_icon?`, `channel_id?`, `channel_name?` | Records what the bridge did for slot `n` (1 to 10). Arguments not given keep their value. The goal must exist and be in no other slot. | the slot, as in `ui:slot_list` |
+| `ui:permission_list` | none | Permission rules agents proposed (board table `permission_proposals`, newest first, with `broad` for rules that allow every use of a tool) and what the user's settings.json allows now. | `{"proposals": [...], "allow": ["Read(*)", ...], "settings": "<path>"}` |
+| `ui:permission_decide` | `id`, `approve` | John only. Approve: backs the settings file up (data folder `permission_backups`), adds the rule to `permissions.allow` once, leaves every other key, answers on the proposal's thread and settles its question. Reject: writes nothing. A file that is not valid JSON is refused untouched. | the proposal |
+| `ui:permission_revert` | `id` | John only. Takes an approved rule back out of settings.json. | the proposal |
 | `ui:slot_clear` | `n` | Frees the slot: no goal and no persona. Its channel stays for the next swarm to reuse. | the slot |
 
 The agents' tools (`list_threads`, `open_questions`, `recent_messages`, `search_messages`, ...) are
