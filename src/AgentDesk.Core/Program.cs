@@ -45,6 +45,8 @@ identitiesForUsage = identities;
 var goals = new Goals(store, identities, sessions);
 var slots = new Slots(store);
 var jobs = new Jobs(store, identities);
+var permissions = new Permissions(store, data, Environment.GetEnvironmentVariable("AGENTDESK_CLAUDE_SETTINGS")
+    ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude", "settings.json")); // the global Claude settings, for approved permission rules
 var dispatcher = new Dispatcher(store, goals, data);
 var concierge = new Concierge(store, goals, python); // its lead works from the AgentDesk checkout, as the crew did
 _ = prs.Run(TimeSpan.FromSeconds(5));
@@ -70,6 +72,7 @@ await PipeServer.Run((req, push, gone) => req.Tool switch
     "retire" => req.Caller.Identity is { } who && goals.IsMember(who) ? goals.MemberDone(req.Caller, "Retired: its task is done.") : identities.Retire(req.Caller),
     "pass_the_torch" => identities.Torch(req.Caller, Tools.Dispatch(board, req.Caller, req.Tool, req.Args)),
     "goal_propose" or "experiment_start" or "experiment_done" or "member_spawn" or "member_done" => GoalTool(req.Tool, req.Caller, new Args(req.Args)),
+    "propose_permission_rule" => ProposeRule(req.Caller, new Args(req.Args)),
     _ => Tools.Dispatch(board, req.Caller, req.Tool, req.Args),
 }, CancellationToken.None);
 
@@ -113,6 +116,9 @@ Task<string> Ui(string op, Args a, Caller caller, Func<string, Task> push, Cance
     "goal_stop" => goals.Stop(caller, a.String("name")),
     "goal_list" => goals.List(),
     "goal_status" => goals.Status(a.String("name")),
+    "permission_list" => permissions.List(),
+    "permission_decide" => permissions.Decide(caller, a.Int("id"), a.Bool("approve", false)),
+    "permission_revert" => permissions.Revert(caller, a.Int("id")),
     "job_create" => jobs.Create(a.String("name"), a.String("folder"), a.String("prompt"), a.StringOrNull("at"), a.StringOrNull("days"), a.DoubleOrNull("every_minutes"), a.StringOrNull("model"), a.DoubleOrNull("catch_up_minutes")),
     "job_list" => jobs.List(),
     "job_run" => jobs.RunNow(a.String("name")),
@@ -161,6 +167,12 @@ async Task<string> Status()
     s["vault"] = AgentBoard.Load(Path.Combine(data, "vault_state.json")); // how the hourly vault commit + push last went (agentdesk.backup writes it)
     s["governor"] = JsonNode.Parse(await identities.GovernorUi()); // with enforcing, would_queue, would_shed and held
     return s.ToJsonString(Wire.Indented);
+}
+
+Task<string> ProposeRule(Caller c, Args a)
+{
+    try { return permissions.Propose(c, a.String("rule"), a.StringOrNull("scope"), a.String("reason"), a.StringOrNull("blocked_action"), a.StringOrNull("author"), a.StringOrNull("project_dir")); }
+    catch (ArgumentException e) { return Task.FromResult(Tools.Error(e.Message)); }
 }
 
 // The goal tools agents call (Tools.g.cs lists them); the caller decides what each may do.

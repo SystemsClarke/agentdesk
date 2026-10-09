@@ -117,6 +117,9 @@ public sealed partial class BoardDb : IDisposable
             model TEXT NOT NULL DEFAULT 'sonnet', at TEXT, days TEXT NOT NULL DEFAULT 'daily', every_minutes REAL, catch_up_minutes REAL NOT NULL DEFAULT 240,
             enabled INTEGER NOT NULL DEFAULT 1, next_run_ts TEXT, last_run_ts TEXT, last_status TEXT, runs INTEGER NOT NULL DEFAULT 0,
             created_ts TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS permission_proposals (id INTEGER PRIMARY KEY AUTOINCREMENT, rule TEXT NOT NULL, scope TEXT NOT NULL, project_dir TEXT,
+            reason TEXT NOT NULL, blocked TEXT, requested_by TEXT NOT NULL, thread_id INTEGER, status TEXT NOT NULL DEFAULT 'pending',
+            created_ts TEXT NOT NULL, decided_ts TEXT, reverted_ts TEXT, settings_path TEXT, backup TEXT);
         """;
 
     const string InsertMessage = "INSERT INTO messages (ts, thread_id, author, author_kind, body, reply_to, meta) VALUES ($ts,$tid,$author,$kind,$body,$replyTo,$meta)";

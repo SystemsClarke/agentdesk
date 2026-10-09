@@ -54,6 +54,8 @@ public partial class MainWindow
     internal int cols = 96, lines = 30;
     IReadOnlyList<Identity> agents = [];
     IReadOnlyList<JobRow> jobs = [];
+    PermissionsView perms = new([], [], "");
+    bool showDecided; // Permission rules: the decided ones too
     IReadOnlyList<Adoptable>? adoptables; // read on the Adopt screen only: it scans ~/.claude/projects
     string? webUrl, adoptNote;
     IReadOnlyList<Slot> slots = [];
@@ -253,11 +255,12 @@ public partial class MainWindow
         var goalCall = goalName is null ? null : board.GoalAsync(goalName);
         var adoptCall = screen == "adopt" ? board.AdoptableAsync() : null;
         var jobsCall = screen == "jobs" ? Optional(board.JobsAsync, jobs) : null;
+        var permsCall = threadsOnly ? Task.FromResult(perms) : Optional(board.PermissionsAsync, perms);
         // Re-read the open thread before dropping the cache. Clearing it first made Reader() paint "no longer on the board"
         // for a frame (the flicker) and shrink the document, which snapped the scroll back to the top.
         var open = screen == "read" ? readTid : null;
         var currentCall = open is int tid ? board.ReadThreadAsync(tid) : null;
-        await Task.WhenAll([.. listed, openQsCall, stCall, agentsCall, webUrlCall, slotsCall, .. new Task?[] { goalCall, adoptCall, jobsCall, currentCall }.OfType<Task>()]);
+        await Task.WhenAll([.. listed, openQsCall, stCall, agentsCall, webUrlCall, slotsCall, .. new Task?[] { goalCall, adoptCall, jobsCall, permsCall, currentCall }.OfType<Task>()]);
         for (var i = 0; i < Channels.Length; i++)
         {
             var (ch, all) = (Channels[i], await listed[i]);
@@ -271,6 +274,7 @@ public partial class MainWindow
             adoptables = await adoptCall;
         if (jobsCall is not null)
             jobs = await jobsCall;
+        perms = await permsCall;
         var current = currentCall is null ? null : await currentCall;
         threads.Clear();
         if (open is int id && current is not null)
@@ -320,7 +324,7 @@ public partial class MainWindow
     {
         var title = screen switch
         {
-            "main" => "Main menu", "list" => Titles[channel], "prs" => "Pull Requests", "jobs" => "Recurring jobs", "sysop" => "SysOp console", "who" => "Who's on",
+            "main" => "Main menu", "list" => Titles[channel], "prs" => "Pull Requests", "jobs" => "Recurring jobs", "rules" => "Permission rules", "sysop" => "SysOp console", "who" => "Who's on",
             "options" => "Options", "compose" => $"New post in {Titles[channel]}", "agents" => "Agents", "adopt" => "Adopt a session",
             "goal" => $"Goal {goal?.Name}", "ask" => ask?.Title ?? "", _ => $"Reading #{readTid}",
         };
@@ -345,7 +349,7 @@ public partial class MainWindow
         var q = channel == "question";
         return screen switch
         {
-            "main" => [.. K("Q D W J", "message bases"), .. K("P", "PRs"), .. K("S", "SysOp"), .. K("B", "who's on"), .. K("A", "agents & goals"), .. K("R", "recurring jobs"), .. K("O", "options"),
+            "main" => [.. K("Q D W J", "message bases"), .. K("P", "PRs"), .. K("S", "SysOp"), .. K("B", "who's on"), .. K("A", "agents & goals"), .. K("R", "recurring jobs"), .. K("X", "permission rules"), .. K("O", "options"),
                 .. K("T", "theme"), .. K("G", "hang up")],
             "list" => [.. K("↑↓", "move"), .. K("↵", "read"), .. K("N", "new post"),
                 .. If(q, [.. K("H", showArchived ? "active" : "archived"), .. K("Ctrl+R", "wake agent")]), .. K("Esc", "main menu")],
@@ -356,6 +360,7 @@ public partial class MainWindow
             "sysop" => [.. K("Ctrl+W", st?.ConciergeOn == true ? "stop the Concierge" : "start the Concierge"),
                 .. K("J", "job board"), .. If(HeldRow is not null, K("L", "read held item")), .. K("Esc", "menu")],
             "jobs" => [.. K("↑↓", "move"), .. K("R", "run now"), .. K("E", "on/off"), .. K("N", "new job"), .. K("X", "delete"), .. K("Esc", "menu")],
+            "rules" => [.. K("↑↓", "move"), .. K("A", "approve"), .. K("R", "reject"), .. K("V", "revert"), .. K("↵", "read its thread"), .. K("H", showDecided ? "pending only" : "history"), .. K("Esc", "menu")],
             "who" => [.. K("↑↓", "pick a caller"), .. K("↵", "read bio"), .. K("P", "page them"), .. K("Esc", "menu")],
             "options" => [.. K("↑↓", "move"), .. K("↵", "change"), .. K("←→", "adjust"), .. K("C", "ops console"), .. K("Esc", "menu")],
             "compose" => [.. K("↵", "subject → body"), .. K("Ctrl+↵", "post"), .. K("Ctrl+D", "dictate"), .. K("Esc", Subject.Text.Length + Reply.Text.Length > 0 ? "twice: discard" : "cancel")],
@@ -467,6 +472,7 @@ public partial class MainWindow
             ("W", "Wiki", S($"{rows["wiki"].Count} articles", "mu")),
             ("S", "SysOp console", sysop),
             ("R", "Recurring jobs", S("scheduled prompts", "mu")),
+            ("X", "Permission rules", perms.Proposals.Count(p => p.Status == "pending") is > 0 and var waiting ? S($"{waiting} to approve", "pk b") : S("nothing waiting", "mu")),
             ("B", "Who's on", S($"{N(agents, "agent")} today", "pu")),
             ("O", "Options", S(Palettes[Theme].Label, "ye")),
             ("A", "Agents & goals", this.agents.Count == 0 && Goals.Count == 0 ? S("none signed up", "mu")
@@ -618,6 +624,75 @@ public partial class MainWindow
         if (v.Error is { Length: > 0 })
             return S($"⚠ {ago}: {v.Error.Split('\n')[0]}" + (v.Unpushed is { } n and > 0 ? $" ({n} commit(s) not on GitHub)" : ""), "pk");
         return S($"pushed to GitHub {ago}", "gr");
+    }
+
+    List<RuleProposal> ShownRules => [.. perms.Proposals.Where(p => showDecided || p.Status == "pending").OrderBy(p => p.Status == "pending" ? 0 : 1).ThenByDescending(p => p.Id)];
+
+    List<Line> RulesScreen(int W)
+    {
+        var rs = ShownRules;
+        var ruleW = Math.Max(24, W - 50);
+        var L = Rows(Bar("PERMISSION RULES  ·  agents propose, only you approve  ·  an approval writes the rule into your Claude settings.json"),
+            "  " + Fit("STATUS", 10) + Fit("RULE", ruleW) + Fit("ASKED BY", 22) + "WHEN", rs.Count, i =>
+            {
+                var r = rs[i];
+                var tag = r.Status switch { "pending" => "pk b", "approved" => "gr", "reverted" => "or", _ => "fa" };
+                return [S("  "), S(Fit(r.Status + (r.Broad ? "!" : ""), 10), tag), S(Fit(r.Rule, ruleW), r.Broad ? "or" : "cy"), S(Fit(Label(r.RequestedBy), 22), "mu"), S(When(r.Decided ?? r.Created), "fa")];
+            },
+            [S("   Nothing waiting. Agents propose rules with propose_permission_rule when Claude Code blocks something you asked for.", "mu")], 16);
+        if (rs.Count > 0 && rs[Sel] is var p)
+        {
+            L.AddRange([[], [S(" " + p.Rule, "fg b"), S($"  ({p.Scope})", "mu")], [S(" why: ", "mu"), S(p.Reason)]]);
+            if (p.Blocked != null)
+                L.Add([S(" blocked: ", "mu"), S(p.Blocked, "cy")]);
+            if (p.Broad)
+                L.Add([S(" careful: this rule is broad, it allows every use of the tool.", "pk b")]);
+            if (p.Path != null)
+                L.Add([S(" in: ", "mu"), S(p.Path, "fa")]);
+        }
+        L.AddRange([[], [S($" Allowed now ({perms.Allow.Count}) in {perms.Settings}", "mu")]]);
+        foreach (var a in perms.Allow.TakeLast(Math.Max(2, lines - L.Count - 2)).Reverse())
+            L.Add([S("   " + Fit(a, W - 4), "fa")]);
+        return L;
+    }
+
+    void RuleKey(char ch, Key key)
+    {
+        var rs = ShownRules;
+        if (ch == 'h') { showDecided = !showDecided; sel["rules"] = 0; Render(); return; }
+        if (rs.Count == 0) return;
+        var p = rs[Math.Clamp(Sel, 0, rs.Count - 1)];
+        if (key == Key.Enter)
+        {
+            if (p.ThreadId is int tid) OpenThread(tid, "rules"); else Flash("That proposal has no thread.", "mu");
+            return;
+        }
+        var op = ch switch { 'a' => "ui:permission_decide", 'r' => "ui:permission_decide", _ => "ui:permission_revert" };
+        if (ch is 'a' or 'r' && p.Status != "pending" || ch == 'v' && p.Status != "approved")
+        {
+            Flash(ch == 'v' ? "V reverts an approved rule." : "That one is already decided.", "mu");
+            return;
+        }
+        var text = ch switch
+        {
+            'a' => $"Allow {p.Rule} in {(p.Scope == "user" ? "your Claude settings" : "the project's settings")}?" + (p.Broad ? " It is BROAD: every use of the tool." : ""),
+            'r' => $"Reject {p.Rule}? {Label(p.RequestedBy)} is told not to retry.",
+            _ => $"Take {p.Rule} back out of settings.json?",
+        };
+        confirm = (text, async () =>
+        {
+            try
+            {
+                await board.ActAsync(op, ch == 'v' ? new { id = p.Id } : new { id = p.Id, approve = ch == 'a' });
+                await RefreshAsync();
+                Flash(ch switch { 'a' => $"Allowed: {p.Rule}. {Label(p.RequestedBy)} is told on the thread.", 'r' => "Rejected.", _ => "Reverted." }, "gr");
+            }
+            catch (Exception e) when (e is not OperationCanceledException)
+            {
+                Flash("Not done: " + e.Message, "pk b");
+            }
+        });
+        Render();
     }
 
     /// <summary>"08:00 weekdays" or "every 120 min": when a job runs.</summary>
@@ -1419,7 +1494,7 @@ public partial class MainWindow
 
     int ItemCount() => screen switch
     {
-        "list" => rows[channel].Count, "prs" => Prs.Count, "jobs" => jobs.Count, "who" => Callers.Count, "options" => OptionItems().Count, "agents" => Entries.Count,
+        "list" => rows[channel].Count, "prs" => Prs.Count, "jobs" => jobs.Count, "rules" => ShownRules.Count, "who" => Callers.Count, "options" => OptionItems().Count, "agents" => Entries.Count,
         "adopt" => adoptables?.Count ?? 0, _ => 0,
     };
 
@@ -1460,6 +1535,8 @@ public partial class MainWindow
         }
         else if (screen == "options")
             ChangeOption(0, Keyboard.Modifiers);
+        else if (screen == "rules")
+            RuleKey(' ', Key.Enter);
         else if (screen == "agents" && SelAgent is { } agent)
             Attach(agent);
         else if (screen == "agents" && SelGoal is { } g)
@@ -1824,6 +1901,8 @@ public partial class MainWindow
         }
         else if (s == "jobs" && ch is 'r' or 'e' or 'x' or 'n')
             JobKey(ch);
+        else if (s == "rules" && (ch is 'a' or 'r' or 'v' or 'h'))
+            RuleKey(ch, key);
         else if (ChannelKeys.TryGetValue(ch, out var channelName))
             Goto("list", channelName);
         else if (s == "list" && ch == 'n')
@@ -1873,10 +1952,10 @@ public partial class MainWindow
             }))();
         else if (ch == 'a')
             Goto("agents");
-        else if (ch is 'p' or 's' or 'b' or 'o' or 'm' or 'r')
+        else if (ch is 'p' or 's' or 'b' or 'o' or 'm' or 'r' or 'x')
         {
-            Goto(ch switch { 'p' => "prs", 's' => "sysop", 'b' => "who", 'o' => "options", 'r' => "jobs", _ => "main" });
-            if (ch == 'r')
+            Goto(ch switch { 'p' => "prs", 's' => "sysop", 'b' => "who", 'o' => "options", 'r' => "jobs", 'x' => "rules", _ => "main" });
+            if (ch is 'r' or 'x')
                 _ = RefreshQuietly();
         }
         else if (ch == 't')

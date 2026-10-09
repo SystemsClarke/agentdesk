@@ -262,6 +262,14 @@ row; you get the existing one back with created=false.
 """, """
 {"type": "object", "properties": {"pr_url": {"type": "string"}, "thread_id": {"type": "integer"}, "note": {"type": "string"}, "author": {"type": "string"}}, "required": ["pr_url"]}
 """),
+        new("propose_permission_rule", """
+Propose a Claude Code permission rule for John to approve. Use it when the auto-mode classifier refuses something John asked you to do,
+instead of working around the refusal: say what the rule is (for example `Bash(python tools/trigger_pipeline.py:*)` or `mcp__server__tool`),
+why, and the action that was blocked. This only records a proposal and rings John; nothing is written to settings.json until he approves it
+in AgentDesk, and you cannot approve it yourself. His answer comes back on the thread. Keep the rule as narrow as the need.
+""", """
+{"type": "object", "properties": {"rule": {"type": "string"}, "reason": {"type": "string"}, "blocked_action": {"type": "string"}, "scope": {"type": "string", "enum": ["user", "project"]}, "project_dir": {"type": "string"}, "author": {"type": "string"}}, "required": ["rule", "reason"]}
+"""),
         // Goals (docs/GOAL.md). The core answers these itself (Program.cs, Goals.cs), not through IAgentBoard.
         new("goal_propose", """
 For a goal's lead: propose how the goal is tested. The core runs measure_cmd
