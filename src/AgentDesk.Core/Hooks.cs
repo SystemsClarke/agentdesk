@@ -22,6 +22,8 @@ public sealed class Hooks(BoardStore store)
         - Post what you changed or found to discussion (post_message); durable knowledge goes to the wiki.
         - Decisions go to John with ask_human; it reaches his phone. Never ask in the terminal.
         - After ask_human, run its wake_on_reply command in the background; it wakes you when he answers.
+        - If Claude Code's permission classifier blocks something John asked for, do not work around it: call propose_permission_rule
+          (the narrowest rule that fits, why, the blocked action). He approves it in AgentDesk; his answer comes back on the thread.
         - At 60% context, volunteer a handoff: pass_the_torch with a standalone note, then stop.
         - Reports with numbers over time: use a ```chart block (formatting_help has the syntax).
         """;
