@@ -83,7 +83,26 @@ CREATE TABLE IF NOT EXISTS recurring_jobs (name TEXT PRIMARY KEY COLLATE NOCASE,
 CREATE TABLE IF NOT EXISTS permission_proposals (id INTEGER PRIMARY KEY AUTOINCREMENT, rule TEXT NOT NULL, scope TEXT NOT NULL, project_dir TEXT,
     reason TEXT NOT NULL, blocked TEXT, requested_by TEXT NOT NULL, thread_id INTEGER, status TEXT NOT NULL DEFAULT 'pending',
     created_ts TEXT NOT NULL, decided_ts TEXT, reverted_ts TEXT, settings_path TEXT, backup TEXT);
-CREATE TABLE IF NOT EXISTS usage_samples (ts TEXT PRIMARY KEY, week_pct REAL, five_hour_pct REAL);
+CREATE TABLE IF NOT EXISTS usage_samples (id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL UNIQUE, weekly_pct REAL NOT NULL,
+    weekly_reset_ts TEXT, five_hour_pct REAL, five_hour_reset_ts TEXT, swarm_sessions INTEGER NOT NULL DEFAULT 0,
+    haiku_sessions INTEGER NOT NULL DEFAULT 0, sonnet_sessions INTEGER NOT NULL DEFAULT 0, opus_sessions INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS identities (name TEXT PRIMARY KEY COLLATE NOCASE, folder TEXT NOT NULL, charter TEXT, host TEXT NOT NULL DEFAULT 'local',
+    claude_session_id TEXT, pid INTEGER, state TEXT NOT NULL DEFAULT 'stopped', autostart INTEGER NOT NULL DEFAULT 0,
+    created_ts TEXT NOT NULL, updated_ts TEXT NOT NULL, generation INTEGER NOT NULL DEFAULT 1, phoenix_msg INTEGER,
+    model TEXT NOT NULL DEFAULT 'sonnet', running_model TEXT);
+CREATE TABLE IF NOT EXISTS phoenix_chain (identity TEXT NOT NULL COLLATE NOCASE, generation INTEGER NOT NULL, claude_session_id TEXT,
+    handoff_msg INTEGER, ts TEXT NOT NULL, PRIMARY KEY (identity, generation));
+CREATE TABLE IF NOT EXISTS goals (name TEXT PRIMARY KEY COLLATE NOCASE, objective TEXT NOT NULL, hypothesis TEXT, measure_cmd TEXT,
+    measure_folder TEXT NOT NULL, success TEXT, samples INTEGER NOT NULL DEFAULT 1, max_members INTEGER NOT NULL DEFAULT 3,
+    max_hours REAL NOT NULL DEFAULT 24, max_tokens INTEGER, cadence_minutes REAL NOT NULL DEFAULT 30, state TEXT NOT NULL DEFAULT 'draft',
+    lead TEXT NOT NULL, thread_id INTEGER, started_ts TEXT, woke_ts TEXT, created_ts TEXT NOT NULL, updated_ts TEXT NOT NULL,
+    standing INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS experiments (id INTEGER PRIMARY KEY AUTOINCREMENT, goal TEXT NOT NULL COLLATE NOCASE, n INTEGER NOT NULL,
+    change TEXT NOT NULL, owner TEXT, started_ts TEXT NOT NULL, measured_ts TEXT, value REAL, verdict TEXT, UNIQUE (goal, n));
+CREATE TABLE IF NOT EXISTS goal_members (identity TEXT PRIMARY KEY COLLATE NOCASE, goal TEXT NOT NULL COLLATE NOCASE, task TEXT NOT NULL,
+    created_ts TEXT NOT NULL, work_id INTEGER);
+CREATE TABLE IF NOT EXISTS slots (n INTEGER PRIMARY KEY CHECK (n BETWEEN 1 AND 10), channel_id TEXT, channel_name TEXT,
+    persona_name TEXT, persona_icon TEXT, goal TEXT COLLATE NOCASE, updated_ts TEXT NOT NULL);
 "#;
 
 pub type Named<'a> = &'a [(&'a str, &'a dyn ToSql)];
@@ -150,9 +169,34 @@ impl Db {
         Ok(Db { conn, depth: Cell::new(0) })
     }
 
+    /// The `PRAGMA user_version` this build stamps: an FNV hash of everything `init` does, so a board already at it is left alone. The
+    /// original DDL, view rebuild and ALTERs took a write lock on every start (a hook is one process per call). Change `MIGRATION` whenever
+    /// `init` gains an ALTER or a data fix. (The .NET build stamps its own hash; two builds sharing one board just re-run the idempotent
+    /// init once each time the other has run.)
+    fn schema_version() -> i64 {
+        const MIGRATION: &str = "rust-2026-10-12.1";
+        let mut h: u32 = 2166136261;
+        for b in SCHEMA.bytes().chain(WAITING_SQL.bytes()).chain(MIGRATION.bytes()) {
+            h = (h ^ u32::from(b)).wrapping_mul(16777619);
+        }
+        i64::from((h & 0x7fff_ffff) | 1)
+    }
+
+    fn add_column(&self, table: &str, column: &str, ddl: &str) -> Result<()> {
+        let have: Vec<String> = self.rows(&format!("PRAGMA table_info({table})"), &[])?.iter().filter_map(|r| r["name"].as_str().map(String::from)).collect();
+        if !have.iter().any(|c| c == column) {
+            self.conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {ddl}"))?;
+        }
+        Ok(())
+    }
+
     /// Creates the schema and rebuilds the `open_questions` view from this file's rule.
     pub fn init(&self) -> Result<()> {
         let _: String = self.conn.query_row("PRAGMA journal_mode=WAL", [], |r| r.get(0))?;
+        let version = Self::schema_version();
+        if self.conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))? == version {
+            return Ok(());
+        }
         self.conn.execute_batch(SCHEMA)?;
         self.conn.execute_batch("DROP VIEW IF EXISTS open_questions;")?;
         self.conn.execute_batch(&format!(
@@ -167,6 +211,17 @@ impl Db {
                 self.conn.execute_batch(&format!("ALTER TABLE pull_requests ADD COLUMN {col} TEXT"))?;
             }
         }
+        // Boards made by older builds: the columns later versions added.
+        self.add_column("identities", "generation", "INTEGER NOT NULL DEFAULT 1")?;
+        self.add_column("identities", "phoenix_msg", "INTEGER")?;
+        self.add_column("identities", "model", "TEXT NOT NULL DEFAULT 'sonnet'")?;
+        self.add_column("identities", "running_model", "TEXT")?;
+        self.add_column("goals", "standing", "INTEGER NOT NULL DEFAULT 0")?;
+        self.add_column("goal_members", "work_id", "INTEGER")?;
+        for tier in ["haiku", "sonnet", "opus"] {
+            self.add_column("usage_samples", &format!("{tier}_sessions"), "INTEGER NOT NULL DEFAULT 0")?;
+        }
+        self.conn.execute_batch(&format!("PRAGMA user_version={version}"))?;
         Ok(())
     }
 

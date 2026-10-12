@@ -33,13 +33,14 @@ pub fn report() -> Value {
 /// Records the current reading (at most one per hour bucket).
 pub fn sample(db: &Db) {
     let r = report();
-    if r["week_pct"].is_null() && r["five_hour_pct"].is_null() {
+    // The board's table is the original's (`weekly_pct` is NOT NULL: a reading with no weekly figure is not a sample).
+    let Some(week) = r["week_pct"].as_f64() else {
         return;
-    }
+    };
     let ts = crate::db::now_iso();
     let _ = db.exec(
-        "INSERT OR REPLACE INTO usage_samples (ts, week_pct, five_hour_pct) VALUES (:ts, :w, :f)",
-        &[(":ts", &ts), (":w", &r["week_pct"].as_f64()), (":f", &r["five_hour_pct"].as_f64())],
+        "INSERT OR REPLACE INTO usage_samples (ts, weekly_pct, five_hour_pct) VALUES (:ts, :w, :f)",
+        &[(":ts", &ts), (":w", &week), (":f", &r["five_hour_pct"].as_f64())],
     );
 }
 

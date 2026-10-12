@@ -306,3 +306,43 @@ fn migrate_dry_run_writes_nothing_and_apply_backs_up() {
     assert!(std::fs::read_to_string(&cj).unwrap().contains("\"mcp\""));
     assert!(std::fs::read_dir(d.path().join("migrate_backups")).unwrap().count() >= 2);
 }
+
+#[test]
+fn a_fresh_board_has_every_table_the_original_made_and_init_is_idempotent() {
+    let (_d, db) = board();
+    for t in ["identities", "phoenix_chain", "goals", "experiments", "goal_members", "slots", "usage_samples", "permission_proposals", "recurring_jobs"] {
+        assert!(db.row("SELECT name FROM sqlite_master WHERE type='table' AND name=:n", &[(":n", &t)]).unwrap().is_some(), "missing table {t}");
+    }
+    let version: i64 = db.conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+    assert!(version > 0, "init stamps user_version");
+    db.init().unwrap(); // a board at the current version is left alone
+    assert_eq!(version, db.conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0)).unwrap());
+}
+
+#[test]
+fn init_adds_the_columns_a_board_from_an_older_build_lacks() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::open(&dir.path().join("old.db")).unwrap();
+    // The first generation of the identities table, before generation/phoenix_msg/model/running_model existed.
+    db.conn
+        .execute_batch(
+            "CREATE TABLE identities (name TEXT PRIMARY KEY COLLATE NOCASE, folder TEXT NOT NULL, charter TEXT, host TEXT NOT NULL DEFAULT 'windows',
+             claude_session_id TEXT, pid INTEGER, state TEXT NOT NULL DEFAULT 'stopped', autostart INTEGER NOT NULL DEFAULT 0,
+             created_ts TEXT NOT NULL, updated_ts TEXT NOT NULL);",
+        )
+        .unwrap();
+    db.init().unwrap();
+    let cols: Vec<String> = db.rows("PRAGMA table_info(identities)", &[]).unwrap().iter().filter_map(|r| r["name"].as_str().map(String::from)).collect();
+    for c in ["generation", "phoenix_msg", "model", "running_model"] {
+        assert!(cols.iter().any(|x| x == c), "missing column {c}");
+    }
+}
+
+#[test]
+fn a_usage_sample_lands_in_the_originals_table_shape() {
+    let (_d, db) = board();
+    // What `claude_usage.json` carries: the reading the window shows is recorded as weekly_pct (NOT NULL in the original's table).
+    db.exec("INSERT INTO usage_samples (ts, weekly_pct, five_hour_pct) VALUES ('2026-10-12T00:00:00+00:00', 41.5, 12.0)", &[]).unwrap();
+    let r = db.row("SELECT weekly_pct, swarm_sessions, sonnet_sessions FROM usage_samples", &[]).unwrap().unwrap();
+    assert_eq!((r["weekly_pct"].as_f64(), r["swarm_sessions"].as_i64(), r["sonnet_sessions"].as_i64()), (Some(41.5), Some(0), Some(0)));
+}
