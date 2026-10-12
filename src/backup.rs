@@ -8,8 +8,15 @@ use std::collections::HashSet;
 pub fn run(db: &Db) -> Result<String> {
     let dir = paths::backup_dir();
     std::fs::create_dir_all(&dir)?;
-    let name = format!("agentdesk-{}.db", chrono::Utc::now().format("%Y%m%d-%H%M%S"));
-    let path = dir.join(&name);
+    // Second resolution: two snapshots in one second (a manual run beside the scheduled one) must not overwrite or refuse each other.
+    let stamp = chrono::Utc::now().format("%Y%m%d-%H%M%S").to_string();
+    let mut path = dir.join(format!("agentdesk-{stamp}.db"));
+    for n in 1.. {
+        if !path.exists() {
+            break;
+        }
+        path = dir.join(format!("agentdesk-{stamp}-{n}.db"));
+    }
     db.exec(&format!("VACUUM INTO '{}'", path.to_string_lossy().replace('\'', "''")), &[])?;
     let integrity = verify(&path);
     let thinned = thin(&dir);
@@ -76,7 +83,7 @@ fn thin(dir: &std::path::Path) -> usize {
         .flatten()
         .filter_map(|e| {
             let n = e.file_name().to_string_lossy().into_owned();
-            let stamp = n.strip_prefix("agentdesk-")?.strip_suffix(".db")?.to_string();
+            let stamp = n.strip_prefix("agentdesk-")?.strip_suffix(".db")?.chars().take(15).collect::<String>(); // a "-N" suffix marks a same-second twin
             let t = chrono::NaiveDateTime::parse_from_str(&stamp, "%Y%m%d-%H%M%S").ok()?;
             Some((t.and_utc(), e.path()))
         })
