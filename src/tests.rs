@@ -361,3 +361,83 @@ fn a_fresh_board_has_every_table_and_column_of_a_dotnet_board() {
         }
     }
 }
+
+fn git_ok(dir: &std::path::Path, args: &[&str]) -> String {
+    let o = std::process::Command::new("git").args(args).current_dir(dir).output().unwrap();
+    assert!(o.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&o.stderr));
+    String::from_utf8_lossy(&o.stdout).trim().to_string()
+}
+
+#[test]
+fn the_backup_writes_linked_thread_notes_a_map_and_pushes_the_vault() {
+    let _lock = ENV.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    let (data, vault, remote) = (dir.path().join("data"), dir.path().join("vault"), dir.path().join("remote.git"));
+    std::fs::create_dir_all(&vault).unwrap();
+    git_ok(dir.path(), &["init", "-q", "--bare", "-b", "Main", remote.to_str().unwrap()]);
+    git_ok(&vault, &["init", "-q", "-b", "Main"]);
+    git_ok(&vault, &["config", "user.name", "tester"]);
+    git_ok(&vault, &["config", "user.email", "t@example.com"]);
+    git_ok(&vault, &["config", "commit.gpgsign", "false"]);
+    git_ok(&vault, &["remote", "add", "origin", remote.to_str().unwrap()]);
+    std::fs::write(vault.join("Home.md"), "home\n").unwrap();
+    git_ok(&vault, &["add", "Home.md"]);
+    git_ok(&vault, &["commit", "-q", "-m", "seed"]);
+    git_ok(&vault, &["push", "-q", "-u", "origin", "Main"]);
+    std::fs::create_dir_all(vault.join("notes")).unwrap();
+    std::fs::write(vault.join("notes").join("someone-elses-draft.md"), "mid-write\n").unwrap(); // not ours: must not be swept up
+    std::env::set_var("AGENTDESK_DATA", &data);
+    std::env::set_var("AGENTDESK_VAULT", &vault);
+    std::env::set_var("AGENTDESK_GIT_AUTHOR_NAME", "agentdesk-test");
+    std::env::set_var("AGENTDESK_GIT_AUTHOR_EMAIL", "test@example.com");
+
+    std::fs::create_dir_all(&data).unwrap();
+    let db = Db::open(&data.join("agentdesk.db")).unwrap();
+    db.init().unwrap();
+    let bio = db.start_thread("discussion", "bio: builder", "builder", AGENT, "I build things", None, None).unwrap();
+    let t = db.start_thread("discussion", "Fix \"quotes\" in the parser", "builder", AGENT, &format!("see thread {bio} and thread 999"), None, None).unwrap();
+
+    let first = crate::backup::run(&db).unwrap();
+    assert!(first.contains("integrity ok") && first.contains("committed, pushed"), "{first}");
+    let note = std::fs::read_to_string(vault.join("agentdesk/threads").join(format!("thread-{t}.md"))).unwrap();
+    assert!(note.contains(r#"aliases: ["Fix \"quotes\" in the parser"]"#));
+    assert!(note.contains(&format!("[[agentdesk/threads/thread-{bio}|builder]]")), "the author links to their bio thread");
+    assert!(note.contains(&format!("thread [[agentdesk/threads/thread-{bio}|{bio}]]")));
+    assert!(note.contains("thread 999") && !note.contains("thread-999"), "a mention of no thread stays text");
+    let moc = std::fs::read_to_string(vault.join("maps/AgentDesk MOC.md")).unwrap();
+    assert!(moc.contains(&format!("[[agentdesk/threads/thread-{t}|")));
+    let day = std::fs::read_dir(vault.join("agentdesk")).unwrap().flatten().find(|e| e.file_name().to_string_lossy().starts_with("20")).unwrap();
+    assert!(std::fs::read_to_string(day.path()).unwrap().contains(&format!("[[agentdesk/threads/thread-{t}|thread {t}]]")));
+    assert_eq!(git_ok(&remote, &["log", "-1", "--format=%an %s", "Main"]).split(' ').next(), Some("agentdesk-test"));
+    assert!(!git_ok(&vault, &["show", "--stat", "--format=", "HEAD"]).contains("someone-elses-draft"), "only our paths are committed");
+    let state: Value = serde_json::from_str(&std::fs::read_to_string(data.join("vault_state.json")).unwrap()).unwrap();
+    assert_eq!((state["pushed"].as_bool(), state["error"].is_null()), (Some(true), true));
+
+    let head = git_ok(&vault, &["rev-parse", "HEAD"]);
+    let again = crate::backup::run(&db).unwrap();
+    assert!(again.contains("0 thread notes"), "nothing rewritten: {again}");
+    assert_eq!(head, git_ok(&vault, &["rev-parse", "HEAD"]), "a quiet hour makes no commit");
+
+    git_ok(&vault, &["remote", "set-url", "origin", dir.path().join("nowhere.git").to_str().unwrap()]);
+    db.start_thread("discussion", "another", "builder", AGENT, "x", None, None).unwrap();
+    let broken = crate::backup::run(&db).unwrap();
+    assert!(broken.contains("GIT ERROR: push failed"), "a dead remote is reported, not raised: {broken}");
+    assert_eq!(git_ok(&vault, &["rev-list", "--count", "origin/Main..HEAD"]), "1", "the commit stays local for the next run");
+
+    for k in ["AGENTDESK_DATA", "AGENTDESK_VAULT", "AGENTDESK_GIT_AUTHOR_NAME", "AGENTDESK_GIT_AUTHOR_EMAIL"] {
+        std::env::remove_var(k);
+    }
+}
+
+#[test]
+fn a_snapshot_that_fails_the_integrity_check_is_set_aside() {
+    let dir = tempfile::tempdir().unwrap();
+    let good = dir.path().join("agentdesk-20261012-000000.db");
+    rusqlite::Connection::open(&good).unwrap().execute_batch("CREATE TABLE t(a);").unwrap();
+    assert_eq!(crate::backup::verify(&good), "ok");
+    assert!(good.exists());
+    let bad = dir.path().join("agentdesk-20261012-000001.db");
+    std::fs::write(&bad, "this is not a database".repeat(200)).unwrap();
+    assert_ne!(crate::backup::verify(&bad), "ok");
+    assert!(!bad.exists() && dir.path().join("agentdesk-20261012-000001.db.corrupt").exists());
+}
