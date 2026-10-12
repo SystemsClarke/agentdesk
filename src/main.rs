@@ -8,6 +8,7 @@
 //!   agentdesk job ...              recurring jobs: a prompt run on a schedule
 //!   agentdesk backup | setup | usage-feed | check-prs
 
+mod adopt;
 mod attach;
 mod backup;
 mod concierge;
@@ -26,9 +27,11 @@ mod notify;
 mod parity;
 mod paths;
 mod permissions;
+mod plain;
 mod prs;
 mod service;
 mod sessions;
+mod slots;
 mod supervisor;
 #[cfg(test)]
 mod tests;
@@ -51,6 +54,7 @@ mod vault_threads;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use serde_json::{json, Value};
 use std::io::{IsTerminal, Read};
 
 #[derive(Parser)]
@@ -95,6 +99,40 @@ enum Cmd {
         #[arg(long)]
         folder: Option<String>,
     },
+    /// The headless sessions the daemon hosts (`ui:session_list`).
+    Sessions,
+    /// `start <name>` runs the identity; `start <name> <folder> [command...]` runs a plain headless session (default command: claude).
+    Start {
+        name: String,
+        folder: Option<String>,
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        command: Vec<String>,
+    },
+    /// Stops the identity or plain session called <name>.
+    Stop { name: String },
+    /// Stops the identity and removes it from the list; its conversation stays on disk.
+    Forget { name: String },
+    /// Signs up an identity: `new <name> <folder> [--charter T] [--host H] [--autostart] [--model M]`.
+    New {
+        name: String,
+        folder: String,
+        #[arg(long)]
+        charter: Option<String>,
+        #[arg(long)]
+        host: Option<String>,
+        #[arg(long)]
+        model: Option<String>,
+        #[arg(long)]
+        autostart: bool,
+    },
+    /// Lists the identities.
+    List,
+    /// Claude Code conversations of the last day that someone typed in.
+    Adoptable,
+    /// Makes a conversation an identity and starts it: `adopt <session-id> <name>`.
+    Adopt { session_id: String, name: String },
+    /// Uses a hosted session from this console, like tmux attach; Ctrl+] detaches.
+    Attach { name: String },
     /// Recurring jobs.
     Job {
         #[command(subcommand)]
@@ -167,8 +205,11 @@ enum GoalCmd {
     New {
         name: String,
         folder: String,
+        /// What it should achieve (or give the words after the folder: `goal new g1 . make it faster`).
         #[arg(long)]
-        objective: String,
+        objective: Option<String>,
+        #[arg(trailing_var_arg = true)]
+        words: Vec<String>,
     },
     /// Approve the lead's proposal and start the goal; optional budget: members, hours, wake cadence in minutes.
     Approve {
@@ -282,6 +323,24 @@ fn real_main() -> Result<()> {
         Some(Cmd::Job { cmd }) => job(cmd),
         Some(Cmd::Identity { cmd }) => identity(cmd),
         Some(Cmd::Goal { cmd }) => goal(cmd),
+        Some(Cmd::Sessions) => verb("ui:session_list", None),
+        Some(Cmd::Start { name, folder, command }) => match folder {
+            None => verb("ui:identity_start", Some(json!({"name": name}))),
+            Some(f) => {
+                let f = std::fs::canonicalize(&f).map(|p| p.to_string_lossy().into_owned()).unwrap_or(f);
+                verb("ui:session_start", Some(json!({"name": name, "folder": f, "command": if command.is_empty() { Value::Null } else { json!(command.join(" ")) }})))
+            }
+        },
+        Some(Cmd::Stop { name }) => verb("ui:identity_stop", Some(json!({"name": name}))),
+        Some(Cmd::Forget { name }) => verb("ui:identity_forget", Some(json!({"name": name}))),
+        Some(Cmd::New { name, folder, charter, host, model, autostart }) => {
+            let f = std::fs::canonicalize(&folder).map(|p| p.to_string_lossy().trim_start_matches(r"\\?\").to_string()).unwrap_or(folder);
+            verb("ui:identity_create", Some(json!({"name": name, "folder": f, "charter": charter, "host": host, "model": model, "autostart": autostart})))
+        }
+        Some(Cmd::List) => verb("ui:identity_list", None),
+        Some(Cmd::Adoptable) => verb("ui:adoptable", None),
+        Some(Cmd::Adopt { session_id, name }) => verb("ui:adopt", Some(json!({"session_id": session_id, "name": name}))),
+        Some(Cmd::Attach { name }) => attach::client(&name),
         Some(Cmd::Governor { action }) => governor_cmd(action.as_deref()),
         Some(Cmd::Concierge { action, folder }) => concierge_cmd(action.as_deref(), folder),
         Some(Cmd::Backup) => {
@@ -447,11 +506,27 @@ fn governor_cmd(action: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+/// Runs one of the original's requests through `ui_api` and prints its document (the original CLI's verbs are thin wrappers).
+fn verb(request: &str, args: Option<Value>) -> Result<()> {
+    let code = ui_api::run(request, args.map(|a| a.to_string()).as_deref());
+    if code != 0 {
+        std::process::exit(code);
+    }
+    Ok(())
+}
+
 fn goal(cmd: GoalCmd) -> Result<()> {
     let d = open()?;
     let me = identity::Caller::from_env();
     let out = match cmd {
-        GoalCmd::New { name, folder, objective } => goals::create(&d, &name, &objective, &folder)?,
+        GoalCmd::New { name, folder, objective, words } => {
+            let objective = objective.unwrap_or_else(|| words.join(" "));
+            if objective.trim().is_empty() {
+                anyhow::bail!("say what the goal should achieve: goal new <name> <folder> <objective...>");
+            }
+            let folder = std::fs::canonicalize(&folder).map(|p| p.to_string_lossy().trim_start_matches(r"\\?\").to_string()).unwrap_or(folder);
+            goals::create(&d, &goals::slug(&name), &objective, &folder)?
+        }
         GoalCmd::Approve { name, members, hours, cadence } => goals::approve(&d, &me, &name, members, hours, cadence)?,
         GoalCmd::Budget { name, members, hours, cadence } => goals::set_budget(&d, &me, &name, members, hours, cadence)?,
         GoalCmd::Stop { name } => goals::stop(&d, &me, &name)?,

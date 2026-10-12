@@ -53,6 +53,7 @@ def _reply(b):
 @feature("ui.reply.autowake", "ui-api", "5 s after a reply, an identity opener that was not handed it is woken (settings.json auto_wake)", SRC)
 def _autowake(b):
     b.stub("claude", SLEEPER)
+    _daemon(b)
     b.need("ui:identity_create", {"name": "builder", "folder": b.work})
     b.need("ui:identity_start", {"name": "builder"})
     tid = b.tool("ask_human", {"subject": "Q", "body": "Go?", "author": "builder"}, session="sx")["thread_id"]
@@ -125,6 +126,14 @@ def _checkprs(b):
 
 @feature("ui.governor", "ui-api", "ui:governor: the usage forecast, caps and model tiers, from the last 5 weeks of samples", SRC)
 def _governor(b):
+    import datetime as dt
+    d = b.need("ui:governor")
+    keys(d, "enforcing", "advisory", "fresh", "samples", "reason", "pool")  # with no samples: samples 0 and a reason
+    assert d["samples"] == 0
+    now = dt.datetime.now(dt.timezone.utc)
+    for i in range(6):
+        t = (now - dt.timedelta(hours=6 - i)).strftime("%Y-%m-%dT%H:%M:%S+00:00")
+        b.sql("INSERT INTO usage_samples (ts, weekly_pct, weekly_reset_ts, swarm_sessions) VALUES (?,?,?,0)", (t, 10 + i, (now + dt.timedelta(days=3)).strftime("%Y-%m-%dT%H:%M:%S+00:00")))
     d = b.need("ui:governor")
     keys(d, "enforcing", "advisory", "fresh", "samples", "caps", "models", "series", "summary", "would_queue", "would_shed", "held", "pool")
 
@@ -150,7 +159,7 @@ def _concierge(b):
     d = b.need("ui:concierge", {"on": True})
     assert d["on"] is True and d["lead"] == "concierge-lead"
     g = b.sql("SELECT * FROM goals WHERE name='concierge'")[0]
-    assert g["standing"] == 1 and g["measure_cmd"] == "internal:open_work" and g["success"] == "value <= 0" and g["max_members"] == 3
+    assert g["standing"] == 1 and g["measure_cmd"] == "internal:open_triage" and g["success"] == "value <= 0" and g["max_members"] == 3
     assert b.need("ui:concierge", {"on": False})["on"] is False
 
 
@@ -182,7 +191,9 @@ def _folders(b):
     os.makedirs(work)
     with open(os.path.join(proj, "c1.jsonl"), "w") as f:
         f.write(json.dumps({"type": "user", "cwd": work, "message": {"role": "user", "content": "hi"}}) + "\n")
-    d = b.need("ui:folders")
+    scratch = os.path.join(b.dir, "scratch-tmp")
+    os.makedirs(scratch)
+    d = b.need("ui:folders", env={"TMPDIR": scratch, "TEMP": scratch, "TMP": scratch})
     assert any(x["path"] == work for x in d["folders"]), d
     keys(d["folders"][0], "path", "who", "uses", "last")
 

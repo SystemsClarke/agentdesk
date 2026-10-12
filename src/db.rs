@@ -83,6 +83,9 @@ CREATE TABLE IF NOT EXISTS recurring_jobs (name TEXT PRIMARY KEY COLLATE NOCASE,
 CREATE TABLE IF NOT EXISTS permission_proposals (id INTEGER PRIMARY KEY AUTOINCREMENT, rule TEXT NOT NULL, scope TEXT NOT NULL, project_dir TEXT,
     reason TEXT NOT NULL, blocked TEXT, requested_by TEXT NOT NULL, thread_id INTEGER, status TEXT NOT NULL DEFAULT 'pending',
     created_ts TEXT NOT NULL, decided_ts TEXT, reverted_ts TEXT, settings_path TEXT, backup TEXT);
+CREATE TABLE IF NOT EXISTS plain_sessions (name TEXT PRIMARY KEY COLLATE NOCASE, folder TEXT NOT NULL, command TEXT, state TEXT NOT NULL DEFAULT 'queued',
+    pid INTEGER, started_ts TEXT, created_ts TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS session_inbox (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, kind TEXT NOT NULL, data TEXT, cols INTEGER, rows INTEGER, ts TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS usage_samples (id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL UNIQUE, weekly_pct REAL NOT NULL,
     weekly_reset_ts TEXT, five_hour_pct REAL, five_hour_reset_ts TEXT, swarm_sessions INTEGER NOT NULL DEFAULT 0,
     haiku_sessions INTEGER NOT NULL DEFAULT 0, sonnet_sessions INTEGER NOT NULL DEFAULT 0, opus_sessions INTEGER NOT NULL DEFAULT 0);

@@ -68,6 +68,9 @@ def _sessions(b):
 
 @feature("cli.start-stop-session", "cli", "`agentdesk start <name> <folder> [command...]` / `stop <name>` run and end a plain session", SRC)
 def _startstop(b):
+    b.spawn("daemon")
+    import time
+    time.sleep(1)
     r = verb(b, "start", "s1", b.work, "python3", "-c", "import time;time.sleep(30)")
     assert json.loads(r.stdout)["name"] == "s1"
     assert "stopped" in verb(b, "stop", "s1").stdout

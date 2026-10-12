@@ -114,6 +114,13 @@ impl Supervisor {
             self.resumed = true;
         }
         self.wake(db)?;
+        crate::plain::tick(db, &mut self.host)?;
+        for r in ids::list(db)?.iter().filter(|r| r["state"].as_str() == Some("running") && r["wake_prompt"].as_str().is_some_and(|w| !w.is_empty())) {
+            let (n, w) = (r["name"].as_str().unwrap_or(""), r["wake_prompt"].as_str().unwrap_or(""));
+            if self.host.alive(n) && self.host.type_text(n, &w.replace('\n', " ")).is_ok() {
+                db.exec("UPDATE identities SET wake_prompt=NULL WHERE name=:n", &[(":n", &n)])?;
+            }
+        }
         let rows = ids::list(db)?;
         let name = |r: &Value| r["name"].as_str().unwrap_or("").to_string();
         // A running row with no live process ended on its own; a live process whose row is no longer running is ended.
@@ -123,7 +130,7 @@ impl Supervisor {
                 paths::log("INFO", &format!("identity {} ended", name(r)));
             }
         }
-        for live in self.host.names() {
+        for live in self.host.names().into_iter().filter(|n| !n.starts_with("plain:")) {
             let wanted = rows.iter().any(|r| name(r).eq_ignore_ascii_case(&live) && r["state"].as_str() == Some("running"));
             if !wanted {
                 self.host.stop(&live);

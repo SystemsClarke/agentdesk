@@ -167,3 +167,119 @@ pub fn base64_decode(text: &str) -> Option<Vec<u8>> {
     }
     Some(out)
 }
+
+fn b64(bytes: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::new();
+    for c in bytes.chunks(3) {
+        let n = (c[0] as u32) << 16 | (*c.get(1).unwrap_or(&0) as u32) << 8 | *c.get(2).unwrap_or(&0) as u32;
+        out.push(T[(n >> 18) as usize & 63] as char);
+        out.push(T[(n >> 12) as usize & 63] as char);
+        out.push(if c.len() > 1 { T[(n >> 6) as usize & 63] as char } else { '=' });
+        out.push(if c.len() > 2 { T[n as usize & 63] as char } else { '=' });
+    }
+    out
+}
+
+/// The bytes a key press sends to a terminal.
+fn key_bytes(k: &ratatui::crossterm::event::KeyEvent) -> Vec<u8> {
+    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
+    let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
+    match k.code {
+        KeyCode::Char(c) if ctrl && c.is_ascii_alphabetic() => vec![(c.to_ascii_lowercase() as u8) - b'a' + 1],
+        KeyCode::Char(c) => c.to_string().into_bytes(),
+        KeyCode::Enter => vec![b'\r'],
+        KeyCode::Backspace => vec![0x7f],
+        KeyCode::Tab => vec![b'\t'],
+        KeyCode::Esc => vec![0x1b],
+        KeyCode::Up => b"\x1b[A".to_vec(),
+        KeyCode::Down => b"\x1b[B".to_vec(),
+        KeyCode::Right => b"\x1b[C".to_vec(),
+        KeyCode::Left => b"\x1b[D".to_vec(),
+        KeyCode::Home => b"\x1b[H".to_vec(),
+        KeyCode::End => b"\x1b[F".to_vec(),
+        KeyCode::PageUp => b"\x1b[5~".to_vec(),
+        KeyCode::PageDown => b"\x1b[6~".to_vec(),
+        KeyCode::Delete => b"\x1b[3~".to_vec(),
+        _ => vec![],
+    }
+}
+
+/// `agentdesk attach <name>`: uses a session the supervisor hosts from this console. Ctrl+] detaches; the session keeps running.
+pub fn client(name: &str) -> Result<()> {
+    use ratatui::crossterm::{
+        event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
+        terminal,
+    };
+    let Some((port, key)) = read_addr() else { anyhow::bail!("no supervisor is running: start `agentdesk daemon` (or the window), which owns the sessions") };
+    let (cols, rows) = terminal::size().unwrap_or((120, 30));
+    let mut chosen = None;
+    for target in [name.to_string(), format!("plain:{name}")] {
+        let mut conn = std::net::TcpStream::connect(("127.0.0.1", port))?;
+        writeln!(conn, "ATTACH {key} {target} {cols} {rows}")?;
+        let mut reader = BufReader::new(conn.try_clone()?);
+        let mut line = String::new();
+        reader.read_line(&mut line)?;
+        if line.trim() == "OK" {
+            chosen = Some((conn, reader));
+            break;
+        }
+    }
+    let Some((mut conn, mut reader)) = chosen else { anyhow::bail!("no such session: {name} (is it running? `agentdesk list`)") };
+    terminal::enable_raw_mode()?;
+    let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let d2 = done.clone();
+    let out = std::thread::spawn(move || {
+        let mut stdout = std::io::stdout();
+        let mut buf = [0u8; 8192];
+        while let Ok(n) = std::io::Read::read(&mut reader, &mut buf) {
+            if n == 0 {
+                break;
+            }
+            let _ = stdout.write_all(&buf[..n]);
+            let _ = stdout.flush();
+        }
+        d2.store(true, std::sync::atomic::Ordering::Relaxed);
+    });
+    let result = (|| -> Result<()> {
+        while !done.load(std::sync::atomic::Ordering::Relaxed) {
+            if event::poll(std::time::Duration::from_millis(100))? {
+                match event::read()? {
+                    Event::Key(k) if k.kind != KeyEventKind::Release => {
+                        if k.code == KeyCode::Char(']') && k.modifiers.contains(KeyModifiers::CONTROL) {
+                            writeln!(conn, "DETACH")?;
+                            break;
+                        }
+                        let b = key_bytes(&k);
+                        if !b.is_empty() {
+                            writeln!(conn, "INPUT {}", b64(&b))?;
+                        }
+                    }
+                    Event::Resize(c, r) => writeln!(conn, "RESIZE {c} {r}")?,
+                    _ => {}
+                }
+            }
+        }
+        Ok(())
+    })();
+    let _ = terminal::disable_raw_mode();
+    println!();
+    drop(conn);
+    if done.load(std::sync::atomic::Ordering::Relaxed) {
+        let _ = out.join();
+        println!("[the session ended]");
+    } else {
+        println!("[detached; {name} keeps running]");
+    }
+    result
+}
+
+#[cfg(test)]
+mod client_tests {
+    #[test]
+    fn base64_matches_the_standard() {
+        assert_eq!(super::b64(b"ping\r"), "cGluZw0=");
+        assert_eq!(super::b64(b"a"), "YQ==");
+        assert_eq!(super::b64(b"abc"), "YWJj");
+    }
+}

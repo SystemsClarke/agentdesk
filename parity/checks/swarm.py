@@ -179,7 +179,7 @@ def _met(b):
     goal(b)
     b.need("ui:goal_propose", {"name": "g1", "hypothesis": "h", "measure_cmd": "python3 -c \"print(1)\"", "success": "value < 3"})
     b.need("ui:goal_approve", {"name": "g1"})
-    env = {"AGENTDESK_IDENTITY": "g1-lead", "CLAUDE_CODE_SESSION_ID": "lead", "CLAUDECODE": "1"}
+    env = {"AGENTDESK_IDENTITY": "g1-lead", "AGENTDESK_AUTHOR": "g1-lead", "CLAUDE_CODE_SESSION_ID": "lead", "CLAUDECODE": "1"}
     m = b.mcp(env=env)
     m.initialize()
     n = m.call("experiment_start", {"goal": "g1", "change": "x"})["n"]
@@ -202,7 +202,7 @@ def _spawn(b):
     goal(b)
     b.need("ui:goal_propose", {"name": "g1", "hypothesis": "h", "measure_cmd": "echo 5", "success": "value < 3"})
     b.need("ui:goal_approve", {"name": "g1"})
-    env = {"AGENTDESK_IDENTITY": "g1-lead", "CLAUDE_CODE_SESSION_ID": "lead", "CLAUDECODE": "1"}
+    env = {"AGENTDESK_IDENTITY": "g1-lead", "AGENTDESK_AUTHOR": "g1-lead", "CLAUDE_CODE_SESSION_ID": "lead", "CLAUDECODE": "1"}
     m = b.mcp(env=env)
     m.initialize()
     r = m.call("member_spawn", {"goal": "g1", "name": "m1", "task": "do a small thing", "model": "haiku"})
@@ -258,7 +258,7 @@ def _forecast(b):
     import datetime as dt
     now = dt.datetime.now(dt.timezone.utc)
     for i in range(48):
-        t = now - dt.timedelta(hours=48 - i)
+        t = now - dt.timedelta(hours=47 - i)
         sample(b, t.strftime("%Y-%m-%dT%H:%M:%S+00:00"), 10 + i * 0.5)
     reset = (now + dt.timedelta(days=3)).strftime("%Y-%m-%dT%H:%M:%S+00:00")
     b.sql("UPDATE usage_samples SET weekly_reset_ts=?", (reset,))
