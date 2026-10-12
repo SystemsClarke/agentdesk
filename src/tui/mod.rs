@@ -2,6 +2,7 @@
 //! console, Who's on, options, recurring jobs, permission rules, agents) with the same letter keys and wording.
 //! `screens.rs` builds each screen as lines of tagged segments; this file is state, keys and drawing.
 
+mod charts;
 mod editor;
 mod md;
 mod screens;
