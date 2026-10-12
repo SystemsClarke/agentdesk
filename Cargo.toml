@@ -10,14 +10,19 @@ anyhow = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 clap = { version = "4", features = ["derive"] }
 dirs = "5"
+fancy-regex = "0.13"
 notify-rust = "4"
 portable-pty = "0.9"
 ratatui = "0.29"
 regex = "1"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 self_update = { version = "0.41", default-features = false, features = ["rustls", "archive-tar", "archive-zip", "compression-flate2", "compression-zip-deflate"] }
 serde_json = { version = "1", features = ["preserve_order"] }
+tungstenite = { version = "0.24", default-features = false, features = ["handshake"] }
 unicode-width = "0.2"
+ureq = { version = "2", features = ["json"] }
+webpki-roots = "1"
 
 [dev-dependencies]
 tempfile = "3"

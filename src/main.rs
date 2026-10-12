@@ -29,6 +29,9 @@ mod permissions;
 mod prs;
 mod service;
 mod sessions;
+mod slack;
+mod slack_cmd;
+mod slackfmt;
 mod supervisor;
 #[cfg(test)]
 mod tests;
@@ -40,6 +43,8 @@ mod tests_goals;
 mod tests_governor;
 #[cfg(test)]
 mod tests_identities;
+#[cfg(test)]
+mod tests_slack;
 mod tools;
 mod tools_gen;
 mod tui;

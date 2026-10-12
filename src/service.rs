@@ -24,6 +24,7 @@ pub fn run(stop: Arc<AtomicBool>) {
     let mut t_update = None::<Instant>;
     let mut t_super = None::<Instant>;
     let mut supervisor = crate::supervisor::Supervisor::new();
+    crate::slack::spawn(stop.clone()); // the Slack bridge, if it is configured and nobody else runs it
     let (mut t_jobs, mut t_prs, mut t_usage, mut t_sweep, mut t_toast) = (None::<Instant>, None::<Instant>, None::<Instant>, None::<Instant>, None::<Instant>);
     let due = |t: &mut Option<Instant>, every: Duration, first: Duration| -> bool {
         let now = Instant::now();

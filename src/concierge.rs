@@ -84,3 +84,13 @@ pub fn state(db: &Db) -> Result<Value> {
         "held": held,
     }))
 }
+
+/// The folder the Concierge's lead and workers run in: the goal's own once it exists, else `AGENTDESK_CONCIERGE_FOLDER`, else here.
+pub fn default_folder(db: &Db) -> String {
+    db.scalar_str("SELECT measure_folder FROM goals WHERE name=:n", &[(":n", &NAME)])
+        .ok()
+        .flatten()
+        .or_else(|| std::env::var("AGENTDESK_CONCIERGE_FOLDER").ok().filter(|f| !f.is_empty()))
+        .or_else(|| std::env::current_dir().ok().map(|p| p.to_string_lossy().into_owned()))
+        .unwrap_or_default()
+}
