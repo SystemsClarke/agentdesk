@@ -10,7 +10,9 @@
 
 mod attach;
 mod backup;
+mod concierge;
 mod db;
+mod dispatcher;
 mod goals;
 mod governor;
 mod hooks;
@@ -30,6 +32,8 @@ mod sessions;
 mod supervisor;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_concierge;
 #[cfg(test)]
 mod tests_goals;
 #[cfg(test)]
@@ -81,6 +85,14 @@ enum Cmd {
     Governor {
         /// on, off or show (the default)
         action: Option<String>,
+    },
+    /// The Concierge: keeps Work to Hire drained with a small swarm. `concierge` shows it, `concierge on|off` turns it on or off.
+    Concierge {
+        /// on, off or show (the default)
+        action: Option<String>,
+        /// The folder its lead and workers run in (default: $AGENTDESK_CONCIERGE_FOLDER, else here).
+        #[arg(long)]
+        folder: Option<String>,
     },
     /// Recurring jobs.
     Job {
@@ -257,6 +269,7 @@ fn real_main() -> Result<()> {
         Some(Cmd::Identity { cmd }) => identity(cmd),
         Some(Cmd::Goal { cmd }) => goal(cmd),
         Some(Cmd::Governor { action }) => governor_cmd(action.as_deref()),
+        Some(Cmd::Concierge { action, folder }) => concierge_cmd(action.as_deref(), folder),
         Some(Cmd::Backup) => {
             println!("{}", backup::run(&open()?)?);
             Ok(())
@@ -368,6 +381,26 @@ fn identity(cmd: IdentityCmd) -> Result<()> {
     };
     println!("{}", serde_json::to_string_pretty(&row)?);
     if note && !supervisor::running() {
+        eprintln!("note: no supervisor is running, so nothing will act on this yet. Start `agentdesk daemon` (or the window).");
+    }
+    Ok(())
+}
+
+fn concierge_cmd(action: Option<&str>, folder: Option<String>) -> Result<()> {
+    let on = match action {
+        Some("on") => Some(true),
+        Some("off") => Some(false),
+        Some("show") | None => None,
+        Some(other) => anyhow::bail!("concierge takes on, off or show, not {other}"),
+    };
+    let folder = folder
+        .or_else(|| std::env::var("AGENTDESK_CONCIERGE_FOLDER").ok().filter(|f| !f.is_empty()))
+        .or_else(|| std::env::current_dir().ok().map(|p| p.to_string_lossy().into_owned()))
+        .unwrap_or_default();
+    let d = open()?;
+    let out = concierge::toggle(&d, &identity::Caller::from_env(), &folder, on)?;
+    println!("{}", serde_json::to_string_pretty(&out)?);
+    if on.is_some() && !supervisor::running() {
         eprintln!("note: no supervisor is running, so nothing will act on this yet. Start `agentdesk daemon` (or the window).");
     }
     Ok(())

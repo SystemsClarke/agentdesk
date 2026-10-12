@@ -287,6 +287,76 @@ pub fn stop(db: &Db, c: &Caller, name: &str) -> Result<Value> {
     need(db, name)
 }
 
+/// A goal that is on until John turns it off (the Concierge): its test is fixed by the core, not proposed.
+pub struct Standing<'a> {
+    pub name: &'a str,
+    pub objective: &'a str,
+    pub folder: &'a str,
+    pub charter: &'a str,
+    pub model: &'a str,
+    pub hypothesis: &'a str,
+    pub measure: &'a str,
+    pub success: &'a str,
+    pub max_members: i64,
+    pub cadence_minutes: f64,
+}
+
+/// John turning a standing goal on is its approval: it is created running (with its lead identity) the first time, and started again if it
+/// was stopped. Nothing is launched here: the next tick measures, and wakes the lead only if there is work.
+pub fn ensure(db: &Db, c: &Caller, s: &Standing) -> Result<Value> {
+    if !is_john(c) {
+        return err("only John turns a standing goal on");
+    }
+    parse_line(s.success)?;
+    let lead = format!("{}-lead", s.name);
+    let state = get(db, s.name)?.map(|g| st(&g, "state").to_string());
+    if state.is_none() && ids::get(db, &lead)?.is_none() {
+        ids::create(db, &lead, s.folder, Some(s.charter), Some(s.model), false)?;
+    }
+    let ts = now_iso();
+    match state.as_deref() {
+        None => {
+            let thread = db.start_thread(
+                "discussion",
+                &format!("goal: {}", s.name),
+                AUTHOR,
+                AGENT,
+                &format!(
+                    "**Goal {}** (standing, turned on by John): {}
+
+Lead: {lead}. Measure: `{}`, on its line when {}; there it idles and the core keeps re-checking, so it never ends by itself.",
+                    s.name, s.objective, s.measure, s.success
+                ),
+                None,
+                None,
+            )?;
+            db.exec(
+                "INSERT INTO goals (name, objective, hypothesis, measure_cmd, measure_folder, success, max_members, cadence_minutes, state, lead, thread_id, started_ts, created_ts, updated_ts, standing)                  VALUES (:n,:o,:h,:m,:f,:s,:mm,:c,'running',:l,:t,:ts,:ts,:ts,1)",
+                &[
+                    (":n", &s.name),
+                    (":o", &s.objective),
+                    (":h", &s.hypothesis),
+                    (":m", &s.measure),
+                    (":f", &s.folder),
+                    (":s", &s.success),
+                    (":mm", &s.max_members),
+                    (":c", &s.cadence_minutes),
+                    (":l", &lead),
+                    (":t", &thread),
+                    (":ts", &ts),
+                ],
+            )?;
+        }
+        Some("running") => {}
+        Some(_) => {
+            db.exec("UPDATE goals SET state='running', standing=1, started_ts=:ts, woke_ts=NULL, updated_ts=:ts WHERE name=:n", &[(":ts", &ts), (":n", &s.name)])?;
+            let g = need(db, s.name)?;
+            db.reply(thread_of(&g), AUTHOR, AGENT, "**Turned on by John.**", None, None)?;
+        }
+    }
+    status(db, s.name)
+}
+
 const LIST_SQL: &str = "SELECT g.name, g.state, g.objective, g.lead, g.thread_id, g.success, \
   (SELECT COUNT(*) FROM experiments e WHERE e.goal=g.name) AS experiments, \
   (SELECT value FROM experiments e WHERE e.goal=g.name AND e.measured_ts IS NOT NULL ORDER BY e.n DESC LIMIT 1) AS last_value, \
@@ -381,6 +451,12 @@ pub fn experiment_done_wait(db: &Db, c: &Caller, goal: &str, n: i64, wait: Durat
 /// Starts member `<goal>-<name>`. With `work_id`, the lead's claim on that Work to Hire item is handed to the member, which completes it
 /// (`complete_work`) before it retires.
 pub fn spawn(db: &Db, c: &Caller, goal: &str, name: &str, task: &str, model: Option<&str>, work_id: Option<i64>) -> Result<Value> {
+    lead_only(c, &running(db, goal)?)?;
+    spawn_as_lead(db, goal, name, task, model, work_id)
+}
+
+/// `spawn` for the core itself: the Dispatcher starts workers on the goal lead's behalf, with no session of the lead's to check.
+pub fn spawn_as_lead(db: &Db, goal: &str, name: &str, task: &str, model: Option<&str>, work_id: Option<i64>) -> Result<Value> {
     let model = model.map(|m| m.trim().to_lowercase()).filter(|m| !m.is_empty()).unwrap_or_else(|| "sonnet".to_string());
     if !ids::MODELS.contains(&model.as_str()) {
         return err("model is haiku, sonnet or opus");
@@ -389,7 +465,6 @@ pub fn spawn(db: &Db, c: &Caller, goal: &str, name: &str, task: &str, model: Opt
         return err("a member name is letters, digits and dashes");
     }
     let g = running(db, goal)?;
-    lead_only(c, &g)?;
     let id = format!("{goal}-{name}");
     if db.scalar_i64("SELECT 1 FROM goal_members WHERE identity=:i", &[(":i", &id)])?.is_some() {
         return err(format!("{id} is already a member"));
