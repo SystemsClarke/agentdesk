@@ -34,7 +34,9 @@ jobs:
         shell: bash
         run: |
           PY=python3; command -v python3 >/dev/null || PY=python
-          $PY -m pip install numpy >/dev/null 2>&1 || true
+          # numpy is the vault search's only dependency; a distribution Python (Ubuntu 24.04) refuses a plain pip install
+          $PY -m pip install numpy >/dev/null 2>&1 || $PY -m pip install --break-system-packages numpy >/dev/null 2>&1 || true
+          $PY -c "import numpy; print('numpy', numpy.__version__)" || echo "numpy is missing: vault.search and dictation will fail"
           $PY parity/coverage.py
           # Linux enforces the ratchet (nothing that passed may stop passing); macOS and Windows report, so a
           # platform quirk in a check is visible in the artifact without blocking, until the checks are proven there.
