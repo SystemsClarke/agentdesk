@@ -296,7 +296,7 @@ fn attach_probe(n: &str, a: &Value) -> Result<Value> {
 
 /// `ui:wake`: John's latest reply on a question goes to the agent that asked it (never automatically beyond the supervisor's own
 /// 5-second wake). A stopped identity is started with it as its first prompt; a running one is handed it to type.
-fn wake(db: &Db, thread_id: i64) -> Result<Value> {
+pub fn wake(db: &Db, thread_id: i64) -> Result<Value> {
     let Some(t) = db.row("SELECT subject, opened_by, channel FROM threads WHERE id=:t", &[(":t", &thread_id)])? else {
         return crate::db::err(format!("no such thread: {thread_id}"));
     };

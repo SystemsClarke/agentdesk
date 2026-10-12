@@ -51,6 +51,7 @@ mod update;
 mod usage;
 mod vault;
 mod vault_threads;
+mod web;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};

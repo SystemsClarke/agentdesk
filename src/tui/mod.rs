@@ -41,6 +41,8 @@ pub enum Screen {
     Options,
     Compose,
     Agents,
+    Adopt,
+    Goal,
     Ask,
 }
 
@@ -48,6 +50,8 @@ pub enum Screen {
 pub enum AskDone {
     NewJob,
     NewAgent,
+    NewGoal,
+    Adopt(String),
 }
 
 #[derive(Clone)]
@@ -65,6 +69,8 @@ pub enum Confirm {
     Rule(i64, char),
     CloseThread(i64),
     Forget(String),
+    StopGoal(String),
+    ConciergeOff,
 }
 
 pub struct App {
@@ -99,10 +105,30 @@ pub struct App {
     pub quit_at: Option<Instant>,
     pub quit: bool,
     pub body_h: usize,
+    pub goal_name: Option<String>,
+    pub goal_doc: Option<Value>,
+    pub adoptables: Vec<crate::adopt::Convo>,
+    pub adopt_note: Option<String>,
+    pub attach_request: Option<String>,
     data_version: i64,
     last_load: Instant,
     reader_key: Option<(i64, usize)>,
     scroll_end: bool,
+}
+
+fn john() -> crate::identity::Caller {
+    crate::identity::Caller::default()
+}
+
+fn concierge_folder() -> String {
+    std::env::var("AGENTDESK_CONCIERGE_FOLDER")
+        .ok()
+        .filter(|f| !f.is_empty())
+        .unwrap_or_else(|| std::env::current_dir().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default())
+}
+
+fn n_word_(n: i64) -> String {
+    format!("{n} member{}", if n == 1 { "" } else { "s" })
 }
 
 pub fn open_url(url: &str) {
@@ -167,6 +193,11 @@ impl App {
             quit_at: None,
             quit: false,
             body_h: 20,
+            goal_name: None,
+            goal_doc: None,
+            adoptables: vec![],
+            adopt_note: None,
+            attach_request: None,
             data_version: -1,
             last_load: Instant::now(),
             reader_key: None,
@@ -246,6 +277,11 @@ impl App {
                 self.reader_key = Some((id, count));
             }
         }
+        if self.screen == Screen::Goal {
+            if let Some(n) = self.goal_name.clone() {
+                self.goal_doc = crate::goals::status(&self.db, &n).ok();
+            }
+        }
         if self.scroll_end {
             self.scroll = usize::MAX / 2;
             self.scroll_end = false;
@@ -260,7 +296,8 @@ impl App {
             Screen::Rules => self.rules_shown().len(),
             Screen::Who => self.callers().len(),
             Screen::Options => self.option_items().len(),
-            Screen::Agents => self.st.agents.len(),
+            Screen::Agents => self.entries().len(),
+            Screen::Adopt => self.adoptables.len(),
             _ => 0,
         }
     }
@@ -280,6 +317,12 @@ impl App {
         self.confirm = None;
         self.discard_armed = None;
         self.scroll = 0;
+        if to == Screen::Adopt {
+            self.adoptables = crate::adopt::adoptable();
+        }
+        if to != Screen::Agents && to != Screen::Adopt {
+            self.adopt_note = None;
+        }
         if to != Screen::Read {
             self.read_tid = None;
             self.detail = None;
@@ -387,6 +430,7 @@ impl App {
             Screen::Read => self.read_back,
             Screen::Compose => self.compose_back,
             Screen::Ask => self.ask.as_ref().map(|a| a.back).unwrap_or(Screen::Main),
+            Screen::Adopt | Screen::Goal => Screen::Agents,
             _ => Screen::Main,
         };
         self.goto(to, None);
@@ -415,8 +459,8 @@ impl App {
         if ctrl {
             match k.code {
                 KeyCode::Char('s') | KeyCode::Enter | KeyCode::Char('j') if matches!(self.screen, Screen::Read | Screen::Compose) => self.send(),
-                KeyCode::Char('w') => self.say("The Concierge needs the session host, which is not in this build yet (SystemsClarke/agentdesk#85).", "ye"),
-                KeyCode::Char('r') => self.say("Waking an agent needs the session host, which is not in this build yet. Its next board write or hook delivers your reply.", "ye"),
+                KeyCode::Char('w') if self.screen != Screen::Read && self.screen != Screen::Compose => self.toggle_concierge(),
+                KeyCode::Char('r') => self.wake_selected(),
                 _ => {}
             }
             if !(ctrl && matches!(k.code, KeyCode::Char('u'))) || !matches!(self.screen, Screen::Read | Screen::Compose) {
@@ -510,16 +554,24 @@ impl App {
                 self.sel.insert("prs".into(), 0);
             }
             (Screen::Prs, 'o') => self.activate(),
-            (Screen::Sysop, 'l') => self.say("The Concierge is off, so it holds nothing.", "mu"),
             (Screen::Who, 'p') => self.page(),
+            (Screen::Agents | Screen::Goal, '+' | '=') => self.members_delta(1),
+            (Screen::Agents | Screen::Goal, '-' | '_') => self.members_delta(-1),
+            (Screen::Agents | Screen::Goal, ']') => self.members_delta(10),
+            (Screen::Agents | Screen::Goal, '[') => self.members_delta(-10),
             (Screen::Agents, 'n') => self.new_agent(),
-            (Screen::Agents, 'f') => {
-                if let Some(a) = self.st.agents.get(self.sel_now()) {
-                    let name = a.name.clone();
-                    self.confirm = Some((format!("Forget {name}? It leaves the list; its Claude conversation stays on disk."), Confirm::Forget(name)));
-                }
-            }
-            (Screen::Agents, 's' | 'a' | 'g' | 'x' | 'l') => self.say("Starting, adopting and goals need the session host, which is not in this build yet.", "ye"),
+            (Screen::Agents, 'g') => self.new_goal(),
+            (Screen::Agents, 'f') => self.forget_selected(),
+            (Screen::Agents, 'a') if self.sel_goal().is_none() => self.goto(Screen::Adopt, None),
+            (Screen::Agents | Screen::Goal, 'a') => self.approve_selected(),
+            (Screen::Agents | Screen::Goal, 'x') => self.stop_goal_selected(),
+            (Screen::Agents | Screen::Goal, 's') => self.start_stop_selected(),
+            (Screen::Agents | Screen::Goal, 'l') => self.attach_lead(),
+            (Screen::Options, 'c') => self.open_console(),
+            (Screen::Sysop, 'l') => match self.held_row() {
+                Some(h) => self.open_thread(h.id, Screen::Sysop),
+                None => self.say("The Concierge holds nothing right now.", "mu"),
+            },
             (_, 'a') => self.goto(Screen::Agents, None),
             (_, 'p') => self.goto(Screen::Prs, None),
             (_, 's') => self.goto(Screen::Sysop, None),
@@ -577,7 +629,16 @@ impl App {
                     None => {}
                 }
             }
-            Screen::Agents => self.say("Attaching needs the session host, which is not in this build yet.", "ye"),
+            Screen::Agents => {
+                if let Some(g) = self.sel_goal() {
+                    self.goal_name = Some(g.name);
+                    self.goal_doc = None;
+                    self.goto(Screen::Goal, None);
+                } else if let Some(a) = self.sel_agent() {
+                    self.attach_agent(&a);
+                }
+            }
+            Screen::Adopt => self.adopt_pick(),
             _ => {}
         }
     }
@@ -594,9 +655,18 @@ impl App {
             }
             "concierge" => {
                 if delta == 0 {
-                    self.say("The Concierge needs the session host, which is not in this build yet.", "ye");
+                    self.toggle_concierge();
                 }
             }
+            "preroll" => {
+                let on = !self.pref_b("preroll", true);
+                self.set_pref("preroll", json!(on));
+                self.say(
+                    if on { "Pre-roll on: the mic keeps a 2-second rolling buffer while you're in a box." } else { "Pre-roll off: the mic only opens when you press Ctrl+D." },
+                    "ye",
+                );
+            }
+            "web" => self.open_console(),
             "theme" => self.next_theme(step),
             "toasts" => {
                 let on = !self.pref_b("toasts", true);
@@ -718,9 +788,17 @@ impl App {
                 Ok(false) => self.say(format!("Nothing to close: #{tid} is not an open question."), "ye"),
                 Err(e) => self.fail("Not closed: ", e),
             },
-            Confirm::Forget(name) => match self.db.exec("DELETE FROM identities WHERE name=:n", &[(":n", &name)]) {
+            Confirm::Forget(name) => match crate::identities::forget(&self.db, &name) {
                 Ok(_) => self.say(format!("{name} forgotten."), "gr"),
                 Err(e) => self.fail("Not forgotten: ", e),
+            },
+            Confirm::StopGoal(name) => match crate::goals::stop(&self.db, &john(), &name) {
+                Ok(_) => self.say(format!("{name} stopped. A starts it again."), "gr"),
+                Err(e) => self.fail("Not stopped: ", e),
+            },
+            Confirm::ConciergeOff => match crate::concierge::toggle(&self.db, &john(), &concierge_folder(), Some(false)) {
+                Ok(_) => self.say("Concierge off: its swarm is stopped and the items it held go back on the queue.", "ye"),
+                Err(e) => self.fail("", e),
             },
         }
         self.reload();
@@ -821,6 +899,175 @@ impl App {
         }
     }
 
+    // ---- the swarm: agents, goals, the Concierge
+
+    fn toggle_concierge(&mut self) {
+        if self.st.concierge_on {
+            self.confirm = Some(("Turn the Concierge off? Its swarm is stopped and the items it held go back on the queue.".into(), Confirm::ConciergeOff));
+            return;
+        }
+        match crate::concierge::toggle(&self.db, &john(), &concierge_folder(), Some(true)) {
+            Ok(_) => {
+                self.reload();
+                self.say("Turning the Concierge on...", "ye");
+            }
+            Err(e) => self.fail("", e),
+        }
+        self.reload();
+    }
+
+    fn wake_selected(&mut self) {
+        let tid = match self.screen {
+            Screen::Read => self.read_tid,
+            Screen::List if self.channel == "question" => self.rows_of("question").get(self.sel_now()).map(|r| r.id),
+            _ => None,
+        };
+        let Some(tid) = tid else { return self.say("Ctrl+R wakes the agent on a question: pick one first.", "ye") };
+        match crate::ui_api::wake(&self.db, tid) {
+            Ok(d) => {
+                let said = d["said"].as_str().unwrap_or("").to_string();
+                self.say(said.clone(), if said.starts_with("woke") { "gr" } else { "ye" });
+            }
+            Err(e) => self.fail("Not woken: ", e),
+        }
+        self.reload();
+    }
+
+    fn start_stop_selected(&mut self) {
+        let agent = self.sel_agent().or_else(|| self.sel_goal().and_then(|g| self.st.agents.iter().find(|a| a.name.eq_ignore_ascii_case(&g.lead)).cloned()));
+        let Some(a) = agent else { return self.say("S starts or stops an agent, or a goal's lead. A goal starts with A and stops with X.", "ye") };
+        let r = if a.state != "stopped" { crate::identities::stop(&self.db, &a.name) } else { crate::identities::start(&self.db, &a.name) };
+        match r {
+            Ok(mut row) => {
+                if row["state"].as_str() == Some("queued") && crate::supervisor::running() {
+                    for _ in 0..20 {
+                        std::thread::sleep(Duration::from_millis(150));
+                        if let Ok(Some(r)) = crate::identities::get(&self.db, &a.name) {
+                            row = r;
+                            if row["state"].as_str() != Some("queued") {
+                                break;
+                            }
+                        }
+                    }
+                }
+                let now = row["state"].as_str().unwrap_or("").to_string();
+                self.say(
+                    match now.as_str() {
+                        "stopped" => format!("{} stopped. Its conversation is kept; S resumes it.", a.name),
+                        "running" => format!("{} is running. ↵ attaches.", a.name),
+                        _ => format!("{} is queued: it starts when the pool has a slot ({} at once).", a.name, self.pref_i("max_sessions", self.st.max_sessions)),
+                    },
+                    "ye",
+                );
+            }
+            Err(e) => self.fail("Not done: ", e),
+        }
+        self.reload();
+    }
+
+    fn approve_selected(&mut self) {
+        let Some(g) = self.sel_goal() else { return };
+        if !g.standing && matches!(g.state.as_str(), "running" | "succeeded") {
+            return self.say(format!("{} is already {}. X stops it.", g.name, g.state), "mu");
+        }
+        let r = if g.standing {
+            crate::concierge::toggle(&self.db, &john(), &concierge_folder(), Some(true))
+        } else {
+            crate::goals::approve(&self.db, &john(), &g.name, None, None, None)
+        };
+        match r {
+            Ok(_) => self.say(format!("{} is running: until its line, its budget, or X.", g.name), "gr"),
+            Err(e) => self.fail("Not approved: ", e),
+        }
+        self.reload();
+    }
+
+    fn members_delta(&mut self, delta: i64) {
+        let Some(g) = self.sel_goal() else { return self.say("+ and - set a goal's members: pick a goal's row.", "mu") };
+        if g.standing {
+            return self.say("The Concierge sizes its own swarm.", "mu");
+        }
+        let n = (g.max_members + delta).max(1);
+        match crate::goals::set_budget(&self.db, &john(), &g.name, Some(n), None, None) {
+            Ok(_) => self.say(format!("{} may now run {} at once. The total is still capped by Sessions at once (Options).", g.name, n_word_(n)), "gr"),
+            Err(e) => self.fail("Not changed: ", e),
+        }
+        self.reload();
+    }
+
+    fn stop_goal_selected(&mut self) {
+        let Some(g) = self.sel_goal() else { return self.say("X stops a goal: pick a goal's row. S stops an agent.", "mu") };
+        if g.standing {
+            return self.toggle_concierge();
+        }
+        self.confirm = Some((format!("Stop {}? Its members are forgotten and its lead stops; the log stays.", g.name), Confirm::StopGoal(g.name)));
+    }
+
+    fn forget_selected(&mut self) {
+        let Some(a) = self.sel_agent() else { return self.say("F forgets an agent: pick an agent's row. A goal stops with X.", "mu") };
+        self.confirm = Some((format!("Forget {}? It stops and leaves the list; its Claude conversation stays on disk.", a.name), Confirm::Forget(a.name)));
+    }
+
+    fn attach_lead(&mut self) {
+        let Some(g) = self.sel_goal() else { return self.say("L attaches to a goal's lead: pick a goal's row.", "mu") };
+        match self.st.agents.iter().find(|a| a.name.eq_ignore_ascii_case(&g.lead)).cloned() {
+            Some(a) => self.attach_agent(&a),
+            None => self.say(format!("{} isn't an agent now. A starts the goal and its lead.", g.lead), "ye"),
+        }
+    }
+
+    fn attach_agent(&mut self, a: &state::Agent) {
+        match a.state.as_str() {
+            "running" => self.attach_request = Some(a.name.clone()),
+            "queued" => self.say(format!("{} is waiting for a free slot.", a.name), "ye"),
+            _ => self.say(format!("{} isn't running. S starts it.", a.name), "ye"),
+        }
+    }
+
+    fn adopt_pick(&mut self) {
+        let Some(c) = self.adoptables.get(self.sel_now()) else { return };
+        let (sid, folder) = (c.session_id.clone(), c.folder.clone());
+        let name = std::path::Path::new(&folder).file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
+        self.ask_for(
+            AskSpec {
+                title: "Adopt a session".into(),
+                banner: format!("ADOPT  ·  {folder}"),
+                back: Screen::Adopt,
+                fields: vec![("name".into(), "What to call it from now on: agentdesk attach <name> and its board posts use this.".into(), false)],
+                done: AskDone::Adopt(sid),
+            },
+            &name,
+        );
+    }
+
+    fn new_goal(&mut self) {
+        let cwd = std::env::current_dir().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+        self.ask_for(
+            AskSpec {
+                title: "New goal".into(),
+                banner: "NEW GOAL  ·  start a swarm  ·  its lead proposes a hypothesis, a measure and a line, then you approve".into(),
+                back: Screen::Agents,
+                fields: vec![
+                    ("name".into(), "A short name: its lead is <name>-lead, and Slack's swarm slot uses it too.".into(), false),
+                    ("folder".into(), format!("The folder the lead works and measures in. Enter for {cwd}."), true),
+                    ("objective".into(), "What it should achieve, in a sentence. The lead turns it into a hypothesis.".into(), false),
+                ],
+                done: AskDone::NewGoal,
+            },
+            "",
+        );
+    }
+
+    fn open_console(&mut self) {
+        match crate::web::url() {
+            Some(u) => {
+                open_url(&u);
+                self.say("Opened the ops console in your browser.", "cy");
+            }
+            None => self.say("The ops console isn't running: start `agentdesk daemon` (or the window).", "pk b"),
+        }
+    }
+
     // ---- ask: a few one-line questions, one at a time
 
     fn ask_for(&mut self, spec: AskSpec, prefill: &str) {
@@ -851,15 +1098,16 @@ impl App {
     }
 
     fn new_agent(&mut self) {
-        if !self.st.has_session_tables {
-            return self.say("This board has no agents tables yet (they arrive with the schema parity work).", "ye");
-        }
         self.ask_for(
             AskSpec {
                 title: "New agent".into(),
-                banner: "NEW AGENT  ·  sign up a long-lived agent (recorded; starting it needs the session host)".into(),
+                banner: "NEW AGENT  ·  sign up a long-lived agent  ·  it keeps one Claude conversation and hands off at 60%".into(),
                 back: Screen::Agents,
-                fields: vec![("name".into(), "What to call it.".into(), false), ("folder".into(), "The folder it works in.".into(), false)],
+                fields: vec![
+                    ("name".into(), "What to call it: agentdesk attach <name> and its board posts use this.".into(), false),
+                    ("folder".into(), "The folder it works in, e.g. ~/src/repo.".into(), false),
+                    ("charter".into(), "Optional: what it is for, appended to its system prompt. Enter skips it.".into(), true),
+                ],
                 done: AskDone::NewAgent,
             },
             "",
@@ -881,7 +1129,10 @@ impl App {
     fn ask_next(&mut self) {
         let Some(spec) = self.ask.clone() else { return };
         let field = &spec.fields[self.answers.len()];
-        let text = self.subject.trim().to_string();
+        let mut text = self.subject.trim().to_string();
+        if text.is_empty() && field.0 == "folder" {
+            text = std::env::current_dir().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+        }
         if text.is_empty() && !field.2 {
             return self.say(format!("It needs a {}. Esc cancels.", field.0), "ye");
         }
@@ -908,11 +1159,30 @@ impl App {
                     Err(e) => self.fail("Not done: ", e),
                 }
             }
+            AskDone::NewGoal => {
+                let name = crate::goals::slug(&a[0]);
+                let folder = std::fs::canonicalize(&a[1]).map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|_| a[1].clone());
+                match crate::goals::create(&self.db, &name, &a[2], &folder) {
+                    Ok(_) => {
+                        self.reload();
+                        self.say(format!("{name} is a draft. Its lead is proposing a hypothesis; A approves it."), "gr");
+                    }
+                    Err(e) => self.fail("Not done: ", e),
+                }
+            }
+            AskDone::Adopt(sid) => match crate::adopt::adopt(&self.db, &sid, &a[0]) {
+                Ok(row) => {
+                    self.adopt_note = row["note"].as_str().map(String::from);
+                    self.goto(Screen::Agents, None);
+                    self.say(format!("{} adopted. Close that conversation in the Claude desktop app.", a[0]), "gr");
+                }
+                Err(e) => self.fail("Not adopted: ", e),
+            },
             AskDone::NewAgent => {
                 let ts = crate::db::now_iso();
                 match self.db.exec(
-                    "INSERT INTO identities (name, folder, host, state, autostart, created_ts, updated_ts, generation) VALUES (:n,:f,'local','stopped',0,:ts,:ts,1)",
-                    &[(":n", &a[0]), (":f", &a[1]), (":ts", &ts)],
+                    "INSERT INTO identities (name, folder, charter, host, state, autostart, created_ts, updated_ts, generation) VALUES (:n,:f,:c,'local','stopped',0,:ts,:ts,1)",
+                    &[(":n", &a[0]), (":f", &a[1]), (":c", &(if a[2].is_empty() { None } else { Some(a[2].clone()) })), (":ts", &ts)],
                 ) {
                     Ok(_) => {
                         self.reload();
@@ -1048,6 +1318,18 @@ pub fn run() -> Result<()> {
                     },
                     _ => {}
                 }
+            }
+            if let Some(name) = app.attach_request.take() {
+                // leave the window, hand the console to the session, and come back when it is detached
+                let _ = execute!(std::io::stdout(), DisableBracketedPaste);
+                ratatui::restore();
+                if let Err(e) = crate::attach::client(&name) {
+                    eprintln!("{}", anyhow_msg(&e));
+                    std::thread::sleep(Duration::from_secs(2));
+                }
+                terminal = ratatui::init();
+                let _ = execute!(std::io::stdout(), EnableBracketedPaste);
+                app.reload();
             }
             if app.quit_at.map(|t| Instant::now() >= t).unwrap_or(false) {
                 app.quit = true;

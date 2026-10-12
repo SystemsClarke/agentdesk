@@ -213,6 +213,271 @@ pub fn vault_segs(v: &Option<VaultHealth>) -> Seg {
     s(format!("pushed to GitHub {ago}"), "gr")
 }
 
+fn tilde(folder: &str) -> String {
+    let home = dirs::home_dir().map(|h| h.to_string_lossy().into_owned()).unwrap_or_default();
+    if !home.is_empty() && folder.starts_with(&home) {
+        format!("~{}", &folder[home.len()..])
+    } else {
+        folder.to_string()
+    }
+}
+
+fn spark(vals: &[f64], tag: &str, unit: &str, max_w: usize) -> L {
+    const BLOCKS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+    if vals.is_empty() {
+        return vec![];
+    }
+    let take = vals.len().min(max_w.max(8));
+    let v = &vals[vals.len() - take..];
+    let (lo, hi) = v.iter().fold((f64::MAX, f64::MIN), |(l, h), x| (l.min(*x), h.max(*x)));
+    let line: String = v.iter().map(|x| if hi > lo { BLOCKS[(((x - lo) / (hi - lo)) * 7.0).round() as usize] } else { BLOCKS[3] }).collect();
+    vec![s(line, tag), s(format!("  {:.0}{unit} → {:.0}{unit}", v[0], v[v.len() - 1]), "mu")]
+}
+
+pub fn gov_line(b: &Option<Budget>) -> String {
+    match b {
+        Some(b) if b.samples > 0 => format!(
+            "{:.1}% left · resets in {} · forecast {:.1}% · {} ({}x{}) · {}",
+            b.remaining,
+            span(b.reset_in_hours * 3600.0),
+            b.projected_end,
+            n_word(b.sessions as usize, "session"),
+            b.swarms,
+            b.members,
+            b.mode
+        ),
+        _ => "no usage samples yet: the daemon reads /usage every 5 minutes".into(),
+    }
+}
+
+fn budget_lines(b: &Option<Budget>, w: usize) -> Vec<L> {
+    let Some(b) = b.as_ref().filter(|b| b.samples > 0) else {
+        return vec![vec![s("No usage samples yet. The daemon reads /usage every 5 minutes; the governor starts from the first reading.", "mu")]];
+    };
+    let mut l: Vec<L> = vec![
+        vec![
+            s(format!("{:.1}%", b.remaining), if b.remaining < 10.0 { "pk b" } else { "ye b" }),
+            s(" of the week left · resets in ", "mu"),
+            plain(span(b.reset_in_hours * 3600.0)),
+            s(" · forecast ", "mu"),
+            s(format!("{:.1}%", b.projected_end), if b.projected_end > 100.0 { "pk" } else { "gr" }),
+            s(" at the reset", "mu"),
+            plain("   "),
+            s(format!(" {} ", b.mode), if b.mode == "enforcing" { "pk b inv" } else { "cy inv" }),
+        ],
+        vec![
+            s("Today's allowance: ", "mu"),
+            s(n_word(b.sessions as usize, "session"), "fg b"),
+            s(" · ", "mu"),
+            plain(format!("{} x {}", n_word(b.swarms as usize, "swarm"), n_word(b.members as usize, "member"))),
+        ],
+        vec![s(b.reason.clone(), "fa")],
+    ];
+    if !b.pool.is_empty() {
+        l.push(vec![s("Session pool: ", "mu"), plain(b.pool.clone())]);
+    }
+    if !b.status.is_empty() {
+        let tag = if b.status.starts_with("behind") {
+            "ye"
+        } else if b.status.starts_with("on course to hit") {
+            "pk"
+        } else {
+            "gr"
+        };
+        let mut v = vec![s("Pace: ", "mu"), s(b.status.clone(), tag)];
+        if b.plan_end > 0.0 {
+            v.push(s(format!(" · the plan lands at {:.0}%", b.plan_end), "fa"));
+        }
+        l.push(v);
+    }
+    if b.series.len() > 1 {
+        let mut v = vec![s("This week  ", "mu")];
+        v.extend(spark(&b.series, "cy", "%", w.saturating_sub(36)));
+        l.push(v);
+    }
+    if b.forecast.len() > 1 {
+        let mut v = vec![s("To the reset ", "mu")];
+        v.extend(spark(&b.forecast, "gr", "%", w.saturating_sub(38)));
+        l.push(v);
+    }
+    l
+}
+
+fn member_line(m: &SwarmMember, name_w: usize, w: usize) -> L {
+    vec![
+        s(fit(&m.identity, name_w), "cy"),
+        s(m.work_id.map(|x| format!("#{x:<5} ")).unwrap_or_else(|| "      ".into()), "ye"),
+        s(fit(&m.task.replace('\n', " "), w.saturating_sub(38).max(10)), "mu"),
+    ]
+}
+
+fn value_text(v: Option<f64>) -> String {
+    v.map(|x| format!("{}", (x * 100.0).round() / 100.0)).unwrap_or_else(|| "—".into())
+}
+
+fn line_of(success: &Option<String>) -> String {
+    match success {
+        None => "no line yet".into(),
+        Some(x) => x.strip_prefix("value ").unwrap_or(x).to_string(),
+    }
+}
+
+fn goal_state(g: &GoalRow) -> String {
+    if g.standing && g.state == "running" {
+        "standing".into()
+    } else {
+        g.state.clone()
+    }
+}
+
+fn goal_line(g: &GoalRow, slot: Option<i64>, lead: Option<&Agent>, lead_w: usize) -> L {
+    let st = goal_state(g);
+    let hue_state = match st.as_str() {
+        "running" | "standing" => "gr",
+        "draft" => "ye",
+        "succeeded" => "cy",
+        _ => "fa",
+    };
+    vec![
+        s(format!("  {}", fit(&g.name, 18)), &format!("{} b", hue(&g.name))),
+        s(fit(&st, 10), hue_state),
+        s(fit(&slot.map(|n| n.to_string()).unwrap_or_else(|| "—".into()), 5), "cy"),
+        plain(fit(&format!("{} · {}", value_text(g.last_value), line_of(&g.success)), 20)),
+        s(fit(&g.experiments.to_string(), 5), "mu"),
+        s(fit(&format!("{}/{}", g.members, g.max_members), 7), "mu"),
+        s(
+            fit(
+                &match lead {
+                    None => g.lead.clone(),
+                    Some(a) => format!("{} · gen {}", g.lead, a.generation),
+                },
+                lead_w,
+            ),
+            if lead.map(|a| a.state == "running").unwrap_or(false) { "cy" } else { "fa" },
+        ),
+    ]
+}
+
+fn wrap_words(text: &str, width: usize) -> Vec<String> {
+    let (mut out, mut line) = (Vec::new(), String::new());
+    for word in text.split_whitespace() {
+        if !line.is_empty() && line.chars().count() + 1 + word.chars().count() > width {
+            out.push(std::mem::take(&mut line));
+        }
+        if line.is_empty() {
+            line = word.to_string();
+        } else {
+            line.push(' ');
+            line.push_str(word);
+        }
+    }
+    out.push(line);
+    out
+}
+
+/// The goal reader: the goal and its budget, its history as a sparkline, the last 10 experiments, the crew, the summary.
+fn goal_reader(d: &serde_json::Value, g: &GoalRow, lead: Option<&Agent>, slot: Option<i64>, w: usize) -> Vec<L> {
+    let head = format!("═ Goal {} ═ {}{} ", g.name, goal_state(g), slot.map(|n| format!(" in slot {n}")).unwrap_or_default());
+    let mut l: Vec<L> = vec![vec![s("╔", "rule"), s(head.clone(), "ye b"), s(format!("{}╗", rep('═', w.saturating_sub(2 + head.chars().count()))), "rule")]];
+    let field = |label: &str, text: Option<&str>, tag: &str, l: &mut Vec<L>| {
+        for (i, line) in wrap_words(text.unwrap_or("none yet"), w.saturating_sub(16)).into_iter().enumerate() {
+            l.push(vec![s(if i == 0 { format!("  {}", fit(label, 12)) } else { rep(' ', 14) }, "mu"), s(line, if text.is_none() { "fa" } else { tag })]);
+        }
+    };
+    field("Objective", Some(&g.objective), "fg b", &mut l);
+    let draft_hint = "none yet: the lead proposes one, then A approves it";
+    field("Hypothesis", d["hypothesis"].as_str().or(if g.state == "draft" { Some(draft_hint) } else { None }), "fg", &mut l);
+    field("Measure", d["measure_cmd"].as_str(), "cy", &mut l);
+    field("Success", g.success.as_deref(), "ye", &mut l);
+    let hours = d["max_hours"].as_f64().unwrap_or(24.0);
+    let cadence = d["cadence_minutes"].as_f64().unwrap_or(30.0);
+    let spent = d["started_ts"]
+        .as_str()
+        .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
+        .map(|t| span((chrono::Utc::now() - t.with_timezone(&chrono::Utc)).num_seconds() as f64))
+        .unwrap_or_else(|| "not started".into());
+    let budget = if g.standing {
+        format!("{} of {} members · standing: it never ends by its hours · a wake every {cadence} min", g.members, g.max_members)
+    } else {
+        format!("{} of {} members · {spent} of {hours}h · a wake every {cadence} min", g.members, g.max_members)
+    };
+    field("Budget", Some(&budget), "fg", &mut l);
+    l.push(vec![s(format!("╚{}╝", rep('═', w.saturating_sub(2))), "rule")]);
+    let hist: Vec<f64> = d["history"].as_array().map(|a| a.iter().filter_map(|x| x.as_f64()).collect()).unwrap_or_default();
+    let mut hl = vec![s(format!("  {}", fit("History", 12)), "mu")];
+    if hist.is_empty() {
+        hl.push(s("nothing measured yet", "fa"));
+    } else {
+        hl.extend(spark(&hist, "cy", "", w.saturating_sub(40)));
+    }
+    l.push(hl);
+    l.push(vec![]);
+    let exps = d["experiments"].as_array().cloned().unwrap_or_default();
+    let change_w = w.saturating_sub(50).max(16);
+    let last: Vec<L> = exps
+        .iter()
+        .rev()
+        .take(10)
+        .rev()
+        .map(|e| {
+            let verdict = e["verdict"].as_str();
+            vec![
+                s(format!("#{:<4}", e["n"].as_i64().unwrap_or(0)), "ye"),
+                plain(fit(e["change"].as_str().unwrap_or(""), change_w)),
+                plain(" "),
+                s(fit(e["owner"].as_str().unwrap_or("—"), 20), hue(e["owner"].as_str().unwrap_or(""))),
+                plain(fit(&value_text(e["value"].as_f64()), 8)),
+                s(
+                    fit(verdict.unwrap_or("measuring"), 12),
+                    match verdict {
+                        None => "ye",
+                        Some("met") => "gr b",
+                        Some("improved") => "gr",
+                        Some("no gain") => "mu",
+                        _ => "pk",
+                    },
+                ),
+            ]
+        })
+        .collect();
+    let title = if exps.len() > 10 { format!("Experiments · last 10 of {}", exps.len()) } else { format!("Experiments · {}", exps.len()) };
+    l.extend(boxed(&title, if last.is_empty() { vec![vec![s("No experiments yet.", "mu")]] } else { last }, w));
+    l.push(vec![]);
+    let members: Vec<L> = d["members"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .map(|m| {
+            member_line(
+                &SwarmMember { identity: m["identity"].as_str().unwrap_or("").into(), task: m["task"].as_str().unwrap_or("").into(), work_id: m["work_id"].as_i64() },
+                24,
+                w,
+            )
+        })
+        .collect();
+    l.extend(boxed(&format!("Members · {} of {}", g.members, g.max_members), if members.is_empty() { vec![vec![s("None running.", "mu")]] } else { members }, w));
+    l.push(vec![]);
+    let summary: Vec<L> =
+        d["summary"].as_str().unwrap_or("").trim().lines().flat_map(|x| wrap_words(x.trim_end(), w.saturating_sub(4))).take(12).map(|x| vec![s(x, "mu")]).collect();
+    l.extend(boxed("Summary · what its agents are woken with", if summary.is_empty() { vec![vec![s("(none)", "fa")]] } else { summary }, w));
+    l.push(vec![]);
+    l.push(vec![
+        s(" L", "ye"),
+        s(" attaches to ", "mu"),
+        s(g.lead.clone(), "cy"),
+        s(
+            match lead {
+                None => " (not an agent now)".to_string(),
+                Some(a) => format!(" (generation {}, {})", a.generation, a.state),
+            },
+            "mu",
+        ),
+        s(format!(": agentdesk attach {}", g.lead), "cy"),
+    ]);
+    l
+}
+
 impl App {
     pub fn rows_of(&self, ch: &str) -> &[ThreadRow] {
         self.st.rows.get(ch).map(|v| v.as_slice()).unwrap_or(&[])
@@ -244,19 +509,42 @@ impl App {
             Screen::Options => "Options".into(),
             Screen::Compose => format!("New post in {}", title_of(self.channel)),
             Screen::Agents => "Agents".into(),
+            Screen::Adopt => "Adopt a session".into(),
+            Screen::Goal => format!("Goal {}", self.goal_name.clone().unwrap_or_default()),
             Screen::Ask => self.ask.as_ref().map(|a| a.title.clone()).unwrap_or_default(),
             Screen::Read => format!("Reading #{}", self.read_tid.unwrap_or(0)),
         };
         let left: L = vec![s("AgentDesk", "ye b"), s(format!(" · {title}"), "mu")];
-        let mid: L = vec![s("○ Concierge off", "or"), s(" · needs the session host", "fa")];
-        let right: L = vec![
+        let held = self.held_row();
+        let mid: L = if self.st.concierge_on {
+            let mut m = vec![s("● Concierge on", "gr")];
+            m.push(match &held {
+                Some(h) => s(format!(" · #{}", h.id), "ye"),
+                None => s(" · idle", "mu"),
+            });
+            if let Some(h) = held.as_ref().and_then(|h| h.holder.clone()) {
+                m.push(s(format!(" · {h}"), "mu"));
+            }
+            m
+        } else {
+            vec![s("○ Concierge off", "or"), s(" · Ctrl+W starts it", "fa")]
+        };
+        let slack_up = self.st.slack.as_ref().and_then(|(t, _, _)| *t).map(|t| Local::now() - t < chrono::Duration::seconds(90)).unwrap_or(false);
+        let mut right: L = vec![
             if self.st.open_qs.is_empty() { s("nobody's calling", "mu") } else { s(format!("{} ringing for you", self.st.open_qs.len()), "pk b") },
             s(" · ", "fa"),
-            match &self.update {
-                Some(v) => s(format!("↑ v{v} (U)"), "ye"),
-                None => s(format!("v{}", crate::update::CURRENT), "fa"),
-            },
+            if slack_up { s("SlackNet ● up", "cy") } else { s("SlackNet ○ down", "fa") },
         ];
+        if let Some(u) = &self.update {
+            right.push(s(format!(" · ↑ v{u} (U)"), "ye"));
+        }
+        if let Some(bg) = self.st.budget.as_ref().filter(|b| b.samples > 0) {
+            if (w as i64) - (width(&left) + width(&mid) + width(&right)) as i64 >= 20 {
+                let mut r = vec![s(format!("week {:.1}% left", bg.remaining), if bg.remaining < 10.0 { "pk" } else { "cy" }), s(" · ", "fa")];
+                r.extend(right);
+                right = r;
+            }
+        }
         let gap = w as i64 - width(&left) as i64 - width(&mid) as i64 - width(&right) as i64;
         if gap < 4 {
             let mut l = left;
@@ -270,6 +558,10 @@ impl App {
         l.push(s(rep(' ', gap as usize - gap as usize / 2), ""));
         l.extend(right);
         l
+    }
+
+    pub fn held_row(&self) -> Option<ThreadRow> {
+        self.st.held_id.and_then(|id| self.rows_of("work").iter().find(|r| r.id == id).cloned())
     }
 
     pub fn hints(&self) -> L {
@@ -317,7 +609,14 @@ impl App {
             Screen::Prs => {
                 cat(vec![k("↑↓", "move"), k("↵ O", "open on GitHub"), k("C", "check now"), k("H", if self.show_settled { "open only" } else { "settled" }), k("Esc", "menu")])
             }
-            Screen::Sysop => cat(vec![k("Ctrl+W", "start the Concierge"), k("J", "job board"), k("Esc", "menu")]),
+            Screen::Sysop => {
+                let mut v = vec![k("Ctrl+W", if self.st.concierge_on { "stop the Concierge" } else { "start the Concierge" }), k("J", "job board")];
+                if self.held_row().is_some() {
+                    v.push(k("L", "read held item"));
+                }
+                v.push(k("Esc", "menu"));
+                cat(v)
+            }
             Screen::Jobs => cat(vec![k("↑↓", "move"), k("R", "run now"), k("E", "on/off"), k("N", "new job"), k("X", "delete"), k("Esc", "menu")]),
             Screen::Rules => cat(vec![
                 k("↑↓", "move"),
@@ -329,11 +628,32 @@ impl App {
                 k("Esc", "menu"),
             ]),
             Screen::Who => cat(vec![k("↑↓", "pick a caller"), k("↵", "read bio"), k("P", "page them"), k("Esc", "menu")]),
-            Screen::Options => cat(vec![k("↑↓", "move"), k("↵", "change"), k("←→", "adjust"), k("Esc", "menu")]),
+            Screen::Options => cat(vec![k("↑↓", "move"), k("↵", "change"), k("←→", "adjust"), k("C", "ops console"), k("Esc", "menu")]),
             Screen::Compose => {
                 cat(vec![k("↵", "subject → body"), k("Ctrl+S", "post"), k("Esc", if self.subject.is_empty() && self.reply.is_blank() { "cancel" } else { "twice: discard" })])
             }
-            Screen::Agents => cat(vec![k("↑↓", "move"), k("N", "new agent"), k("F", "forget"), k("Esc", "menu")]),
+            Screen::Agents => {
+                let mut v = vec![k("↑↓", "move")];
+                if self.sel_goal().is_some() {
+                    v.extend([k("↵", "read"), k("A", "approve"), k("X", "stop goal"), k("S", "start/stop lead"), k("L", "goal's lead")]);
+                    if !self.sel_goal().map(|g| g.standing).unwrap_or(false) {
+                        v.push(k("+ -", "members (] [ ±10)"));
+                    }
+                } else {
+                    v.extend([k("↵", "attach"), k("S", "start/stop"), k("A", "adopt"), k("F", "forget")]);
+                }
+                v.extend([k("N", "new agent"), k("G", "new goal"), k("Esc", "menu")]);
+                cat(v)
+            }
+            Screen::Adopt => cat(vec![k("↑↓", "move"), k("↵", "adopt"), k("Esc", "agents")]),
+            Screen::Goal => {
+                let mut v = vec![k("A", "approve"), k("S", "start/stop lead")];
+                if !self.sel_goal().map(|g| g.standing).unwrap_or(false) {
+                    v.push(k("+ -", "members (] [ ±10)"));
+                }
+                v.extend([k("X", "stop"), k("L", "attach to lead"), k("↑↓", "scroll"), k("Esc", "agents")]);
+                cat(v)
+            }
             Screen::Ask => cat(vec![k("↵", "next"), k("Esc", "cancel")]),
         }
     }
@@ -374,6 +694,8 @@ impl App {
             Screen::Options => self.options_screen(w, h),
             Screen::Compose => self.compose_screen(w),
             Screen::Agents => self.agents_screen(w, h),
+            Screen::Adopt => self.adopt_screen(w, h),
+            Screen::Goal => self.goal_screen(w),
             Screen::Ask => self.ask_screen(w),
         }
     }
@@ -460,7 +782,15 @@ impl App {
             ("D", "Discussion", s(format!("{} threads", self.rows_of("discussion").len()), "fg")),
             ("P", "Pull Requests", if prs_open > 0 { s(format!("{prs_open} to merge"), "gr") } else { s("nothing to merge", "mu") }),
             ("W", "Wiki", s(format!("{} articles", self.rows_of("wiki").len()), "mu")),
-            ("S", "SysOp console", s("Concierge off", "or")),
+            (
+                "S",
+                "SysOp console",
+                if self.st.concierge_on {
+                    s(if self.held_row().is_some() { format!("Concierge on #{}", self.st.held_id.unwrap_or(0)) } else { "Concierge idle".to_string() }, "gr")
+                } else {
+                    s("Concierge off · Ctrl+W starts it", "or")
+                },
+            ),
             (
                 "R",
                 "Recurring jobs",
@@ -909,13 +1239,38 @@ impl App {
         let st = &self.st;
         let mut l: Vec<L> =
             vec![bar(w, &format!("SYSOP CONSOLE  ·  {}", if st.open_qs.is_empty() { "waiting for callers" } else { "phone's ringing off the hook" }), "bar"), vec![]];
+        let held = self.held_row();
         let mut stat = |k: &str, segs: Vec<Seg>| {
             let mut line = vec![s(format!(" {}", fit(k, 20)), "mu")];
             line.extend(segs);
             l.push(clip_to(line, w + 1));
         };
-        stat("Concierge", vec![s("○ off", "or"), s("  needs the session host (not in this build yet)", "fa")]);
-        stat("SlackNet echo", vec![s("not in this build", "fa")]);
+        if st.concierge_on && held.is_some() {
+            let h = held.as_ref().unwrap();
+            let mut v = vec![s(format!("● on · #{} for {}", h.id, ago(h.updated)), "gr")];
+            if let Some(who) = &h.holder {
+                v.push(s(format!(" · {who}"), "mu"));
+            }
+            v.push(s(format!(" · {}", n_word(st.swarm.len(), "member")), "mu"));
+            stat("Concierge", v);
+        } else if st.concierge_on {
+            stat("Concierge", vec![s("● on · idle, the queue is empty", "gr")]);
+        } else {
+            stat("Concierge", vec![s("○ off", "or"), s("  Ctrl+W starts it", "fa")]);
+        }
+        let slack_up = st.slack.as_ref().and_then(|(t, _, _)| *t).map(|t| Local::now() - t < chrono::Duration::seconds(90)).unwrap_or(false);
+        if slack_up {
+            let (_, poll, relay) = st.slack.clone().unwrap();
+            let mut v = vec![s("● up", "gr"), s(format!(" · polling every {poll}s"), "mu")];
+            if let Some((rts, tid)) = relay {
+                v.push(s(format!(" · last relay {} (#{tid} to your phone)", when(rts)), "mu"));
+            }
+            stat("SlackNet echo", v);
+        } else {
+            let heard = st.slack.as_ref().and_then(|(t, _, _)| *t).map(|t| format!(", last heard {} ago", ago(Some(t)))).unwrap_or_default();
+            stat("SlackNet echo", vec![s(format!("○ down{heard}"), "or"), s("  replies from your phone won't arrive", "fa")]);
+        }
+        stat("Notifier sinks", vec![s("all delivering", "mu")]);
         let prs_open = st.prs.iter().filter(|p| p.state == "open").count();
         let prs = s(format!(" · {} to merge", n_word(prs_open, "PR")), if prs_open > 0 { "gr" } else { "mu" });
         if !st.open_qs.is_empty() {
@@ -931,16 +1286,18 @@ impl App {
         }
         stat("Vault backup", vec![vault_segs(&st.vault)]);
         stat("Claude plan", vec![s(st.usage_summary.clone(), "mu")]);
-        stat("Usage governor", vec![s("not in this build yet: the plan meter above is what the feed reports", "fa")]);
-        stat(
-            "Update",
-            vec![match &self.update {
-                Some(v) => s(format!("v{v} is available: U downloads it (or `agentdesk update --apply`)"), "ye"),
-                None => s(format!("v{} · checked every 4 hours", crate::update::CURRENT), "mu"),
-            }],
-        );
+        stat("Usage governor", vec![s(gov_line(&st.budget), "mu")]);
         l.push(vec![]);
-        l.extend(boxed("The Concierge's swarm", vec![vec![s("Off. The session host that runs it is being ported (SystemsClarke/agentdesk#85).", "mu")]], w));
+        if st.swarm.is_empty() {
+            l.extend(boxed(
+                "The Concierge's swarm",
+                vec![vec![s(if st.concierge_on { "No members running: nothing is being worked right now." } else { "Off. Ctrl+W starts the Concierge." }, "mu")]],
+                w,
+            ));
+        } else {
+            let body: Vec<L> = st.swarm.iter().map(|m| member_line(m, 22, w)).collect();
+            l.extend(boxed(&format!("The Concierge's swarm · {}", n_word(st.swarm.len(), "member")), body, w));
+        }
         l.push(vec![]);
         let jobs: Vec<L> = self
             .rows_of("work")
@@ -1023,14 +1380,31 @@ impl App {
     }
 
     pub fn option_items(&self) -> Vec<(String, String, &'static str)> {
+        let pool = self
+            .st
+            .budget
+            .as_ref()
+            .map(|b| b.pool.clone())
+            .filter(|p| !p.is_empty())
+            .unwrap_or_else(|| format!("{} running now", self.st.agents.iter().filter(|a| a.state == "running").count()));
         vec![
-            (
-                "Sessions at once".into(),
-                format!("{}   (←/→, Shift ±10)  ·  recorded for the session host; nothing starts sessions yet", self.pref_i("max_sessions", 3)),
-                "max_sessions",
-            ),
-            ("Concierge".into(), "off   needs the session host (not in this build yet)".into(), "concierge"),
+            ("Sessions at once".into(), format!("{}   (←/→, Shift ±10)  ·  {pool}", self.pref_i("max_sessions", 3)), "max_sessions"),
+            ("Concierge".into(), format!("{}   ↵ toggles (same as Ctrl+W)", if self.st.concierge_on { "ON" } else { "off" }), "concierge"),
             ("Theme".into(), format!("{}   ({} of {}, ←/→ to browse)", self.palette().label, self.theme_index() + 1, super::seg::palettes().len()), "theme"),
+            ("Font size".into(), "your terminal's own   (Ctrl +/- in the terminal itself)".into(), "font"),
+            (
+                "Dictation pre-roll".into(),
+                format!("{}   keeps the last 2 s in RAM while a box has focus, so Ctrl+D catches what you just said", if self.pref_b("preroll", true) { "ON" } else { "off" }),
+                "preroll",
+            ),
+            (
+                "Ops console".into(),
+                match crate::web::url() {
+                    Some(u) => format!("{}   (key hidden)  ·  ↵ or C opens it in the browser", u.split('?').next().unwrap_or("")),
+                    None => "not running (start `agentdesk daemon`: the core log says why)".into(),
+                },
+                "web",
+            ),
             ("Toasts".into(), format!("{}   desktop notification for each new question", if self.pref_b("toasts", true) { "ON" } else { "off" }), "toasts"),
             (
                 "Updates".into(),
@@ -1052,8 +1426,10 @@ impl App {
         let mut l = win.lines;
         l.extend([
             vec![],
-            vec![s(" Agent sessions: ", "cy b"), s("hosting `claude` sessions (identities, the Concierge, goals) is being ported to this build;", "mu")],
-            vec![s(" until then the board, hooks, recurring jobs, PRs and permission rules are what is live.", "mu")],
+            vec![s(" Agent sessions: ", "cy b"), s("every agent the daemon runs (the Concierge and its swarm, goals, Wake) is an", "mu")],
+            vec![s(" identity holding one slot. Past the cap, new ones queue and start as slots free up.", "mu")],
+            vec![s(" The Concierge ", "cy b"), s("keeps Work to Hire drained: its lead claims each open item and hands it to a", "mu")],
+            vec![s(" small swarm, which completes it with a report on its thread. Off until you turn it on.", "mu")],
             vec![],
             vec![s(" Version ", "fa"), s(crate::update::CURRENT, "ye"), s("   ·   updates arrive from GitHub Releases: ↵ on Updates, or `agentdesk update --apply`", "fa")],
             vec![s(" Settings live in ", "fa"), s(self.settings_path().to_string_lossy().into_owned(), "mu")],
@@ -1061,49 +1437,166 @@ impl App {
         l
     }
 
+    pub fn sel_goal(&self) -> Option<GoalRow> {
+        match self.screen {
+            Screen::Goal => self.goal_name.as_ref().and_then(|n| self.st.goals.iter().find(|g| &g.name == n).cloned()),
+            Screen::Agents => self.entries().get(self.sel_of_agents()).and_then(|e| e.0.clone()),
+            _ => None,
+        }
+    }
+
+    pub fn sel_agent(&self) -> Option<Agent> {
+        if self.screen != Screen::Agents {
+            return None;
+        }
+        self.entries().get(self.sel_of_agents()).and_then(|e| e.1.clone())
+    }
+
+    fn sel_of_agents(&self) -> usize {
+        self.sel.get("agents").copied().unwrap_or(0).min(self.entries().len().saturating_sub(1))
+    }
+
+    /// The one list: every goal (the Concierge among them), then every agent that is not a goal's lead.
+    pub fn entries(&self) -> Vec<(Option<GoalRow>, Option<Agent>)> {
+        let mut v: Vec<(Option<GoalRow>, Option<Agent>)> = self.st.goals.iter().map(|g| (Some(g.clone()), None)).collect();
+        for a in &self.st.agents {
+            if !self.st.goals.iter().any(|g| g.lead.eq_ignore_ascii_case(&a.name)) {
+                v.push((None, Some(a.clone())));
+            }
+        }
+        v
+    }
+
+    fn lead_of(&self, g: &GoalRow) -> Option<&Agent> {
+        self.st.agents.iter().find(|a| a.name.eq_ignore_ascii_case(&g.lead))
+    }
+
     fn agents_screen(&mut self, w: usize, h: usize) -> Vec<L> {
-        let ags = self.st.agents.clone();
-        let folder_w = w.saturating_sub(57).max(20);
-        let a2 = ags.clone();
+        let es = self.entries();
+        let (folder_w, lead_w) = (w.saturating_sub(57).max(20), w.saturating_sub(67).max(16));
+        let goals_n = self.st.goals.len();
+        let budget = boxed("Budget · the usage governor", budget_lines(&self.st.budget, w.saturating_sub(4)), w);
+        let rows_data: Vec<(Option<GoalRow>, Option<Agent>, Option<i64>, Option<Agent>)> = es
+            .iter()
+            .map(|(g, a)| {
+                let slot = g.as_ref().and_then(|g| self.st.slots.get(&g.name.to_lowercase()).copied());
+                let lead = g.as_ref().and_then(|g| self.lead_of(g).cloned());
+                (g.clone(), a.clone(), slot, lead)
+            })
+            .collect();
+        let rd = rows_data.clone();
         let row = move |i: usize| -> L {
-            let a = &a2[i];
-            vec![
-                s(format!("  {}", fit(&a.name, 20)), &format!("{} b", hue(&a.name))),
-                s(
-                    fit(&a.state, 9),
-                    match a.state.as_str() {
-                        "running" => "gr",
-                        "queued" => "ye",
-                        _ => "fa",
-                    },
-                ),
-                s(fit(&a.generation.to_string(), 5), "mu"),
-                s(fit(&a.host, 13), "cy"),
-                s(fit(if a.model.is_empty() { "—" } else { &a.model }, 8), "mu"),
-                s(fit(&a.folder, folder_w), "fa"),
-            ]
+            let (g, a, slot, lead) = &rd[i];
+            match (g, a) {
+                (Some(g), _) => goal_line(g, *slot, lead.as_ref(), lead_w),
+                (_, Some(a)) => vec![
+                    s(format!("  {}", fit(&a.name, 20)), &format!("{} b", hue(&a.name))),
+                    s(
+                        fit(&a.state, 9),
+                        match a.state.as_str() {
+                            "running" => "gr",
+                            "queued" => "ye",
+                            _ => "fa",
+                        },
+                    ),
+                    s(fit(&a.generation.to_string(), 5), "mu"),
+                    s(fit(&a.host, 13), "cy"),
+                    s(fit(if a.model.is_empty() { "—" } else { &a.model }, 8), "mu"),
+                    s(fit(&a.folder, folder_w), "fa"),
+                ],
+                _ => vec![],
+            }
         };
+        let total = es.len();
+        let before = move |i: usize| -> Option<L> {
+            if i == 0 && goals_n > 0 {
+                Some(vec![s(format!("  {}{}{}{}{}{}LEAD", fit("GOAL", 18), fit("STATE", 10), fit("SLOT", 5), fit("LAST · LINE", 20), fit("EXP", 5), fit("CREW", 7)), "mu")])
+            } else if i == goals_n && i < total {
+                Some(vec![s(format!("  {}{}{}{}{}FOLDER", fit("AGENT", 20), fit("STATE", 9), fit("GEN", 5), fit("HOST", 13), fit("MODEL", 8)), "mu")])
+            } else {
+                None
+            }
+        };
+        let fixed = 16 + budget.len();
         let win = self.run_rows(
             w,
             h,
             bar(w, "AGENTS & GOALS  ·  the switchboard  ·  long-lived agents, and the swarms working toward a line", "barcy"),
-            Some(format!("  {}{}{}{}{}FOLDER", fit("AGENT", 20), fit("STATE", 9), fit("GEN", 5), fit("HOST", 13), fit("MODEL", 8))),
-            ags.len(),
+            None,
+            es.len(),
             &row,
-            vec![
-                s(if self.st.has_session_tables { "   Nothing yet. " } else { "   This board has no agents tables yet. " }, "mu"),
-                s("N", "ye"),
-                s(" signs up an agent (recorded; it cannot start yet).", "mu"),
-            ],
-            10,
+            vec![s("   Nothing yet. ", "mu"), s("N", "ye"), s(" signs up an agent; ", "mu"), s("G", "ye"), s(" starts a goal.", "mu")],
+            fixed,
+            &before,
+            budget,
+        );
+        let mut l = win.lines.clone();
+        let ag = &self.st.agents;
+        let mut foot: L = vec![
+            s(format!(" {} running", ag.iter().filter(|a| a.state == "running").count()), "gr"),
+            plain(" · "),
+            s(format!("{} queued", ag.iter().filter(|a| a.state == "queued").count()), "ye"),
+            plain(" · "),
+            s(format!("{} stopped", ag.iter().filter(|a| a.state == "stopped").count()), "fa"),
+            s(format!(" · {} draft goals", self.st.goals.iter().filter(|g| g.state == "draft").count()), "ye"),
+            s(format!(" · at most {} at once", self.pref_i("max_sessions", self.st.max_sessions)), "mu"),
+        ];
+        foot.extend(scroll_cue(&win));
+        l.push(foot);
+        l.push(vec![]);
+        l.push(vec![
+            s(" ↵", "ye"),
+            s(" on an agent attaches (", "mu"),
+            s("agentdesk attach <name>", "cy"),
+            s("; Ctrl+] detaches); on a goal it reads it. ", "mu"),
+            s("A", "ye"),
+            s(" adopts a Claude session, or approves a goal; ", "mu"),
+            s("X", "ye"),
+            s(" stops one.", "mu"),
+        ]);
+        if let Some(note) = &self.adopt_note {
+            l.push(vec![]);
+            l.extend(boxed("Adopted", vec![vec![s(note.clone(), "ye")]], w));
+        }
+        l
+    }
+
+    fn adopt_screen(&mut self, w: usize, h: usize) -> Vec<L> {
+        let rs: Vec<(String, String, Option<DateTime<Local>>, String)> =
+            self.adoptables.iter().map(|c| (c.session_id.clone(), c.folder.clone(), Some(c.modified.with_timezone(&Local)), c.first_message.clone())).collect();
+        let folder_w = 44.min(w / 3);
+        let msg_w = w.saturating_sub(folder_w + 15).max(20);
+        let r2 = rs.clone();
+        let row =
+            move |i: usize| -> L { vec![s(format!("  {}", fit(&tilde(&r2[i].1), folder_w)), "cy"), s(format!(" {}", fit(&when(r2[i].2), 11)), "fa"), plain(fit(&r2[i].3, msg_w))] };
+        let win = self.run_rows(
+            w,
+            h,
+            bar(w, "ADOPT  ·  take over a live Claude session  ·  same conversation, now AgentDesk runs it", "barcy"),
+            Some(format!("  {} {}FIRST MESSAGE", fit("FOLDER", folder_w), fit("LAST", 11))),
+            rs.len(),
+            &row,
+            vec![s("   No Claude Code conversations in the last 24 hours that anyone typed in.", "mu")],
+            9,
             &|_| None,
             vec![],
         );
-        let mut l = win.lines;
+        let mut l = win.lines.clone();
+        let mut foot = vec![s(format!(" {} from the last 24 hours, newest first", n_word(rs.len(), "conversation")), "mu")];
+        foot.extend(scroll_cue(&win));
+        l.push(foot);
         l.push(vec![]);
-        l.push(vec![s(" Starting, attaching, goals, adopting and the Concierge need the session host, which is not in this build yet.", "fa")]);
-        l.push(vec![s(" Agents you signed up in the .NET build are listed here read-only; nothing here starts or stops them.", "fa")]);
+        l.push(vec![s(" ↵", "ye"), s(" asks for a name, then starts it here as an agent in its own folder, resuming the conversation.", "mu")]);
+        l.push(vec![s(" Then close it in the Claude desktop app: two programs writing one conversation will garble it.", "fa")]);
         l
+    }
+
+    fn goal_screen(&mut self, w: usize) -> Vec<L> {
+        let Some(doc) = &self.goal_doc else { return vec![vec![s(" Reading the goal's log...", "mu")]] };
+        let Some(g) = self.sel_goal() else { return vec![vec![s(" That goal is gone.", "mu")]] };
+        let lead = self.lead_of(&g).cloned();
+        let slot = self.st.slots.get(&g.name.to_lowercase()).copied();
+        goal_reader(doc, &g, lead.as_ref(), slot, w)
     }
 
     fn compose_screen(&mut self, w: usize) -> Vec<L> {

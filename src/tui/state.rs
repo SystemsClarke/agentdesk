@@ -167,6 +167,46 @@ pub struct Agent {
 }
 
 #[derive(Clone, Debug)]
+pub struct GoalRow {
+    pub name: String,
+    pub state: String,
+    pub objective: String,
+    pub lead: String,
+    pub success: Option<String>,
+    pub experiments: i64,
+    pub last_value: Option<f64>,
+    pub members: i64,
+    pub max_members: i64,
+    pub standing: bool,
+}
+
+/// The usage governor in the shape the budget panel shows (`ui:governor`).
+#[derive(Clone, Debug, Default)]
+pub struct Budget {
+    pub samples: i64,
+    pub remaining: f64,
+    pub reset_in_hours: f64,
+    pub projected_end: f64,
+    pub sessions: i64,
+    pub swarms: i64,
+    pub members: i64,
+    pub reason: String,
+    pub series: Vec<f64>,
+    pub forecast: Vec<f64>,
+    pub mode: String,
+    pub pool: String,
+    pub status: String,
+    pub plan_end: f64,
+}
+
+#[derive(Clone, Debug)]
+pub struct SwarmMember {
+    pub identity: String,
+    pub task: String,
+    pub work_id: Option<i64>,
+}
+
+#[derive(Clone, Debug)]
 pub struct VaultHealth {
     pub ts: DateTime<Local>,
     pub unpushed: Option<i64>,
@@ -193,6 +233,14 @@ pub struct State {
     pub settings_path: String,
     pub agents: Vec<Agent>,
     pub has_session_tables: bool,
+    pub goals: Vec<GoalRow>,
+    pub slots: HashMap<String, i64>,
+    pub concierge_on: bool,
+    pub swarm: Vec<SwarmMember>,
+    pub held_id: Option<i64>,
+    pub budget: Option<Budget>,
+    pub slack: Option<(Option<DateTime<Local>>, i64, Option<(Option<DateTime<Local>>, i64)>)>,
+    pub max_sessions: i64,
 }
 
 fn post_from(v: &Value) -> Post {
@@ -214,6 +262,83 @@ fn table_exists(db: &Db, name: &str) -> bool {
 }
 
 impl State {
+    fn load_swarm(&mut self, db: &Db) {
+        let list = crate::goals::list(db).ok().and_then(|v| v["goals"].as_array().cloned()).unwrap_or_default();
+        self.goals = list
+            .iter()
+            .map(|g| GoalRow {
+                name: g["name"].as_str().unwrap_or("").into(),
+                state: g["state"].as_str().unwrap_or("").into(),
+                objective: g["objective"].as_str().unwrap_or("").into(),
+                lead: g["lead"].as_str().unwrap_or("").into(),
+                success: g["success"].as_str().map(String::from),
+                experiments: g["experiments"].as_i64().unwrap_or(0),
+                last_value: g["last_value"].as_f64(),
+                members: g["members"].as_i64().unwrap_or(0),
+                max_members: g["max_members"].as_i64().unwrap_or(3),
+                standing: g["standing"].as_i64() == Some(1),
+            })
+            .collect();
+        if !self.goals.iter().any(|g| g.standing && g.name == "concierge") {
+            self.goals.push(GoalRow {
+                name: "concierge".into(),
+                state: "off".into(),
+                objective: "Keep Work to Hire drained".into(),
+                lead: "concierge-lead".into(),
+                success: Some("value <= 0".into()),
+                experiments: 0,
+                last_value: None,
+                members: 0,
+                max_members: 3,
+                standing: true,
+            });
+        }
+        if let Ok(c) = crate::concierge::state(db) {
+            self.concierge_on = c["on"].as_bool().unwrap_or(false);
+            self.held_id = c["held"].as_array().and_then(|h| h.first()).and_then(|v| v.as_i64());
+            self.swarm = c["members"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .map(|m| SwarmMember {
+                            identity: m["identity"].as_str().unwrap_or("").into(),
+                            task: m["task"].as_str().unwrap_or("").into(),
+                            work_id: m["work_id"].as_i64(),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+        }
+        if let Ok(slots) = crate::slots::list(db) {
+            for sl in slots["slots"].as_array().cloned().unwrap_or_default() {
+                if let (Some(g), Some(n)) = (sl["goal"].as_str(), sl["n"].as_i64()) {
+                    self.slots.insert(g.to_lowercase(), n);
+                }
+            }
+        }
+        let g = crate::governor::report(db, chrono::Utc::now(), false, None);
+        if g["samples"].as_i64().unwrap_or(0) > 0 {
+            let f = |k: &str| g[k].as_f64().unwrap_or(0.0);
+            let arr = |k: &str| g[k].as_array().map(|a| a.iter().filter_map(|x| x.as_f64()).collect()).unwrap_or_default();
+            self.budget = Some(Budget {
+                samples: g["samples"].as_i64().unwrap_or(0),
+                remaining: f("remaining"),
+                reset_in_hours: f("reset_in_hours"),
+                projected_end: f("projected_end_pct"),
+                sessions: g["caps"]["total_sessions"].as_i64().unwrap_or(0),
+                swarms: g["caps"]["swarms"].as_i64().unwrap_or(0),
+                members: g["caps"]["members_per_swarm"].as_i64().unwrap_or(0),
+                reason: g["reason"].as_str().unwrap_or("").into(),
+                series: arr("series"),
+                forecast: arr("forecast"),
+                mode: if g["enforcing"].as_bool() == Some(true) { "enforcing".into() } else { "advisory".into() },
+                pool: g["pool"]["summary"].as_str().unwrap_or("").into(),
+                status: g["status"].as_str().unwrap_or("").into(),
+                plan_end: f("plan_end_pct"),
+            });
+        }
+    }
+
     pub fn load(db: &Db, show_archived: bool, show_decided: bool) -> State {
         let mut st = State::default();
         for ch in CHANNELS {
@@ -280,6 +405,10 @@ impl State {
             .ok()
             .and_then(|t| serde_json::from_str::<Value>(&t).ok())
             .and_then(|v| Some(VaultHealth { ts: ts(&v["ts"])?, unpushed: v["unpushed"].as_i64(), error: v["error"].as_str().filter(|e| !e.is_empty()).map(String::from) }));
+        st.slack = std::fs::read_to_string(paths::data_dir().join("slack_bridge.state"))
+            .ok()
+            .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+            .map(|v| (ts(&v["ts"]), v["poll_s"].as_i64().unwrap_or(0), v["last_relay"].as_object().map(|r| (ts(&r["ts"].clone()), r["thread_id"].as_i64().unwrap_or(0)))));
         st.jobs = jobs::list(db)
             .unwrap_or_default()
             .iter()
@@ -341,6 +470,10 @@ impl State {
                 .collect();
         }
         let _ = RECEIPT_KINDS;
+        st.max_sessions = crate::identities::max_sessions() as i64;
+        if st.has_session_tables {
+            st.load_swarm(db);
+        }
         st
     }
 }

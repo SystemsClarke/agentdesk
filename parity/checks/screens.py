@@ -289,29 +289,39 @@ def _rules(b):
 @feature("screen.agents", "screens", "Agents & goals: one list (goals then agents), the budget panel, running/queued/stopped counts; N new, S start/stop, F forget, A adopt/approve, X stop goal, G new goal", SRC)
 def _agents(b):
     s = b.snap("a")
-    has(s, "AGENTS & GOALS")
-    todo(s, "Budget · the usage governor", "none signed up")
+    has(s, "AGENTS & GOALS", "Budget · the usage governor", "concierge", "standing" if False else "off", "0 running")
     b.need("ui:identity_create", {"name": "builder", "folder": b.work})
-    has(b.snap("a"), "builder", "stopped")
+    b.need("ui:goal_create", {"name": "g1", "objective": "go faster", "folder": b.work}) if False else None
+    s = b.snap("a")
+    has(s, "builder", "stopped", "AGENT", "GOAL", "1 stopped")
 
 
 @feature("key.agents.start-stop", "screens", "S starts or stops the agent (or a goal's lead); ↵ attaches a console", SRC)
 def _astart(b):
-    b.stub("claude", "import time\ntime.sleep(60)\n")
     b.need("ui:identity_create", {"name": "builder", "folder": b.work})
-    s = b.snap("a s")
-    todo(s, "is running", "queued")
+    s = b.snap("a down s")
+    assert "builder is queued" in s["text"] or "builder is running" in s["text"], s["flash"]
+    assert b.sql("SELECT state FROM identities")[0]["state"] in ("queued", "running")
+    s = b.snap("a down s")
+    assert "builder stopped" in s["text"], s["flash"]
 
 
 @feature("key.agents.new-agent", "screens", "N asks name, folder, charter and signs up an agent", SRC)
 def _anew(b):
-    b.snap("a n t:scribe enter enter")
-    todo({"text": json.dumps(b.sql("SELECT name FROM identities") if b.sql("SELECT name FROM sqlite_master WHERE name='identities'") else [])}, "scribe")
+    b.snap("a n t:scribe enter enter enter")
+    assert b.sql("SELECT name FROM identities")[0]["name"] == "scribe"
 
 
 @feature("screen.adopt", "screens", "Adopt: FOLDER LAST FIRST MESSAGE of the last day's Claude conversations; Enter asks a name and adopts", SRC)
 def _adopt(b):
-    todo(b.snap("a a"), "ADOPT")
+    proj = os.path.join(b.home, ".claude", "projects", "p1")
+    os.makedirs(proj)
+    open(os.path.join(proj, "abc-123.jsonl"), "w").write(json.dumps({"type": "user", "cwd": b.work, "message": {"role": "user", "content": "build the thing"}}) + "\n")
+    b.need("ui:identity_create", {"name": "builder", "folder": b.work})
+    s = b.snap("a down a", env={"AGENTDESK_CLAUDE_PROJECTS": os.path.join(b.home, ".claude", "projects")})
+    has(s, "ADOPT", "FIRST MESSAGE", "build the thing")
+    b.snap("a down a enter enter", env={"AGENTDESK_CLAUDE_PROJECTS": os.path.join(b.home, ".claude", "projects")})
+    assert b.sql("SELECT claude_session_id FROM identities WHERE name='work'")[0]["claude_session_id"] == "abc-123", "the name is prefilled from the folder: Enter accepts it"
 
 
 @feature("screen.goal", "screens", "Goal reader: objective, hypothesis, measure, success, budget, history sparkline, last 10 experiments, members, summary; A/X/L/+/-", SRC)

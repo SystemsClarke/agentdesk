@@ -138,8 +138,8 @@ class Board:
         assert rc == 0, "%s failed: %s" % (request, doc)
         return doc
 
-    def snap(self, keys="", size="110x36"):
-        r = self.run("ui-snapshot", "--json", "--size", size, "--keys", keys)
+    def snap(self, keys="", size="110x36", env=None):
+        r = self.run("ui-snapshot", "--json", "--size", size, "--keys", keys, env=env)
         assert r.returncode == 0, "ui-snapshot failed: " + r.stderr[:300]
         d = json.loads(r.stdout)
         d["text"] = "\n".join(d["lines"])
