@@ -1,25 +1,38 @@
-name: ci
-# Pull requests only: main is built and tested again by cd, and a branch with no PR needs no run.
-on:
-  pull_request:
-  workflow_dispatch:
+name: CI
 
-concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true # a newer push makes the older run pointless
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
 
 jobs:
-  build:
-    runs-on: blacksmith-4vcpu-windows-2025
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-dotnet@v4
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          dotnet-version: 10.0.x
-      - uses: actions/cache@v4
-        with:
-          path: ~\.nuget\packages # includes the Native AOT compiler package, the biggest download
-          key: nuget-${{ hashFiles('**/*.csproj', 'Directory.Build.props', 'dotnet-tools.json') }}
-          restore-keys: nuget-
-      - run: ./build.ps1 -Test
-        shell: pwsh
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: Format
+        run: cargo fmt --check
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Test
+        run: cargo test --locked
+      - name: Build
+        run: cargo build --release --locked
+      - name: Smoke test the MCP server
+        shell: bash
+        run: |
+          export AGENTDESK_DATA="$RUNNER_TEMP/agentdesk-smoke"
+          out=$(printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' | ./target/release/agentdesk mcp)
+          echo "$out" | grep -q '"post_message"'
