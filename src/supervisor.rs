@@ -9,6 +9,7 @@
 //! - queued identities start, oldest first, while fewer than `max_sessions` are running.
 
 use crate::db::{now_iso, Db};
+use crate::governor as gov;
 use crate::identities as ids;
 use crate::paths;
 use crate::sessions::Host;
@@ -24,6 +25,11 @@ pub struct Supervisor {
     last_human: i64,
     goals: Option<crate::goals::Runner>,
     attach: Option<crate::attach::Server>,
+    /// Swarm identities held queued by the pool or the governor, and why (logged once per hold).
+    held: std::collections::BTreeMap<String, String>,
+    /// Advisory mode: what enforcement would have shed, so each is logged once.
+    would_shed: std::collections::BTreeSet<String>,
+    warned: Option<String>,
 }
 
 /// Whether some process holds the supervisor lock right now (a CLI command warns when nothing will act on what it wrote).
@@ -49,7 +55,17 @@ fn claude_program() -> String {
 
 impl Supervisor {
     pub fn new() -> Supervisor {
-        Supervisor { host: Host::new(), lock: None, resumed: false, last_human: 0, goals: None, attach: None }
+        Supervisor {
+            host: Host::new(),
+            lock: None,
+            resumed: false,
+            last_human: 0,
+            goals: None,
+            attach: None,
+            held: Default::default(),
+            would_shed: Default::default(),
+            warned: None,
+        }
     }
 
     /// Takes the lock if nobody has it. Cheap to call every tick.
@@ -116,25 +132,119 @@ impl Supervisor {
         }
         let path = db.path.clone();
         self.goals.get_or_insert_with(|| crate::goals::Runner::new(path)).tick(db, &mut self.host)?;
-        let mut running = self.host.names().len();
-        let mut queued: Vec<&Value> = rows.iter().filter(|r| r["state"].as_str() == Some("queued")).collect();
-        queued.sort_by_key(|r| r["updated_ts"].as_str().unwrap_or("").to_string());
-        for r in queued {
-            if running >= ids::max_sessions() {
+        self.pool(db)
+    }
+
+    /// Starts what the session pool allows, then sheds what the usage governor says is too much. Identities of John's own answer only to
+    /// `max_sessions`; a goal's lead or member also needs a free slot under the pool's ceiling (the plan, while `governor_enforce` is on),
+    /// its goal's fair share and its `max_members`. A held identity stays queued, and the next tick tries again.
+    fn pool(&mut self, db: &Db) -> Result<()> {
+        let hard = ids::max_sessions() as i64;
+        let v = gov::judge(db, chrono::Utc::now(), false);
+        let mut queued = ids::list(db)?.into_iter().filter(|r| r["state"].as_str() == Some("queued")).collect::<Vec<_>>();
+        // John's own identities before a goal's, then the oldest.
+        queued.sort_by_key(|r| (role(db, r["name"].as_str().unwrap_or("")).0.is_some(), r["updated_ts"].as_str().unwrap_or("").to_string()));
+        for r in &queued {
+            let name = r["name"].as_str().unwrap_or("").to_string();
+            let pool = gov::Budget::read(db, hard, &v);
+            if pool.running >= hard {
                 break;
             }
-            if !crate::goals::member_may_start(db, &name(r)) {
-                continue; // its goal already runs max_members: it stays queued until one retires
-            }
-            match self.launch(db, &name(r), None) {
-                Ok(()) => running += 1,
-                Err(e) => {
-                    paths::log("WARN", &format!("identity {} did not start: {e}", name(r)));
-                    db.exec("UPDATE identities SET state='stopped', pid=NULL, updated_ts=:ts WHERE name=:n", &[(":ts", &now_iso()), (":n", &name(r))])?;
+            let (goal, lead) = role(db, &name);
+            let mut model = None;
+            if let Some(g) = goal.as_deref() {
+                if let Some(why) = pool.can_start(Some(g), lead, pool.ceiling()) {
+                    let by_plan = v.enforce() && pool.running >= pool.governed();
+                    let hold = if by_plan { format!("the usage governor caps the pool at {}: {}", pool.governed(), v.why) } else { why.clone() };
+                    if self.held.insert(name.clone(), hold).is_none() {
+                        paths::log(
+                            "INFO",
+                            &if by_plan {
+                                format!("governor: queued {name} ({} running, cap {}): {}", pool.running, pool.governed(), v.why)
+                            } else {
+                                format!("pool: queued {name}: {why}")
+                            },
+                        );
+                    }
+                    continue;
+                }
+                if !v.enforce() {
+                    if let Some(would) = pool.can_start(Some(g), lead, pool.governed()) {
+                        let because = if pool.running >= pool.governed() { v.why.clone() } else { would };
+                        paths::log("INFO", &format!("governor (advisory): would have queued {name} ({} running, cap {}): {because}", pool.running, pool.governed()));
+                    }
+                }
+                let stored = r["model"].as_str().unwrap_or("sonnet");
+                let want = v.model(stored, lead);
+                if want != stored {
+                    let (advisory, verb) = if v.enforce() { ("", "launching") } else { (" (advisory)", "would have launched") };
+                    paths::log("INFO", &format!("governor{advisory}: {verb} {name} at {want} instead of {stored} (step down)"));
+                    if v.enforce() {
+                        model = Some(want);
+                    }
                 }
             }
+            self.held.remove(&name);
+            if let Err(e) = self.launch_at(db, &name, None, model.as_deref()) {
+                paths::log("WARN", &format!("identity {name} did not start: {e}"));
+                db.exec("UPDATE identities SET state='stopped', pid=NULL, updated_ts=:ts WHERE name=:n", &[(":ts", &now_iso()), (":n", &name)])?;
+            }
+        }
+        self.held.retain(|n, _| ids::get(db, n).ok().flatten().is_some_and(|r| r["state"].as_str() == Some("queued")));
+        self.shed(db, hard, &v)
+    }
+
+    /// When the plan's total is below the number running, swarm sessions stop (members before leads, the Concierge's members first, then
+    /// the longest idle first). A shed identity goes back to queued, so it resumes its conversation when the governor allows. John's own
+    /// are never shed, only warned about. Advisory, it only logs what it would have shed. With a stale reading there is nothing to shed on.
+    fn shed(&mut self, db: &Db, hard: i64, v: &gov::Verdict) -> Result<()> {
+        let pool = gov::Budget::read(db, hard, v);
+        let excess = if v.fresh { (pool.running - pool.governed()).max(0) } else { 0 };
+        let victims: Vec<String> =
+            if excess == 0 { Vec::new() } else { db.rows(SHED_ORDER, &[])?.iter().filter_map(|r| r["name"].as_str().map(String::from)).take(excess as usize).collect() };
+        if excess > victims.len() as i64 {
+            let johns: Vec<String> = db
+                .rows(
+                    "SELECT name FROM identities WHERE state='running' AND name NOT IN (SELECT identity FROM goal_members) AND name NOT IN (SELECT lead FROM goals) ORDER BY name",
+                    &[],
+                )?
+                .iter()
+                .filter_map(|r| r["name"].as_str().map(String::from))
+                .collect();
+            let warning = format!(
+                "governor: {} sessions running against a cap of {}; John's own identities ({}) are over it and are never stopped automatically",
+                pool.running,
+                pool.governed(),
+                johns.join(", ")
+            );
+            if self.warned.as_ref() != Some(&warning) {
+                paths::log("WARN", &warning);
+            }
+            self.warned = Some(warning);
+        } else {
+            self.warned = None;
+        }
+        if v.enforce() {
+            self.would_shed.clear();
+            for name in &victims {
+                db.exec("UPDATE identities SET state='queued', pid=NULL, updated_ts=:ts WHERE name=:n", &[(":ts", &now_iso()), (":n", name)])?;
+                self.host.stop(name);
+                self.held.insert(name.clone(), v.why.clone());
+                paths::log("WARN", &format!("governor: shed {name} ({} running, cap {}): {}", pool.running, pool.governed(), v.why));
+            }
+        } else {
+            for name in victims.iter().filter(|n| self.would_shed.insert((*n).clone())) {
+                paths::log("INFO", &format!("governor (advisory): would have shed {name} ({} running, cap {}): {}", pool.running, pool.governed(), v.why));
+            }
+            self.would_shed.retain(|n| victims.contains(n));
         }
         Ok(())
+    }
+
+    /// Why the identity is waiting in the queue, when the pool or the governor is holding it.
+    #[allow(dead_code)] // the Agents screen shows it
+    pub fn held(&self, name: &str) -> Option<&str> {
+        self.held.get(name).map(String::as_str)
     }
 
     /// John replied on a question an identity asked, and it has not already been handed the reply (its `wait` returned, or a hook injected it):
@@ -180,10 +290,15 @@ impl Supervisor {
 
     /// Starts the identity's session (resuming its conversation when there is one), then records it as running.
     pub fn launch(&mut self, db: &Db, name: &str, prompt: Option<String>) -> Result<()> {
+        self.launch_at(db, name, prompt, None)
+    }
+
+    /// `launch` at a given model tier (the governor steps a swarm session down to a cheaper one when the week is tight).
+    fn launch_at(&mut self, db: &Db, name: &str, prompt: Option<String>, model: Option<&str>) -> Result<()> {
         let Some(row) = ids::get(db, name)? else { return Ok(()) };
         let wake = row["wake_prompt"].as_str().filter(|w| !w.is_empty()).map(String::from);
         let prompt = prompt.or(wake).or_else(|| ids::pending_successor_prompt(db, &row));
-        let (args, id) = ids::launch_args(&row, prompt.as_deref(), None);
+        let (args, id) = ids::launch_args(&row, prompt.as_deref(), model);
         let env = vec![("AGENTDESK_IDENTITY".to_string(), name.to_string()), ("AGENTDESK_AUTHOR".to_string(), name.to_string())];
         let pid = self.host.launch(name, row["folder"].as_str().unwrap_or("."), &claude_program(), &args, &env)?;
         let tier = args.windows(2).find(|w| w[0] == "--model").map(|w| w[1].clone());
@@ -227,3 +342,23 @@ impl Supervisor {
         Ok(())
     }
 }
+
+/// A goal's member or lead is a swarm identity (the goal, and whether it leads it): the governor gates, sheds and re-tiers those. Any
+/// other identity is John's own.
+fn role(db: &Db, name: &str) -> (Option<String>, bool) {
+    if let Ok(Some(g)) = db.scalar_str("SELECT goal FROM goal_members WHERE identity=:n", &[(":n", &name)]) {
+        return (Some(g), false);
+    }
+    match db.scalar_str("SELECT name FROM goals WHERE lead=:n COLLATE NOCASE", &[(":n", &name)]) {
+        Ok(Some(g)) => (Some(g), true),
+        _ => (None, false),
+    }
+}
+
+/// Running swarm sessions in the order the governor sheds them. A session mid-Phoenix (no pid) is left alone.
+const SHED_ORDER: &str = "SELECT i.name FROM identities i LEFT JOIN presence p ON p.author = i.name \
+    WHERE i.state='running' AND i.pid IS NOT NULL \
+      AND (i.name IN (SELECT identity FROM goal_members) OR i.name IN (SELECT lead FROM goals)) \
+    ORDER BY (i.name IN (SELECT identity FROM goal_members)) DESC, \
+             (i.name IN (SELECT identity FROM goal_members WHERE goal='concierge')) DESC, \
+             MAX(COALESCE(p.seen_ts, ''), i.updated_ts), i.name";

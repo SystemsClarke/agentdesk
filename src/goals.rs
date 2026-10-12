@@ -461,6 +461,7 @@ pub fn member_done(db: &Db, c: &Caller, summary: &str) -> Result<Value> {
 }
 
 /// Whether a queued goal member may take a slot now: its goal runs at most `max_members` at once. Identities that are not members always may.
+#[cfg_attr(not(test), allow(dead_code))] // the session pool (governor::Budget) enforces max_members now
 pub fn member_may_start(db: &Db, identity: &str) -> bool {
     let Ok(Some(m)) = db.row("SELECT goal FROM goal_members WHERE identity=:i", &[(":i", &identity)]) else { return true };
     let goal = st(&m, "goal");

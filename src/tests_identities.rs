@@ -254,10 +254,16 @@ fn attach_replays_output_takes_input_and_refuses_a_wrong_key() {
     let mut c = connect(format!("ATTACH {key} att 100 30\n"));
     let mut seen = Vec::new();
     let mut buf = [0u8; 4096];
+    let mut answered = false;
     while !String::from_utf8_lossy(&seen).contains("hello-attach") {
         let n = c.read(&mut buf).unwrap_or_else(|e| panic!("{e}; so far {:?}", String::from_utf8_lossy(&seen)));
         assert!(n > 0, "closed before the output arrived: {:?}", String::from_utf8_lossy(&seen));
         seen.extend_from_slice(&buf[..n]);
+        if !answered && String::from_utf8_lossy(&seen).contains("\x1b[6n") {
+            // a terminal answers the cursor query ConPTY opens with; the host only does it for a session nobody is attached to
+            answered = true;
+            c.write_all(format!("INPUT {}\n", crate::attach::base64_encode(b"\x1b[1;1R")).as_bytes()).unwrap();
+        }
     }
     assert!(String::from_utf8_lossy(&seen).starts_with("OK\n"));
     if !cfg!(windows) {

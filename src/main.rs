@@ -12,6 +12,7 @@ mod attach;
 mod backup;
 mod db;
 mod goals;
+mod governor;
 mod hooks;
 mod identities;
 mod identity;
@@ -31,6 +32,8 @@ mod supervisor;
 mod tests;
 #[cfg(test)]
 mod tests_goals;
+#[cfg(test)]
+mod tests_governor;
 #[cfg(test)]
 mod tests_identities;
 mod tools;
@@ -73,6 +76,11 @@ enum Cmd {
     Goal {
         #[command(subcommand)]
         cmd: GoalCmd,
+    },
+    /// The usage governor: `governor` shows the plan and the session pool, `governor on|off` turns enforcement on or off.
+    Governor {
+        /// on, off or show (the default)
+        action: Option<String>,
     },
     /// Recurring jobs.
     Job {
@@ -248,6 +256,7 @@ fn real_main() -> Result<()> {
         Some(Cmd::Job { cmd }) => job(cmd),
         Some(Cmd::Identity { cmd }) => identity(cmd),
         Some(Cmd::Goal { cmd }) => goal(cmd),
+        Some(Cmd::Governor { action }) => governor_cmd(action.as_deref()),
         Some(Cmd::Backup) => {
             println!("{}", backup::run(&open()?)?);
             Ok(())
@@ -361,6 +370,20 @@ fn identity(cmd: IdentityCmd) -> Result<()> {
     if note && !supervisor::running() {
         eprintln!("note: no supervisor is running, so nothing will act on this yet. Start `agentdesk daemon` (or the window).");
     }
+    Ok(())
+}
+
+fn governor_cmd(action: Option<&str>) -> Result<()> {
+    match action {
+        Some("on") => governor::set_enforce(true)?,
+        Some("off") => governor::set_enforce(false)?,
+        Some("show") | None => {}
+        Some(other) => anyhow::bail!("governor takes on, off or show, not {other}"),
+    }
+    let d = open()?;
+    let r = governor::report(&d, chrono::Utc::now(), false, None);
+    println!("{}", r["summary"].as_str().unwrap_or(""));
+    println!("{}", serde_json::to_string_pretty(&r)?);
     Ok(())
 }
 
