@@ -171,7 +171,7 @@ fn dispatch(db: &Db, c: &Caller, tool: &str, a: &Args) -> Result<Value> {
             Ok(ok(json!({"thread_id": id, "message_id": mid})))
         }
         "search_messages" => Ok(json!({"results": db.search(&a.str("query")?, a.int_or("limit", 20))?})),
-        "search_vault" => Ok(vault::search(&a.str("query")?, a.int_or("k", 8).max(0) as usize, a.int_or("full", 0).max(0) as usize)),
+        "search_vault" => Ok(vault::search(&a.str("query")?, a.int_or("k", 8).max(0) as usize, a.int_or("full", 0))),
         "recent_messages" => Ok(json!({"messages": db.recent(a.int_or("limit", 30))?})),
         "list_mentions" => {
             let who = resolve(a.opt("name").as_deref(), c);
@@ -207,6 +207,9 @@ fn dispatch(db: &Db, c: &Caller, tool: &str, a: &Args) -> Result<Value> {
 
 /// `agentdesk wait <thread>` as a shell command that works for this install.
 pub fn wait_command(thread_id: i64) -> String {
+    if cfg!(test) {
+        return format!("wait {thread_id}");
+    }
     let exe = std::env::current_exe().map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|_| "agentdesk".into());
     format!("\"{exe}\" wait {thread_id}")
 }

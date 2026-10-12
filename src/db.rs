@@ -93,8 +93,35 @@ pub struct Db {
     depth: Cell<u32>,
 }
 
+thread_local! {
+    /// Tests pin the clock to a tick counter (one second per timestamp) so recorded ids and timestamps match exactly.
+    static TICK: Cell<Option<i64>> = const { Cell::new(None) };
+}
+
+#[cfg(test)]
+pub fn pin_clock(start: Option<i64>) {
+    TICK.with(|t| t.set(start));
+}
+
 pub fn now_iso() -> String {
-    chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S+00:00").to_string()
+    let at = match TICK.with(|t| t.get()) {
+        Some(n) => {
+            TICK.with(|t| t.set(Some(n + 1)));
+            chrono::DateTime::from_timestamp(1767225600 + n, 0).unwrap()
+        }
+        None => chrono::Utc::now(),
+    };
+    at.format("%Y-%m-%dT%H:%M:%S+00:00").to_string()
+}
+
+/// Python's `json.dumps(ensure_ascii=False)`: `", "` and `": "` separators. The board's meta columns were written this
+/// way by the original, and the golden tests compare them as text.
+pub fn py_dumps(v: &Value) -> String {
+    match v {
+        Value::Array(a) => format!("[{}]", a.iter().map(py_dumps).collect::<Vec<_>>().join(", ")),
+        Value::Object(o) => format!("{{{}}}", o.iter().map(|(k, v)| format!("{}: {}", Value::String(k.clone()), py_dumps(v))).collect::<Vec<_>>().join(", ")),
+        other => other.to_string(),
+    }
 }
 
 fn s(v: &Value) -> Option<&str> {
@@ -102,7 +129,7 @@ fn s(v: &Value) -> Option<&str> {
 }
 
 pub fn dumps(meta: Option<&Value>) -> Option<String> {
-    meta.map(|m| m.to_string())
+    meta.map(py_dumps)
 }
 
 fn parse_obj(json: Option<&str>) -> Option<Map<String, Value>> {
@@ -277,7 +304,7 @@ If you need something else from him, ask a new question with ask_human.");
             _ => Map::new(),
         };
         copy.insert("mentions".into(), json!(names));
-        Some(Value::Object(copy).to_string())
+        Some(py_dumps(&Value::Object(copy)))
     }
 
     /// Post a message, creating a thread unless `thread_id` is given. Returns the THREAD id.
@@ -346,7 +373,7 @@ If you need something else from him, ask a new question with ask_human.");
     fn move_work(&self, id: i64, agent: &str, ts: &str, meta: &Map<String, Value>, from: &str, to: &str) -> Result<bool> {
         let moved = self.exec(
             "UPDATE threads SET status=:to, updated_ts=:ts, meta=:meta WHERE id=:id AND channel='work' AND status=:from",
-            &[(":to", &to), (":ts", &ts), (":meta", &Value::Object(meta.clone()).to_string()), (":id", &id), (":from", &from)],
+            &[(":to", &to), (":ts", &ts), (":meta", &py_dumps(&Value::Object(meta.clone()))), (":id", &id), (":from", &from)],
         )? == 1;
         if moved {
             self.touch_presence(agent, AGENT)?;
@@ -437,7 +464,7 @@ If you need something else from him, ask a new question with ask_human.");
         meta.remove("archive_hold");
         Ok(self.exec(
             "UPDATE threads SET status='closed', updated_ts=:ts, meta=:meta WHERE id=:tid",
-            &[(":ts", &now_iso()), (":meta", &Value::Object(meta).to_string()), (":tid", &thread_id)],
+            &[(":ts", &now_iso()), (":meta", &py_dumps(&Value::Object(meta))), (":tid", &thread_id)],
         )? == 1)
     }
 
@@ -453,7 +480,7 @@ If you need something else from him, ask a new question with ask_human.");
         meta.insert("archive_hold".into(), json!(true));
         Ok(self.exec(
             "UPDATE threads SET status=:s, updated_ts=:ts, meta=:meta WHERE id=:tid",
-            &[(":s", &settled), (":ts", &now_iso()), (":meta", &Value::Object(meta).to_string()), (":tid", &thread_id)],
+            &[(":s", &settled), (":ts", &now_iso()), (":meta", &py_dumps(&Value::Object(meta))), (":tid", &thread_id)],
         )? == 1)
     }
 
@@ -468,7 +495,7 @@ If you need something else from him, ask a new question with ask_human.");
         meta.insert("archived_from".into(), json!(status));
         Ok(self.exec(
             "UPDATE threads SET status='archived', updated_ts=:ts, meta=:meta WHERE id=:tid",
-            &[(":ts", &now_iso()), (":meta", &Value::Object(meta).to_string()), (":tid", &thread_id)],
+            &[(":ts", &now_iso()), (":meta", &py_dumps(&Value::Object(meta))), (":tid", &thread_id)],
         )? == 1)
     }
 
@@ -489,7 +516,7 @@ If you need something else from him, ask a new question with ask_human.");
             }
             let mid = self.insert(
                 "INSERT INTO messages (ts, thread_id, author, author_kind, body, reply_to, meta) VALUES (:ts,:tid,:author,:kind,:body,NULL,:meta)",
-                &[(":ts", &ts), (":tid", &thread_id), (":author", &agent), (":kind", &AGENT), (":body", &body), (":meta", &json!({"kind": "read-receipt"}).to_string())],
+                &[(":ts", &ts), (":tid", &thread_id), (":author", &agent), (":kind", &AGENT), (":body", &body), (":meta", &py_dumps(&json!({"kind": "read-receipt"})))],
             )?;
             self.exec("UPDATE receipts SET message_id=:m WHERE agent=:a AND thread_id=:t", &[(":m", &mid), (":a", &agent), (":t", &thread_id)])?;
             Ok(true)
@@ -636,7 +663,9 @@ If you need something else from him, ask a new question with ask_human.");
                 found.push(r);
             }
         }
-        found.truncate(limit.max(0) as usize);
+        // Python's `out[:limit]`: a negative limit drops that many from the end
+        let keep = if limit < 0 { found.len().saturating_sub(limit.unsigned_abs() as usize) } else { limit as usize };
+        found.truncate(keep);
         Ok(found)
     }
 

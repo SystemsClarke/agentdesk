@@ -22,10 +22,27 @@ fn atomic_write(path: &Path, text: &str) -> Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
+thread_local! {
+    /// The golden tests' fake vault: same answers and same failures as the recording.
+    pub static FAKE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 /// A wiki thread as a note in `agentdesk/wiki/`. Returns what the post_message result reports.
 pub fn mirror_thread(db: &crate::db::Db, thread_id: i64) -> Value {
+    #[cfg(test)]
+    if FAKE.with(|f| f.get()) {
+        let subject = db.scalar_str("SELECT subject FROM threads WHERE id=:t", &[(":t", &thread_id)]).ok().flatten().unwrap_or_default();
+        if subject.contains("FAIL") {
+            return json!({"thread_id": thread_id, "status": "error", "reason": format!("RuntimeError('vault down: {subject}')")});
+        }
+        return json!({"thread_id": thread_id, "status": "mirrored", "note": format!("notes/{subject}.md"), "reasons": []});
+    }
     match mirror(db, thread_id) {
-        Ok(p) => json!({"thread_id": thread_id, "status": "ok", "path": p.to_string_lossy()}),
+        Ok(p) => {
+            let note = p.strip_prefix(paths::vault_dir()).unwrap_or(&p).to_string_lossy().replace('\\', "/");
+            json!({"thread_id": thread_id, "status": "mirrored", "note": note, "reasons": []})
+        }
         Err(e) => json!({"thread_id": thread_id, "status": "error", "reason": e.to_string()}),
     }
 }
@@ -82,8 +99,23 @@ fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// Matches the exact terms of the query against every note; best matches first.
-pub fn search(query: &str, k: usize, full: usize) -> Value {
+/// Matches the exact terms of the query against every note; best matches first. `full` inlines the body of that many
+/// top hits (a negative count inlines all but that many from the end).
+pub fn search(query: &str, k: usize, full: i64) -> Value {
+    #[cfg(test)]
+    if FAKE.with(|f| f.get()) {
+        if query == "offline" {
+            return json!({"error": "Ollama is not reachable"});
+        }
+        let scores = [1.0, 0.5, 0.3333];
+        let mut hits: Vec<Value> =
+            (0..k.min(3)).map(|i| json!({"path": format!("notes/{query}-{i}.md"), "score": scores[i], "type": "note", "summary": format!("hit {i} for {query} ✓")})).collect();
+        let n = if full >= 0 { full as usize } else { (hits.len() as i64 + full).max(0) as usize };
+        for h in hits.iter_mut().take(n) {
+            h["body"] = json!(format!("body of {}", h["path"].as_str().unwrap_or("")));
+        }
+        return json!({"hits": hits});
+    }
     let root = paths::vault_dir();
     let terms: Vec<String> = query.split_whitespace().map(|t| t.to_lowercase()).collect();
     let mut files = Vec::new();
@@ -102,7 +134,10 @@ pub fn search(query: &str, k: usize, full: usize) -> Value {
         }
     }
     hits.sort_by_key(|h| std::cmp::Reverse(h.0));
-    let results: Vec<Value> = hits
+    let top = hits.iter().map(|h| h.0).max().unwrap_or(1).max(1) as f64;
+    let n = hits.len().min(k);
+    let inline = if full >= 0 { full as usize } else { (n as i64 + full).max(0) as usize };
+    let out: Vec<Value> = hits
         .into_iter()
         .take(k)
         .enumerate()
@@ -112,12 +147,12 @@ pub fn search(query: &str, k: usize, full: usize) -> Value {
             let start = text.char_indices().map(|(i, _)| i).find(|&i| i + 80 >= at).unwrap_or(0);
             let snippet: String = text[start..].chars().take(240).collect();
             let rel = f.strip_prefix(&root).unwrap_or(&f).to_string_lossy().replace('\\', "/");
-            let mut o = json!({"path": rel, "score": score, "snippet": snippet.replace('\n', " ")});
-            if i < full {
+            let mut o = json!({"path": rel, "score": (score as f64 / top * 10000.0).round() / 10000.0, "type": "note", "summary": snippet.replace('\n', " ")});
+            if i < inline {
                 o["body"] = json!(text);
             }
             o
         })
         .collect();
-    json!({"results": results})
+    json!({"hits": out})
 }

@@ -41,6 +41,6 @@ pub fn log(level: &str, msg: &str) {
     use std::io::Write;
     let _ = std::fs::create_dir_all(data_dir());
     if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(log_file()) {
-        let _ = writeln!(f, "{} {level} {msg}", crate::db::now_iso());
+        let _ = writeln!(f, "{} {level} {msg}", chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ"));
     }
 }

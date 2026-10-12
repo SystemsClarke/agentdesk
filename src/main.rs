@@ -16,6 +16,8 @@ mod jobs;
 mod mcp;
 mod migrate;
 mod notify;
+#[cfg(test)]
+mod parity;
 mod paths;
 mod permissions;
 mod prs;
