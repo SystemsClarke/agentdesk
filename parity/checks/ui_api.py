@@ -341,6 +341,8 @@ def _logtail(b):
 
 @feature("ui.web_url", "ui-api", "ui:web_url is the ops console's URL with its key", SRC)
 def _weburl(b):
+    _daemon(b)
+    time.sleep(1)
     d = b.need("ui:web_url")
     if d.get("url") is None:
         raise Missing("no ops console is running")

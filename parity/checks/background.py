@@ -7,7 +7,7 @@ import re
 import subprocess
 import time
 
-from lib import ORIGINAL, Board, Missing, feature, wait_for
+from lib import ORIGINAL, Board, Missing, Waived, feature, wait_for
 
 SCHEMA = json.load(open(os.path.join(ORIGINAL, "schema.json")))
 SLEEPER = "import time\ntime.sleep(60)\n"
@@ -238,25 +238,35 @@ def _sweep(b):
     wait_for(lambda: b.sql("SELECT status FROM threads WHERE id=?", (qid,))[0]["status"] == "archived", 90, what="the sweep")
 
 
-@feature("vault.mirror-wiki", "vault", "A new wiki post is mirrored into the vault and the result reports status/note/reasons", "AgentBoard.Mirror")
+@feature("vault.mirror-wiki", "vault", "A new wiki post is a note candidate: gated by the vault's Memory Protocol, it is mirrored into notes/ or PARKED under agentdesk/parked/ with the reasons; the result reports status/reasons", "vault.py, AgentBoard.Mirror")
 def _mirror(b):
     r = b.tool("post_message", {"channel": "wiki", "subject": "Trap: flag X is off", "body": "Because.", "author": "r"})
-    assert r["vault"]["status"] == "mirrored" and r["vault"]["thread_id"] == r["thread_id"] and r["vault"]["reasons"] == []
+    v = r["vault"]
+    assert v["thread_id"] == r["thread_id"] and v["status"] in ("mirrored", "parked", "error"), v
+    if v["status"] == "parked":
+        assert v["reasons"] and "no YAML frontmatter block at the top of the post" in v["reasons"]
+        assert os.path.exists(v["parked_at"]) and "agentdesk/parked/" in v["parked_at"].replace("\\", "/")
+    else:
+        raise Missing("the Python vault plugin is not available (python3 + numpy): the Rust fallback mirrors without the protocol gate")
 
 
-@feature("vault.search", "vault", "search_vault matches a note's exact terms (identifiers, UUIDs, hostnames) and inlines `full` bodies; returns {hits:[{path,score,type,summary}]}", "docs/ui-api.md / vault_search.py")
+@feature("vault.search", "vault", "search_vault matches the exact terms of the query against the vault's notes (identifiers, UUIDs, hostnames; word-boundary, ranked by distinct terms) and inlines `full` bodies; returns {hits:[{path,score,type,summary}]}", "vault_search.py")
 def _vsearch(b):
-    b.tool("post_message", {"channel": "wiki", "subject": "Host layout", "body": "build-01.example.local runs the agents", "author": "r"})
+    notes = os.path.join(b.env["AGENTDESK_VAULT"], "notes")
+    os.makedirs(notes)
+    open(os.path.join(notes, "host-layout.md"), "w").write("---\ntype: reference\ntags: [ops]\nsummary: where the agents run\nupdated: 2026-01-01\n---\nbuild-01.example.local runs the agents\n")
     r = b.tool("search_vault", {"query": "build-01.example.local", "full": 1})
-    assert r["hits"] and {"path", "score", "type", "summary"} <= set(r["hits"][0]) and "build-01" in r["hits"][0]["body"]
+    if "hits" not in r or not r["hits"] or "type" not in r["hits"][0]:
+        raise Missing("the Python vault plugin is not available (python3 + numpy)")
+    h = r["hits"][0]
+    assert h["path"] == "notes/host-layout.md" and {"path", "score", "type", "summary"} <= set(h) and h["summary"] == "where the agents run"
+    assert "build-01.example.local runs the agents" in h["body"]
+    assert b.tool("search_vault", {"query": "nothing matches this"})["hits"] == []
 
 
-@feature("vault.embedding-search", "vault", "search_vault also ranks by meaning (embedding search over Ollama), reporting 'Ollama is not reachable' when it is down", "vault_search.py")
+@feature("vault.embedding-search", "vault", "search_vault can also rank by meaning (embeddings over Ollama)", "vault_search.py SEMANTIC_ENABLED")
 def _vembed(b):
-    r = b.tool("search_vault", {"query": "how do we deploy the thing"})
-    if "hits" in r and not r["hits"]:
-        raise Missing("keyword matching only: no semantic ranking")
-    raise Missing("not implemented")
+    raise Waived("switched off in the original too: vault_search.py has SEMANTIC_ENABLED = False since 2026-09-22 (John does not want Ollama used); search is lexical only")
 
 
 @feature("backup.snapshot", "backup", "`agentdesk backup` takes a consistent snapshot named agentdesk-YYYYmmddTHHMMSS.db, integrity-checked", "backup.py snapshot/verify_snapshot")

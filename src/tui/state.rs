@@ -213,6 +213,9 @@ pub struct VaultHealth {
     pub error: Option<String>,
 }
 
+/// slack_bridge.state: when it last beat, how often it polls, and its last relay (when, which thread).
+pub type SlackBeat = (Option<DateTime<Local>>, i64, Option<(Option<DateTime<Local>>, i64)>);
+
 #[derive(Default)]
 pub struct State {
     pub rows: HashMap<String, Vec<ThreadRow>>,
@@ -239,7 +242,7 @@ pub struct State {
     pub swarm: Vec<SwarmMember>,
     pub held_id: Option<i64>,
     pub budget: Option<Budget>,
-    pub slack: Option<(Option<DateTime<Local>>, i64, Option<(Option<DateTime<Local>>, i64)>)>,
+    pub slack: Option<SlackBeat>,
     pub max_sessions: i64,
 }
 

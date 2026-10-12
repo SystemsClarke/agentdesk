@@ -154,13 +154,30 @@ pub fn restore(db: &Db, archive: &std::path::Path, yes: bool, force_newer: bool,
     let (live_counts, archive_counts) = (row_counts(&db.conn), row_counts(&arc));
     if !yes {
         let r = serde_json::json!({"dry_run": true, "archive": archive.to_string_lossy(), "live_db": live_path.to_string_lossy(), "live_counts": live_counts, "archive_counts": archive_counts});
-        return Ok(if json { r.to_string() } else { format!("DRY RUN -- nothing changed. Pass --yes to restore for real.\n  archive:  {}  {archive_counts}\n  live db:  {}  {live_counts}", archive.display(), live_path.display()) });
+        return Ok(if json {
+            r.to_string()
+        } else {
+            format!(
+                "DRY RUN -- nothing changed. Pass --yes to restore for real.\n  archive:  {}  {archive_counts}\n  live db:  {}  {live_counts}",
+                archive.display(),
+                live_path.display()
+            )
+        });
     }
-    let stamp = archive.file_stem().and_then(|n| n.to_str()).and_then(|n| n.strip_prefix("agentdesk-")).and_then(|n| n.split('-').next()).and_then(|n| chrono::NaiveDateTime::parse_from_str(n, "%Y%m%dT%H%M%S").ok()).map(|t| t.and_utc());
+    let stamp = archive
+        .file_stem()
+        .and_then(|n| n.to_str())
+        .and_then(|n| n.strip_prefix("agentdesk-"))
+        .and_then(|n| n.split('-').next())
+        .and_then(|n| chrono::NaiveDateTime::parse_from_str(n, "%Y%m%dT%H%M%S").ok())
+        .map(|t| t.and_utc());
     let live_latest = db.scalar_str("SELECT MAX(ts) FROM messages", &[])?.and_then(|t| chrono::DateTime::parse_from_rfc3339(&t).ok()).map(|t| t.with_timezone(&chrono::Utc));
     if let (Some(a), Some(l)) = (stamp, live_latest) {
         if a > l && !force_newer {
-            anyhow::bail!("refused: archive {} is stamped {a}, after the live database's latest message ({l}): restoring forward is refused by default; pass --force-newer to do it anyway", archive.display());
+            anyhow::bail!(
+                "refused: archive {} is stamped {a}, after the live database's latest message ({l}): restoring forward is refused by default; pass --force-newer to do it anyway",
+                archive.display()
+            );
         }
     }
     // the way back: the state about to be overwritten

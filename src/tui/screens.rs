@@ -86,6 +86,8 @@ pub fn delivery_mark(r: &ThreadRow) -> String {
     }
 }
 
+type AgentEntry = (Option<GoalRow>, Option<Agent>, Option<i64>, Option<Agent>);
+
 pub struct Windowed {
     pub lines: Vec<L>,
     pub top: usize,
@@ -596,7 +598,7 @@ impl App {
                 cat(v)
             }
             Screen::Read => {
-                let mut v = vec![k("type", "to reply"), k("Ctrl+S", "send"), k("PgUp/PgDn", "scroll"), k("Alt+N/P", "next/prev")];
+                let mut v = vec![k("type", "to reply"), k("Ctrl+S", "send"), k("Ctrl+D", "dictate"), k("PgUp/PgDn", "scroll"), k("Alt+N/P", "next/prev")];
                 if q {
                     v.push(k("Alt+C", "close"));
                     if self.detail.as_ref().map(|d| d.thread.status == "archived").unwrap_or(false) {
@@ -1245,8 +1247,7 @@ impl App {
             line.extend(segs);
             l.push(clip_to(line, w + 1));
         };
-        if st.concierge_on && held.is_some() {
-            let h = held.as_ref().unwrap();
+        if let (true, Some(h)) = (st.concierge_on, held.as_ref()) {
             let mut v = vec![s(format!("● on · #{} for {}", h.id, ago(h.updated)), "gr")];
             if let Some(who) = &h.holder {
                 v.push(s(format!(" · {who}"), "mu"));
@@ -1260,7 +1261,7 @@ impl App {
         }
         let slack_up = st.slack.as_ref().and_then(|(t, _, _)| *t).map(|t| Local::now() - t < chrono::Duration::seconds(90)).unwrap_or(false);
         if slack_up {
-            let (_, poll, relay) = st.slack.clone().unwrap();
+            let (_, poll, relay) = st.slack.unwrap();
             let mut v = vec![s("● up", "gr"), s(format!(" · polling every {poll}s"), "mu")];
             if let Some((rts, tid)) = relay {
                 v.push(s(format!(" · last relay {} (#{tid} to your phone)", when(rts)), "mu"));
@@ -1476,7 +1477,7 @@ impl App {
         let (folder_w, lead_w) = (w.saturating_sub(57).max(20), w.saturating_sub(67).max(16));
         let goals_n = self.st.goals.len();
         let budget = boxed("Budget · the usage governor", budget_lines(&self.st.budget, w.saturating_sub(4)), w);
-        let rows_data: Vec<(Option<GoalRow>, Option<Agent>, Option<i64>, Option<Agent>)> = es
+        let rows_data: Vec<AgentEntry> = es
             .iter()
             .map(|(g, a)| {
                 let slot = g.as_ref().and_then(|g| self.st.slots.get(&g.name.to_lowercase()).copied());

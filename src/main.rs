@@ -29,6 +29,7 @@ mod paths;
 mod permissions;
 mod plain;
 mod prs;
+mod pyhost;
 mod service;
 mod sessions;
 mod slots;
@@ -165,6 +166,11 @@ enum Cmd {
     UsageFeed,
     /// Refresh the usage feed now with `claude -p /usage` (the original does this every 5 minutes).
     UsageProbe,
+    /// Runs a Python script or module of the embedded Python half with its packages importable: `python scripts/slack_bridge.py`, `python -m agentdesk.backup`.
+    Python {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
     /// Print where things live and the Claude Code configuration to add.
     Setup,
     /// Run one of the original's `ui:*` requests (or an agent tool) against the board and print its JSON: `agentdesk ui ui:thread '{"thread_id":1}'`.
@@ -420,6 +426,10 @@ fn real_main() -> Result<()> {
             } else {
                 anyhow::bail!("the probe named no usage window (is `claude` on the PATH and signed in?)")
             }
+        }
+        Some(Cmd::Python { args }) => {
+            let status = pyhost::command()?.args(&args).status()?;
+            std::process::exit(status.code().unwrap_or(1));
         }
         Some(Cmd::Setup) => {
             setup();

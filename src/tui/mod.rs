@@ -105,6 +105,7 @@ pub struct App {
     pub quit_at: Option<Instant>,
     pub quit: bool,
     pub body_h: usize,
+    pub dictating: bool,
     pub goal_name: Option<String>,
     pub goal_doc: Option<Value>,
     pub adoptables: Vec<crate::adopt::Convo>,
@@ -193,6 +194,7 @@ impl App {
             quit_at: None,
             quit: false,
             body_h: 20,
+            dictating: false,
             goal_name: None,
             goal_doc: None,
             adoptables: vec![],
@@ -461,11 +463,22 @@ impl App {
                 KeyCode::Char('s') | KeyCode::Enter | KeyCode::Char('j') if matches!(self.screen, Screen::Read | Screen::Compose) => self.send(),
                 KeyCode::Char('w') if self.screen != Screen::Read && self.screen != Screen::Compose => self.toggle_concierge(),
                 KeyCode::Char('r') => self.wake_selected(),
+                KeyCode::Char('d') => self.toggle_dictation(),
                 _ => {}
             }
             if !(ctrl && matches!(k.code, KeyCode::Char('u'))) || !matches!(self.screen, Screen::Read | Screen::Compose) {
                 return;
             }
+        }
+        if self.dictating && matches!(k.code, KeyCode::Esc | KeyCode::Enter) {
+            if k.code == KeyCode::Esc {
+                let _ = crate::pyhost::call("dictate.stop", json!({}));
+                self.dictating = false;
+                self.say("Dictation cancelled.", "mu");
+            } else {
+                self.say("Ctrl+D stops dictating first.", "ye");
+            }
+            return;
         }
         match self.screen {
             Screen::Read => return self.read_key(k, alt),
@@ -899,6 +912,84 @@ impl App {
         }
     }
 
+    // ---- dictation: local speech-to-text through the Python plugin
+
+    fn insert_dictated(&mut self, text: &str) {
+        let text = text.trim();
+        if text.is_empty() {
+            return;
+        }
+        match self.screen {
+            Screen::Read => self.reply.insert_str(&format!("{text} ")),
+            Screen::Compose if !self.subject_focus => self.reply.insert_str(&format!("{text} ")),
+            Screen::Compose | Screen::Ask => {
+                self.subject.push_str(text);
+            }
+            _ => {}
+        }
+    }
+
+    pub fn toggle_dictation(&mut self) {
+        if !matches!(self.screen, Screen::Read | Screen::Compose | Screen::Ask) {
+            return self.say("Ctrl+D dictates into a text box: open a reply or a new post first.", "ye");
+        }
+        if self.dictating {
+            let _ = crate::pyhost::call("dictate.stop", json!({}));
+            let end = std::time::Instant::now() + Duration::from_secs(8);
+            let mut said = String::new();
+            while std::time::Instant::now() < end {
+                match crate::pyhost::call("dictate.poll", json!({})) {
+                    Ok(v) => {
+                        said = v["text"].as_str().unwrap_or("").to_string();
+                        if v["state"].as_str() == Some("done") {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+                std::thread::sleep(Duration::from_millis(150));
+            }
+            self.dictating = false;
+            self.insert_dictated(&said);
+            return self.say(if said.trim().is_empty() { "Dictation: nothing heard.".to_string() } else { "Dictation: done. Ctrl+D again to add more.".to_string() }, "gr");
+        }
+        match crate::pyhost::call("dictate.start", json!({})) {
+            Ok(v) if v["state"].as_str() != Some("done") => {
+                self.dictating = true;
+                let what = match v["state"].as_str() {
+                    Some("downloading") => "downloading the speech model (first use)",
+                    Some("loading") => "loading the speech model",
+                    _ => "listening",
+                };
+                self.say(format!("Dictation: {what}... Ctrl+D stops, Esc cancels."), "cy");
+            }
+            Ok(v) => self.say(format!("Dictation: {}", v["error"].as_str().unwrap_or("not available")), "pk b"),
+            Err(e) => self.say(format!("Dictation: {e}"), "pk b"),
+        }
+    }
+
+    /// While dictating: the words so far, shown as they come.
+    pub fn dictation_tick(&mut self) {
+        if !self.dictating {
+            return;
+        }
+        match crate::pyhost::call("dictate.poll", json!({})) {
+            Ok(v) => {
+                if v["state"].as_str() == Some("done") {
+                    self.dictating = false;
+                    let said = v["text"].as_str().unwrap_or("").to_string();
+                    self.insert_dictated(&said);
+                    let msg = v["error"].as_str().map(|e| format!("Dictation: {e}")).unwrap_or_else(|| "Dictation: done.".to_string());
+                    self.say(msg, "ye");
+                } else if let Some(t) = v["text"].as_str().filter(|t| !t.is_empty()) {
+                    let tail: String = t.chars().rev().take(80).collect::<Vec<_>>().into_iter().rev().collect();
+                    self.say(format!("Dictation: …{tail}"), "cy");
+                }
+            }
+            Err(_) => self.dictating = false,
+        }
+    }
+
     // ---- the swarm: agents, goals, the Concierge
 
     fn toggle_concierge(&mut self) {
@@ -1319,6 +1410,9 @@ pub fn run() -> Result<()> {
                     _ => {}
                 }
             }
+            if app.dictating {
+                app.dictation_tick();
+            }
             if let Some(name) = app.attach_request.take() {
                 // leave the window, hand the console to the session, and come back when it is detached
                 let _ = execute!(std::io::stdout(), DisableBracketedPaste);
@@ -1346,6 +1440,7 @@ pub fn run() -> Result<()> {
         Ok(())
     })();
     app.set_draft_aside();
+    crate::pyhost::shutdown();
     let _ = execute!(std::io::stdout(), DisableBracketedPaste);
     ratatui::restore();
     stop.store(true, Ordering::Relaxed);

@@ -1,0 +1,7 @@
+# The Python half (see README): the core's vault plugin, backup and the Slack bridge.
+# Chart images for the Slack bridge (agentdesk/charts.py)
+Pillow>=12.3.0
+# Embedding search over the memory vault (agentdesk/vault_search.py)
+numpy>=1.26
+# Slack Socket Mode for scripts/slack_bridge.py
+slack_bolt>=1.30.0

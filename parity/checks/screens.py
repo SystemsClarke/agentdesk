@@ -390,4 +390,5 @@ def _move(b):
 def _dkey(b):
     b.need("ui:post", {"channel": "discussion", "subject": "s", "body": "x"})
     s = b.snap("d enter ctrl+d")
-    todo(s, "listening", "dictat")
+    assert "Dictation:" in s["text"], "Ctrl+D says what dictation is doing, or why it cannot: %s" % s["flash"]
+    assert "Ctrl+D dictate" in b.snap("d enter")["text"], "the footer offers it"

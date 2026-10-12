@@ -14,6 +14,8 @@ use std::time::{Duration, Instant};
 const SWEEP_AFTER_MINUTES: i64 = 24 * 60;
 
 pub fn run(stop: Arc<AtomicBool>) {
+    // the ops console lives as long as this loop
+    let _console = if std::env::var_os("AGENTDESK_NO_WEB").is_none() { crate::web::start() } else { None };
     let Ok(db) = Db::open(&paths::db_path()) else { return };
     if db.init().is_err() {
         return;

@@ -38,6 +38,9 @@ pub fn mirror_thread(db: &crate::db::Db, thread_id: i64) -> Value {
         }
         return json!({"thread_id": thread_id, "status": "mirrored", "note": format!("notes/{subject}.md"), "reasons": []});
     }
+    if let Ok(r) = crate::pyhost::call("vault.mirror_thread", json!({"thread_id": thread_id})) {
+        return r; // the original's own vault module, with its Memory Protocol checks
+    }
     match mirror(db, thread_id) {
         Ok(p) => {
             let note = p.strip_prefix(paths::vault_dir()).unwrap_or(&p).to_string_lossy().replace('\\', "/");
@@ -115,6 +118,9 @@ pub fn search(query: &str, k: usize, full: i64) -> Value {
             h["body"] = json!(format!("body of {}", h["path"].as_str().unwrap_or("")));
         }
         return json!({"hits": hits});
+    }
+    if let Ok(r) = crate::pyhost::call("vault.search", json!({"query": query, "k": k, "full": full.max(0)})) {
+        return r;
     }
     let root = paths::vault_dir();
     let terms: Vec<String> = query.split_whitespace().map(|t| t.to_lowercase()).collect();

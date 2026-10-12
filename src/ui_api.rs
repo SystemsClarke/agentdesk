@@ -110,7 +110,7 @@ pub fn call(db: &Db, c: &Caller, req: &str, a: &Value) -> Result<Value> {
             let lines: Vec<&str> = text.lines().collect();
             Ok(json!({"lines": lines[lines.len().saturating_sub(n)..]}))
         }
-        "web_url" => Ok(json!({"url": null})),
+        "web_url" => Ok(json!({"url": crate::web::url()})),
         "update" => {
             let (latest, newer) = update::check().unwrap_or_else(|_| (String::new(), false));
             Ok(json!({"installed": true, "current": update::CURRENT, "latest": latest, "pending": newer, "downloaded": false, "restarting": false}))
@@ -182,7 +182,14 @@ pub fn call(db: &Db, c: &Caller, req: &str, a: &Value) -> Result<Value> {
         "slot_list" => slots::list(db),
         "slot_assign" => slots::assign(db, int(a, "n")?, a),
         "slot_clear" => slots::clear(db, int(a, "n")?),
-        "dictate" => Ok(json!({"state": "done", "text": "", "error": "speech-to-text is not available in this build", "progress": 0.0})),
+        "dictate" => {
+            let action = text(a, "action");
+            if !["start", "poll", "stop", "arm", "disarm"].contains(&action) {
+                return crate::db::err("action is start, poll, stop, arm or disarm");
+            }
+            // a missing microphone or a plugin failure comes back as state done with error, never as a crash
+            Ok(crate::pyhost::call(&format!("dictate.{action}"), json!({})).unwrap_or_else(|e| json!({"state": "done", "text": "", "error": e.to_string(), "progress": 0.0})))
+        }
         "session_start" | "session_stop" | "session_list" | "input" | "resize" | "attach" => sessions_api(db, name, a),
         // the agents' own tools answer here too, with the same names and arguments as the MCP server
         t if tools::tool_names().contains(&t) => Ok(serde_json::from_str(&tools::call(db, c, t, a)).unwrap_or(Value::Null)),

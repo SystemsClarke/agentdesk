@@ -71,40 +71,89 @@ class _Console:
     pass
 
 
-@feature("web.console-auth", "web", "The ops console listens on 127.0.0.1 only; every request needs the key (web.key); /?k=<key> sets an HttpOnly SameSite=Strict cookie and redirects; wrong Host or Origin is 400", "docs/ui-api.md The ops console")
-def _web_auth(b):
+def _console(b):
     p = b.spawn("daemon")
     time.sleep(1.5)
     d = b.need("ui:web_url")
     url = d.get("url")
     if not url:
         raise Missing("no ops console")
-    base = url.split("?")[0]
+    assert url.startswith("http://127.0.0.1:") and "?k=" in url
+    base, key = url.split("/?k=")
+    return base, key
 
-    class NoRedirect(urllib.request.HTTPRedirectHandler):
-        def redirect_request(self, *a, **k):
-            return None
 
-    op = urllib.request.build_opener(NoRedirect)
-    try:
-        op.open(base)
-        raise AssertionError("an unauthenticated request must be refused")
-    except urllib.error.HTTPError as e:
-        assert e.code == 401
-    try:
-        op.open(url)
-    except urllib.error.HTTPError as e:
-        assert e.code in (301, 302, 303) and "HttpOnly" in e.headers.get("Set-Cookie", "") and "SameSite=Strict" in e.headers.get("Set-Cookie", "")
+def _request(base, method, path, headers=None, body=None):
+    import http.client
+    host = base.split("//")[1]
+    c = http.client.HTTPConnection(host, timeout=10)
+    c.putrequest(method, path, skip_host=True, skip_accept_encoding=True)
+    h = {"Host": host}
+    h.update(headers or {})
+    for k, v in h.items():
+        c.putheader(k, v)
+    if body is not None:
+        c.putheader("Content-Length", str(len(body)))
+    c.endheaders(body)
+    r = c.getresponse()
+    data = r.read()
+    out = (r.status, dict((k.lower(), v) for k, v in r.getheaders()), data)
+    c.close()
+    return out
+
+
+@feature("web.console-auth", "web", "The ops console listens on 127.0.0.1 only; every request needs the key (web.key); /?k=<key> sets an HttpOnly SameSite=Strict cookie and redirects; wrong Host or Origin is 400", "docs/ui-api.md The ops console")
+def _web_auth(b):
+    base, key = _console(b)
+    host = base.split("//")[1]
+    assert len(key) == 43 and open(os.path.join(b.data, "web.key")).read().strip() == key
+    assert open(os.path.join(b.data, "web.port")).read().strip() == host.split(":")[1]
+    assert _request(base, "GET", "/")[0] == 401, "no key, no page"
+    assert _request(base, "GET", "/?k=wrong")[0] == 401
+    st, h, _ = _request(base, "GET", "/?k=" + key)
+    assert st == 302 and h["location"] == "/", (st, h)
+    cookie = h["set-cookie"]
+    assert "HttpOnly" in cookie or "httponly" in cookie.lower()
+    assert "samesite=strict" in cookie.lower()
+    cj = {"Cookie": "k=" + key}
+    assert _request(base, "GET", "/", cj)[0] == 200
+    assert _request(base, "GET", "/", dict(cj, Host="evil.example:80"))[0] == 400, "DNS rebinding"
+    assert _request(base, "POST", "/api/status", dict(cj, Origin="http://evil.example"), b"{}")[0] == 400, "a foreign Origin"
+    assert _request(base, "GET", "/nothing", cj)[0] == 404
 
 
 @feature("web.console-api", "web", "POST /api/<op> runs core, status, open_questions, session_list, log_tail, concierge, update, identity_* through the same objects as the ui requests", "docs/ui-api.md The ops console")
 def _web_api(b):
-    raise Missing("needs web.console-auth first")
+    base, key = _console(b)
+    cj = {"Cookie": "k=" + key, "Content-Type": "application/json"}
+
+    def api(op, args=None):
+        st, h, body = _request(base, "POST", "/api/" + op, cj, json.dumps(args or {}).encode())
+        assert st == 200, (op, st)
+        return json.loads(body)
+
+    assert _request(base, "GET", "/api/status", cj)[0] == 405
+    core = api("core")
+    assert core["pid"] and core["started"] and "update" in core
+    for op, keys in (("status", ("usage", "prs", "goals", "concierge")), ("open_questions", ("open_questions",)), ("session_list", ("sessions",)), ("identity_list", ("identities",)), ("log_tail", ("lines",)), ("job_list", ("jobs",))):
+        d = api(op)
+        assert all(k in d for k in keys), (op, d)
+    made = api("identity_create", {"name": "webbed", "folder": b.work})
+    assert made["name"] == "webbed"
+    assert api("identity_forget", {"name": "webbed"}) == {"forgotten": "webbed"}
+    assert "error" in api("no_such_op")
+    assert "error" in api("thread", {"thread_id": 1}), "the console answers only the requests its page needs"
 
 
 @feature("web.console-page", "web", "The one page: core version, uptime, agents with Start/Stop/Forget/New, sessions, SlackNet, Concierge toggle, usage and governor, merge list, open questions, the core log", "docs/ui-api.md The ops console")
 def _web_page(b):
-    raise Missing("needs web.console-auth first")
+    base, key = _console(b)
+    st, h, body = _request(base, "GET", "/", {"Cookie": "k=" + key})
+    page = body.decode()
+    assert st == 200 and h["content-type"].startswith("text/html")
+    assert "frame-ancestors 'none'" in h["content-security-policy"] and h["x-content-type-options"] == "nosniff"
+    for needle in ("Core", "Agents", "Sessions", "Concierge", "Open questions", "api("):
+        assert needle in page, needle
 
 
 @feature("update.check-apply", "update", "The core checks GitHub Releases every four hours and offers to apply; `agentdesk update [--apply]` downloads and swaps the binary", "README Install")
@@ -131,8 +180,13 @@ def _tray(b):
     raise Waived("a terminal program has no tray: toasts and the window's own Options/Update rows replace it")
 
 
-@feature("dictation.engine", "dictation", "Ctrl+D local speech-to-text (Nemotron streaming through sherpa-onnx) with a 2 s pre-roll; first use downloads the model", "docs/ui-api.md ui:dictate, dictate.py")
+@feature("dictation.engine", "dictation", "Ctrl+D local speech-to-text (sherpa-onnx) with a 2 s pre-roll microphone: the original's own pre-roll check passes against the embedded Python, and a missing microphone or model comes back as state done with an error", "docs/ui-api.md ui:dictate, dictate.py, scripts/check_dictate.py")
 def _dictation(b):
-    r = b.need("ui:dictate", {"action": "start"})
-    assert r["state"] in ("loading", "downloading", "listening", "done")
-    raise Missing("no speech engine behind it")
+    r = b.run("python", "scripts/check_dictate.py")
+    if r.returncode != 0 and "No such file" in (r.stderr + r.stdout) or "no Python 3 interpreter" in (r.stderr + r.stdout):
+        raise Missing("no Python interpreter")
+    assert r.returncode == 0, (r.stdout + r.stderr)[-600:]
+    d = b.need("ui:dictate", {"action": "start"})
+    assert d["state"] in ("loading", "downloading", "listening", "done")
+    if d["state"] == "done":
+        assert d.get("error"), "a missing microphone or model says why: %s" % d
