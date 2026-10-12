@@ -17,6 +17,8 @@ use anyhow::Result;
 use serde_json::{json, Value};
 use std::fs::File;
 
+const DISPATCH_EVERY: std::time::Duration = std::time::Duration::from_secs(10);
+
 pub struct Supervisor {
     host: Host,
     lock: Option<File>,
@@ -30,6 +32,8 @@ pub struct Supervisor {
     /// Advisory mode: what enforcement would have shed, so each is logged once.
     would_shed: std::collections::BTreeSet<String>,
     warned: Option<String>,
+    /// When the dispatcher last ran: it hands out Work to Hire every `DISPATCH_EVERY`, not every tick.
+    dispatched: Option<std::time::Instant>,
 }
 
 /// Whether some process holds the supervisor lock right now (a CLI command warns when nothing will act on what it wrote).
@@ -65,6 +69,7 @@ impl Supervisor {
             held: Default::default(),
             would_shed: Default::default(),
             warned: None,
+            dispatched: None,
         }
     }
 
@@ -132,7 +137,22 @@ impl Supervisor {
         }
         let path = db.path.clone();
         self.goals.get_or_insert_with(|| crate::goals::Runner::new(path)).tick(db, &mut self.host)?;
+        self.dispatch(db);
         self.pool(db)
+    }
+
+    /// The Concierge's dispatcher: while it is on, open Work to Hire items get a worker (see `dispatcher`).
+    fn dispatch(&mut self, db: &Db) {
+        if self.dispatched.is_some_and(|t| t.elapsed() < DISPATCH_EVERY) {
+            return;
+        }
+        if self.dispatched.is_none() {
+            crate::dispatcher::start(db);
+        }
+        self.dispatched = Some(std::time::Instant::now());
+        if let Err(e) = crate::dispatcher::tick(db, None) {
+            paths::log("WARN", &format!("dispatcher tick failed: {e}"));
+        }
     }
 
     /// Starts what the session pool allows, then sheds what the usage governor says is too much. Identities of John's own answer only to
