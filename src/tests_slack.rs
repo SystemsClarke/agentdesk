@@ -82,7 +82,7 @@ fn a_chart_is_a_note_and_the_fallback_text_is_plain() {
     let b = md_to_slack("```chart\n{\"type\":\"line\",\"title\":\"Burn\"}\n```");
     assert!(b[0]["text"]["text"].as_str().unwrap().contains("*Burn*"), "{b:?}");
     assert_eq!(fallback_text("# Hi\n**bold** and [x](https://y.z)\n```\ncode\n```\n> note", 200), "Hi bold** and x note");
-    assert_eq!(fallback_text(&"word ".repeat(100), 10), "word word…");
+    assert_eq!(fallback_text(&"word ".repeat(100), 10), "word word …");
 }
 
 #[test]
