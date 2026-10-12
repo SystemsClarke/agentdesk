@@ -199,35 +199,38 @@ impl Db {
         if self.conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))? == version {
             return Ok(());
         }
-        self.conn.execute_batch(SCHEMA)?;
-        self.conn.execute_batch("DROP VIEW IF EXISTS open_questions;")?;
-        self.conn.execute_batch(&format!(
-            "CREATE VIEW open_questions AS SELECT t.id AS thread_id, t.subject, t.opened_by, t.created_ts, t.updated_ts FROM threads t WHERE {WAITING_SQL};"
-        ))?;
-        let cols: Vec<String> = self.rows("PRAGMA table_info(pull_requests)", &[])?.iter().filter_map(|r| r["name"].as_str().map(String::from)).collect();
-        if !cols.iter().any(|c| c == "source") {
-            self.conn.execute_batch("ALTER TABLE pull_requests ADD COLUMN source TEXT NOT NULL DEFAULT 'agent-registered'")?;
-        }
-        for col in ["triage", "triage_ts"] {
-            if !cols.iter().any(|c| c == col) {
-                self.conn.execute_batch(&format!("ALTER TABLE pull_requests ADD COLUMN {col} TEXT"))?;
+        // one process at a time rebuilds the schema: twelve first-opens at once raced on DROP/CREATE VIEW
+        self.tx(|| {
+            self.conn.execute_batch(SCHEMA)?;
+            self.conn.execute_batch("DROP VIEW IF EXISTS open_questions;")?;
+            self.conn.execute_batch(&format!(
+                "CREATE VIEW open_questions AS SELECT t.id AS thread_id, t.subject, t.opened_by, t.created_ts, t.updated_ts FROM threads t WHERE {WAITING_SQL};"
+            ))?;
+            let cols: Vec<String> = self.rows("PRAGMA table_info(pull_requests)", &[])?.iter().filter_map(|r| r["name"].as_str().map(String::from)).collect();
+            if !cols.iter().any(|c| c == "source") {
+                self.conn.execute_batch("ALTER TABLE pull_requests ADD COLUMN source TEXT NOT NULL DEFAULT 'agent-registered'")?;
             }
-        }
-        // Boards made by older builds: the columns later versions added.
-        self.add_column("identities", "generation", "INTEGER NOT NULL DEFAULT 1")?;
-        self.add_column("identities", "phoenix_msg", "INTEGER")?;
-        self.add_column("identities", "model", "TEXT NOT NULL DEFAULT 'sonnet'")?;
-        self.add_column("identities", "running_model", "TEXT")?;
-        self.add_column("identities", "wake_prompt", "TEXT")?; // John's reply, for a stopped identity to start with (the Rust build's own column)
-        self.add_column("identities", "phoenix_go", "INTEGER NOT NULL DEFAULT 0")?; // the turn that passed the torch has ended (the Rust build's own column)
-        self.add_column("goals", "standing", "INTEGER NOT NULL DEFAULT 0")?;
-        self.add_column("experiments", "measuring", "INTEGER NOT NULL DEFAULT 0")?; // experiment_done asked for a measurement (the Rust build's own column)
-        self.add_column("goal_members", "work_id", "INTEGER")?;
-        for tier in ["haiku", "sonnet", "opus"] {
-            self.add_column("usage_samples", &format!("{tier}_sessions"), "INTEGER NOT NULL DEFAULT 0")?;
-        }
-        self.conn.execute_batch(&format!("PRAGMA user_version={version}"))?;
-        Ok(())
+            for col in ["triage", "triage_ts"] {
+                if !cols.iter().any(|c| c == col) {
+                    self.conn.execute_batch(&format!("ALTER TABLE pull_requests ADD COLUMN {col} TEXT"))?;
+                }
+            }
+            // Boards made by older builds: the columns later versions added.
+            self.add_column("identities", "generation", "INTEGER NOT NULL DEFAULT 1")?;
+            self.add_column("identities", "phoenix_msg", "INTEGER")?;
+            self.add_column("identities", "model", "TEXT NOT NULL DEFAULT 'sonnet'")?;
+            self.add_column("identities", "running_model", "TEXT")?;
+            self.add_column("identities", "wake_prompt", "TEXT")?; // John's reply, for a stopped identity to start with (the Rust build's own column)
+            self.add_column("identities", "phoenix_go", "INTEGER NOT NULL DEFAULT 0")?; // the turn that passed the torch has ended (the Rust build's own column)
+            self.add_column("goals", "standing", "INTEGER NOT NULL DEFAULT 0")?;
+            self.add_column("experiments", "measuring", "INTEGER NOT NULL DEFAULT 0")?; // experiment_done asked for a measurement (the Rust build's own column)
+            self.add_column("goal_members", "work_id", "INTEGER")?;
+            for tier in ["haiku", "sonnet", "opus"] {
+                self.add_column("usage_samples", &format!("{tier}_sessions"), "INTEGER NOT NULL DEFAULT 0")?;
+            }
+            self.conn.execute_batch(&format!("PRAGMA user_version={version}"))?;
+            Ok(())
+        })
     }
 
     // ---- helpers
@@ -751,10 +754,6 @@ If you need something else from him, ask a new question with ask_human.");
         let keep = if limit < 0 { found.len().saturating_sub(limit.unsigned_abs() as usize) } else { limit as usize };
         found.truncate(keep);
         Ok(found)
-    }
-
-    pub fn threads_waiting(&self) -> i64 {
-        self.scalar_i64("SELECT COUNT(*) FROM open_questions", &[]).ok().flatten().unwrap_or(0)
     }
 }
 

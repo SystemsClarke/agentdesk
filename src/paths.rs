@@ -38,6 +38,9 @@ pub fn claude_settings() -> PathBuf {
 }
 
 pub fn log(level: &str, msg: &str) {
+    if cfg!(test) {
+        return;
+    }
     use std::io::Write;
     let _ = std::fs::create_dir_all(data_dir());
     if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(log_file()) {
