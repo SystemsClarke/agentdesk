@@ -199,6 +199,11 @@ impl Db {
         if self.conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))? == version {
             return Ok(());
         }
+        // one process at a time rebuilds the schema: twelve first-opens at once raced on DROP/CREATE VIEW
+        self.tx(|| {
+            if self.conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))? == version {
+                return Ok(());
+            }
         self.conn.execute_batch(SCHEMA)?;
         self.conn.execute_batch("DROP VIEW IF EXISTS open_questions;")?;
         self.conn.execute_batch(&format!(
@@ -227,7 +232,8 @@ impl Db {
             self.add_column("usage_samples", &format!("{tier}_sessions"), "INTEGER NOT NULL DEFAULT 0")?;
         }
         self.conn.execute_batch(&format!("PRAGMA user_version={version}"))?;
-        Ok(())
+            Ok(())
+        })
     }
 
     // ---- helpers

@@ -43,6 +43,7 @@ mod tests_identities;
 mod tools;
 mod tools_gen;
 mod tui;
+mod ui_api;
 mod update;
 mod usage;
 mod vault;
@@ -105,8 +106,21 @@ enum Cmd {
     CheckPrs,
     /// Claude Code status-line feed: writes claude_usage.json from the status-line JSON on stdin.
     UsageFeed,
+    /// Refresh the usage feed now with `claude -p /usage` (the original does this every 5 minutes).
+    UsageProbe,
     /// Print where things live and the Claude Code configuration to add.
     Setup,
+    /// Run one of the original's `ui:*` requests (or an agent tool) against the board and print its JSON: `agentdesk ui ui:thread '{"thread_id":1}'`.
+    Ui { request: String, args: Option<String> },
+    /// Render the window headlessly after some keys and print the screen (for tests): `agentdesk ui-snapshot --keys "q enter"`.
+    UiSnapshot {
+        #[arg(long, default_value = "110x36")]
+        size: String,
+        #[arg(long, default_value = "")]
+        keys: String,
+        #[arg(long)]
+        json: bool,
+    },
     /// Check GitHub for a newer release; with --apply, download it and swap it in.
     Update {
         #[arg(long)]
@@ -281,7 +295,7 @@ fn real_main() -> Result<()> {
         Some(Cmd::UsageFeed) => {
             let mut input = String::new();
             let _ = std::io::stdin().read_to_string(&mut input);
-            println!("{}", usage::feed(&input));
+            print!("{}", usage::feed(&input));
             Ok(())
         }
         Some(Cmd::Update { apply }) => {
@@ -300,6 +314,19 @@ fn real_main() -> Result<()> {
             let home = dirs::home_dir().unwrap_or_default();
             println!("{}", migrate::run(apply, &home.join(".claude.json"), &paths::claude_settings())?);
             Ok(())
+        }
+        Some(Cmd::Ui { request, args }) => std::process::exit(ui_api::run(&request, args.as_deref())),
+        Some(Cmd::UiSnapshot { size, keys, json }) => {
+            println!("{}", tui::snapshot(&size, &keys, json)?);
+            Ok(())
+        }
+        Some(Cmd::UsageProbe) => {
+            if usage::probe() {
+                println!("usage feed updated");
+                Ok(())
+            } else {
+                anyhow::bail!("the probe named no usage window (is `claude` on the PATH and signed in?)")
+            }
         }
         Some(Cmd::Setup) => {
             setup();
