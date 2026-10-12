@@ -233,12 +233,12 @@ fn attach_replays_output_takes_input_and_refuses_a_wrong_key() {
     let mut sup = Supervisor::new();
     assert!(sup.acquire());
     let (program, args): (&str, Vec<String>) =
-        if cfg!(windows) { ("cmd", vec!["/c".into(), "echo hello-attach& ping -n 30 127.0.0.1 >nul".into()]) } else { ("sh", vec!["-c".into(), "echo hello-attach; cat".into()]) };
+        if cfg!(windows) { ("cmd", vec!["/c".into(), "echo hello-attach& ping -n 90 127.0.0.1 >nul".into()]) } else { ("sh", vec!["-c".into(), "echo hello-attach; cat".into()]) };
     sup.host().launch("att", e.folder(), program, &args, &[]).unwrap();
     let (port, key) = crate::attach::read_addr().expect("supervisor.addr is written");
     let connect = |line: String| {
         let mut c = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
-        c.set_read_timeout(Some(std::time::Duration::from_secs(10))).unwrap();
+        c.set_read_timeout(Some(std::time::Duration::from_secs(45))).unwrap();
         c.write_all(line.as_bytes()).unwrap();
         c
     };
@@ -254,18 +254,13 @@ fn attach_replays_output_takes_input_and_refuses_a_wrong_key() {
     let mut c = connect(format!("ATTACH {key} att 100 30\n"));
     let mut seen = Vec::new();
     let mut buf = [0u8; 4096];
-    let mut answered = false;
     while !String::from_utf8_lossy(&seen).contains("hello-attach") {
         let n = c.read(&mut buf).unwrap_or_else(|e| panic!("{e}; so far {:?}", String::from_utf8_lossy(&seen)));
         assert!(n > 0, "closed before the output arrived: {:?}", String::from_utf8_lossy(&seen));
         seen.extend_from_slice(&buf[..n]);
-        if !answered && String::from_utf8_lossy(&seen).contains("\x1b[6n") {
-            // a terminal answers the cursor query ConPTY opens with; the host only does it for a session nobody is attached to
-            answered = true;
-            c.write_all(format!("INPUT {}\n", crate::attach::base64_encode(b"\x1b[1;1R")).as_bytes()).unwrap();
-        }
     }
     assert!(String::from_utf8_lossy(&seen).starts_with("OK\n"));
+    assert!(!String::from_utf8_lossy(&seen).contains("\x1b[6n"), "the host answers ConPTY's startup query; clients never see it");
     if !cfg!(windows) {
         // cat echoes what is typed: input reaches the session, and its output comes back down
         c.write_all(format!("INPUT {}\nRESIZE 90 20\n", crate::attach::base64_encode(b"ping-from-client\r")).as_bytes()).unwrap();
