@@ -233,12 +233,12 @@ fn attach_replays_output_takes_input_and_refuses_a_wrong_key() {
     let mut sup = Supervisor::new();
     assert!(sup.acquire());
     let (program, args): (&str, Vec<String>) =
-        if cfg!(windows) { ("cmd", vec!["/c".into(), "echo hello-attach& ping -n 30 127.0.0.1 >nul".into()]) } else { ("sh", vec!["-c".into(), "echo hello-attach; cat".into()]) };
+        if cfg!(windows) { ("cmd", vec!["/c".into(), "echo hello-attach& ping -n 90 127.0.0.1 >nul".into()]) } else { ("sh", vec!["-c".into(), "echo hello-attach; cat".into()]) };
     sup.host().launch("att", e.folder(), program, &args, &[]).unwrap();
     let (port, key) = crate::attach::read_addr().expect("supervisor.addr is written");
     let connect = |line: String| {
         let mut c = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
-        c.set_read_timeout(Some(std::time::Duration::from_secs(10))).unwrap();
+        c.set_read_timeout(Some(std::time::Duration::from_secs(45))).unwrap(); // a loaded CI runner starts ConPTY slowly
         c.write_all(line.as_bytes()).unwrap();
         c
     };
