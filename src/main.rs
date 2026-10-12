@@ -30,6 +30,7 @@ mod tui;
 mod update;
 mod usage;
 mod vault;
+mod vault_threads;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};

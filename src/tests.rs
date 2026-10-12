@@ -306,3 +306,138 @@ fn migrate_dry_run_writes_nothing_and_apply_backs_up() {
     assert!(std::fs::read_to_string(&cj).unwrap().contains("\"mcp\""));
     assert!(std::fs::read_dir(d.path().join("migrate_backups")).unwrap().count() >= 2);
 }
+
+#[test]
+fn a_fresh_board_has_every_table_the_original_made_and_init_is_idempotent() {
+    let (_d, db) = board();
+    for t in ["identities", "phoenix_chain", "goals", "experiments", "goal_members", "slots", "usage_samples", "permission_proposals", "recurring_jobs"] {
+        assert!(db.row("SELECT name FROM sqlite_master WHERE type='table' AND name=:n", &[(":n", &t)]).unwrap().is_some(), "missing table {t}");
+    }
+    let version: i64 = db.conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+    assert!(version > 0, "init stamps user_version");
+    db.init().unwrap(); // a board at the current version is left alone
+    assert_eq!(version, db.conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0)).unwrap());
+}
+
+#[test]
+fn init_adds_the_columns_a_board_from_an_older_build_lacks() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Db::open(&dir.path().join("old.db")).unwrap();
+    // The first generation of the identities table, before generation/phoenix_msg/model/running_model existed.
+    db.conn
+        .execute_batch(
+            "CREATE TABLE identities (name TEXT PRIMARY KEY COLLATE NOCASE, folder TEXT NOT NULL, charter TEXT, host TEXT NOT NULL DEFAULT 'windows',
+             claude_session_id TEXT, pid INTEGER, state TEXT NOT NULL DEFAULT 'stopped', autostart INTEGER NOT NULL DEFAULT 0,
+             created_ts TEXT NOT NULL, updated_ts TEXT NOT NULL);",
+        )
+        .unwrap();
+    db.init().unwrap();
+    let cols: Vec<String> = db.rows("PRAGMA table_info(identities)", &[]).unwrap().iter().filter_map(|r| r["name"].as_str().map(String::from)).collect();
+    for c in ["generation", "phoenix_msg", "model", "running_model"] {
+        assert!(cols.iter().any(|x| x == c), "missing column {c}");
+    }
+}
+
+#[test]
+fn a_usage_sample_lands_in_the_originals_table_shape() {
+    let (_d, db) = board();
+    // What `claude_usage.json` carries: the reading the window shows is recorded as weekly_pct (NOT NULL in the original's table).
+    db.exec("INSERT INTO usage_samples (ts, weekly_pct, five_hour_pct) VALUES ('2026-10-12T00:00:00+00:00', 41.5, 12.0)", &[]).unwrap();
+    let r = db.row("SELECT weekly_pct, swarm_sessions, sonnet_sessions FROM usage_samples", &[]).unwrap().unwrap();
+    assert_eq!((r["weekly_pct"].as_f64(), r["swarm_sessions"].as_i64(), r["sonnet_sessions"].as_i64()), (Some(41.5), Some(0), Some(0)));
+}
+
+/// `testdata/dotnet_schema.json` is every table and column of a live .NET board (dumped 2026-10-12 with `PRAGMA table_info`): a fresh
+/// Rust board must have all of them, so the two builds can open each other's boards and the backup/vault tools work on either.
+#[test]
+fn a_fresh_board_has_every_table_and_column_of_a_dotnet_board() {
+    let (_d, db) = board();
+    let golden: Value = serde_json::from_str(include_str!("../testdata/dotnet_schema.json")).unwrap();
+    for (table, cols) in golden.as_object().unwrap() {
+        let have: Vec<String> = db.rows(&format!("PRAGMA table_info({table})"), &[]).unwrap().iter().filter_map(|r| r["name"].as_str().map(String::from)).collect();
+        assert!(!have.is_empty(), "missing table {table}");
+        for c in cols.as_array().unwrap() {
+            assert!(have.iter().any(|h| h == c.as_str().unwrap()), "{table} is missing column {}", c);
+        }
+    }
+}
+
+fn git_ok(dir: &std::path::Path, args: &[&str]) -> String {
+    let o = std::process::Command::new("git").args(args).current_dir(dir).output().unwrap();
+    assert!(o.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&o.stderr));
+    String::from_utf8_lossy(&o.stdout).trim().to_string()
+}
+
+#[test]
+fn the_backup_writes_linked_thread_notes_a_map_and_pushes_the_vault() {
+    let _lock = ENV.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    let (data, vault, remote) = (dir.path().join("data"), dir.path().join("vault"), dir.path().join("remote.git"));
+    std::fs::create_dir_all(&vault).unwrap();
+    git_ok(dir.path(), &["init", "-q", "--bare", "-b", "Main", remote.to_str().unwrap()]);
+    git_ok(&vault, &["init", "-q", "-b", "Main"]);
+    git_ok(&vault, &["config", "user.name", "tester"]);
+    git_ok(&vault, &["config", "user.email", "t@example.com"]);
+    git_ok(&vault, &["config", "commit.gpgsign", "false"]);
+    git_ok(&vault, &["remote", "add", "origin", remote.to_str().unwrap()]);
+    std::fs::write(vault.join("Home.md"), "home\n").unwrap();
+    git_ok(&vault, &["add", "Home.md"]);
+    git_ok(&vault, &["commit", "-q", "-m", "seed"]);
+    git_ok(&vault, &["push", "-q", "-u", "origin", "Main"]);
+    std::fs::create_dir_all(vault.join("notes")).unwrap();
+    std::fs::write(vault.join("notes").join("someone-elses-draft.md"), "mid-write\n").unwrap(); // not ours: must not be swept up
+    std::env::set_var("AGENTDESK_DATA", &data);
+    std::env::set_var("AGENTDESK_VAULT", &vault);
+    std::env::set_var("AGENTDESK_GIT_AUTHOR_NAME", "agentdesk-test");
+    std::env::set_var("AGENTDESK_GIT_AUTHOR_EMAIL", "test@example.com");
+
+    std::fs::create_dir_all(&data).unwrap();
+    let db = Db::open(&data.join("agentdesk.db")).unwrap();
+    db.init().unwrap();
+    let bio = db.start_thread("discussion", "bio: builder", "builder", AGENT, "I build things", None, None).unwrap();
+    let t = db.start_thread("discussion", "Fix \"quotes\" in the parser", "builder", AGENT, &format!("see thread {bio} and thread 999"), None, None).unwrap();
+
+    let first = crate::backup::run(&db).unwrap();
+    assert!(first.contains("integrity ok") && first.contains("committed, pushed"), "{first}");
+    let note = std::fs::read_to_string(vault.join("agentdesk/threads").join(format!("thread-{t}.md"))).unwrap();
+    assert!(note.contains(r#"aliases: ["Fix \"quotes\" in the parser"]"#));
+    assert!(note.contains(&format!("[[agentdesk/threads/thread-{bio}|builder]]")), "the author links to their bio thread");
+    assert!(note.contains(&format!("thread [[agentdesk/threads/thread-{bio}|{bio}]]")));
+    assert!(note.contains("thread 999") && !note.contains("thread-999"), "a mention of no thread stays text");
+    let moc = std::fs::read_to_string(vault.join("maps/AgentDesk MOC.md")).unwrap();
+    assert!(moc.contains(&format!("[[agentdesk/threads/thread-{t}|")));
+    let day = std::fs::read_dir(vault.join("agentdesk")).unwrap().flatten().find(|e| e.file_name().to_string_lossy().starts_with("20")).unwrap();
+    assert!(std::fs::read_to_string(day.path()).unwrap().contains(&format!("[[agentdesk/threads/thread-{t}|thread {t}]]")));
+    assert_eq!(git_ok(&remote, &["log", "-1", "--format=%an %s", "Main"]).split(' ').next(), Some("agentdesk-test"));
+    assert!(!git_ok(&vault, &["show", "--stat", "--format=", "HEAD"]).contains("someone-elses-draft"), "only our paths are committed");
+    let state: Value = serde_json::from_str(&std::fs::read_to_string(data.join("vault_state.json")).unwrap()).unwrap();
+    assert_eq!((state["pushed"].as_bool(), state["error"].is_null()), (Some(true), true));
+
+    let head = git_ok(&vault, &["rev-parse", "HEAD"]);
+    let again = crate::backup::run(&db).unwrap();
+    assert!(again.contains("0 thread notes"), "nothing rewritten: {again}");
+    assert_eq!(head, git_ok(&vault, &["rev-parse", "HEAD"]), "a quiet hour makes no commit");
+
+    git_ok(&vault, &["remote", "set-url", "origin", dir.path().join("nowhere.git").to_str().unwrap()]);
+    db.start_thread("discussion", "another", "builder", AGENT, "x", None, None).unwrap();
+    let broken = crate::backup::run(&db).unwrap();
+    assert!(broken.contains("GIT ERROR: push failed"), "a dead remote is reported, not raised: {broken}");
+    assert_eq!(git_ok(&vault, &["rev-list", "--count", "origin/Main..HEAD"]), "1", "the commit stays local for the next run");
+
+    for k in ["AGENTDESK_DATA", "AGENTDESK_VAULT", "AGENTDESK_GIT_AUTHOR_NAME", "AGENTDESK_GIT_AUTHOR_EMAIL"] {
+        std::env::remove_var(k);
+    }
+}
+
+#[test]
+fn a_snapshot_that_fails_the_integrity_check_is_set_aside() {
+    let dir = tempfile::tempdir().unwrap();
+    let good = dir.path().join("agentdesk-20261012-000000.db");
+    rusqlite::Connection::open(&good).unwrap().execute_batch("CREATE TABLE t(a);").unwrap();
+    assert_eq!(crate::backup::verify(&good), "ok");
+    assert!(good.exists());
+    let bad = dir.path().join("agentdesk-20261012-000001.db");
+    std::fs::write(&bad, "this is not a database".repeat(200)).unwrap();
+    assert_ne!(crate::backup::verify(&bad), "ok");
+    assert!(!bad.exists() && dir.path().join("agentdesk-20261012-000001.db.corrupt").exists());
+}
