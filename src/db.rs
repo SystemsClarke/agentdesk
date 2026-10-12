@@ -98,7 +98,7 @@ CREATE TABLE IF NOT EXISTS goals (name TEXT PRIMARY KEY COLLATE NOCASE, objectiv
     lead TEXT NOT NULL, thread_id INTEGER, started_ts TEXT, woke_ts TEXT, created_ts TEXT NOT NULL, updated_ts TEXT NOT NULL,
     standing INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS experiments (id INTEGER PRIMARY KEY AUTOINCREMENT, goal TEXT NOT NULL COLLATE NOCASE, n INTEGER NOT NULL,
-    change TEXT NOT NULL, owner TEXT, started_ts TEXT NOT NULL, measured_ts TEXT, value REAL, verdict TEXT, UNIQUE (goal, n));
+    change TEXT NOT NULL, owner TEXT, started_ts TEXT NOT NULL, measured_ts TEXT, value REAL, verdict TEXT, measuring INTEGER NOT NULL DEFAULT 0, UNIQUE (goal, n));
 CREATE TABLE IF NOT EXISTS goal_members (identity TEXT PRIMARY KEY COLLATE NOCASE, goal TEXT NOT NULL COLLATE NOCASE, task TEXT NOT NULL,
     created_ts TEXT NOT NULL, work_id INTEGER);
 CREATE TABLE IF NOT EXISTS slots (n INTEGER PRIMARY KEY CHECK (n BETWEEN 1 AND 10), channel_id TEXT, channel_name TEXT,
@@ -109,6 +109,8 @@ pub type Named<'a> = &'a [(&'a str, &'a dyn ToSql)];
 
 pub struct Db {
     pub conn: Connection,
+    /// Where this board lives: a background thread opens its own connection to the same file.
+    pub path: std::path::PathBuf,
     depth: Cell<u32>,
 }
 
@@ -151,7 +153,7 @@ pub fn dumps(meta: Option<&Value>) -> Option<String> {
     meta.map(py_dumps)
 }
 
-fn parse_obj(json: Option<&str>) -> Option<Map<String, Value>> {
+pub fn parse_obj(json: Option<&str>) -> Option<Map<String, Value>> {
     match serde_json::from_str::<Value>(json?) {
         Ok(Value::Object(o)) => Some(o),
         _ => None,
@@ -166,7 +168,7 @@ impl Db {
         let conn = Connection::open(path)?;
         conn.busy_timeout(std::time::Duration::from_secs(30))?;
         conn.execute_batch("PRAGMA foreign_keys=ON; PRAGMA temp_store=MEMORY; PRAGMA cache_size=-16000;")?;
-        Ok(Db { conn, depth: Cell::new(0) })
+        Ok(Db { conn, path: path.to_path_buf(), depth: Cell::new(0) })
     }
 
     /// The `PRAGMA user_version` this build stamps: an FNV hash of everything `init` does, so a board already at it is left alone. The
@@ -219,6 +221,7 @@ impl Db {
         self.add_column("identities", "wake_prompt", "TEXT")?; // John's reply, for a stopped identity to start with (the Rust build's own column)
         self.add_column("identities", "phoenix_go", "INTEGER NOT NULL DEFAULT 0")?; // the turn that passed the torch has ended (the Rust build's own column)
         self.add_column("goals", "standing", "INTEGER NOT NULL DEFAULT 0")?;
+        self.add_column("experiments", "measuring", "INTEGER NOT NULL DEFAULT 0")?; // experiment_done asked for a measurement (the Rust build's own column)
         self.add_column("goal_members", "work_id", "INTEGER")?;
         for tier in ["haiku", "sonnet", "opus"] {
             self.add_column("usage_samples", &format!("{tier}_sessions"), "INTEGER NOT NULL DEFAULT 0")?;
@@ -454,6 +457,30 @@ If you need something else from him, ask a new question with ask_human.");
         }
         meta.insert("completed_ts".into(), json!(ts));
         self.move_work(id, agent, &ts, &meta, "claimed", "done")
+    }
+
+    /// A claimed work item changes hands: only the current assignee can pass it on.
+    pub fn hand_over_task(&self, id: i64, from: &str, to: &str) -> Result<bool> {
+        let mut meta = self.thread_meta(id)?;
+        if meta.get("assignee").and_then(|v| v.as_str()) != Some(from) {
+            return Ok(false);
+        }
+        meta.insert("assignee".into(), json!(to));
+        Ok(self.exec(
+            "UPDATE threads SET updated_ts=:ts, meta=:meta WHERE id=:id AND channel='work' AND status='claimed'",
+            &[(":ts", &now_iso()), (":meta", &py_dumps(&Value::Object(meta))), (":id", &id)],
+        )? == 1)
+    }
+
+    /// Puts a claimed work item back on the queue, open and unassigned.
+    pub fn reopen_task(&self, id: i64) -> Result<bool> {
+        let mut meta = self.thread_meta(id)?;
+        meta.remove("assignee");
+        meta.remove("claimed_ts");
+        Ok(self.exec(
+            "UPDATE threads SET status='open', updated_ts=:ts, meta=:meta WHERE id=:id AND channel='work' AND status='claimed'",
+            &[(":ts", &now_iso()), (":meta", &py_dumps(&Value::Object(meta))), (":id", &id)],
+        )? == 1)
     }
 
     // ---- acknowledgements of John's replies

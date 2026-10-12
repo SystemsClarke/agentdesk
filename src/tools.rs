@@ -205,7 +205,13 @@ fn dispatch(db: &Db, c: &Caller, tool: &str, a: &Args) -> Result<Value> {
         }
         "request_merge" => request_merge(db, c, a),
         "propose_permission_rule" => crate::permissions::propose(db, c, a.0),
+        "goal_propose" => crate::goals::propose(db, c, &a.str("name")?, &a.str("hypothesis")?, &a.str("measure_cmd")?, &a.str("success")?, a.int_or("samples", 1)),
+        "experiment_start" => crate::goals::experiment_start(db, c, &a.str("goal")?, &a.str("change")?),
+        "experiment_done" => crate::goals::experiment_done(db, c, &a.str("goal")?, a.int("n")?),
+        "member_spawn" => crate::goals::spawn(db, c, &a.str("goal")?, &a.str("name")?, &a.str("task")?, a.opt("model").as_deref(), a.opt_int("work_id")),
+        "member_done" => crate::goals::member_done(db, c, &a.str("summary")?),
         "retire" => match (std::env::var("AGENTDESK_IDENTITY").ok().filter(|n| !n.is_empty()), c.session_id.as_deref()) {
+            (Some(name), Some(_)) if crate::goals::is_member(db, &name) => crate::goals::member_done(db, c, "Retired: its task is done."), // a goal member is retired for good
             (Some(name), Some(_)) => crate::identities::retire(db, &name),
             _ => err("retire is for sessions the daemon runs: an identity's own"),
         },

@@ -10,6 +10,7 @@
 
 mod backup;
 mod db;
+mod goals;
 mod hooks;
 mod identities;
 mod identity;
@@ -27,6 +28,8 @@ mod sessions;
 mod supervisor;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_goals;
 #[cfg(test)]
 mod tests_identities;
 mod tools;
@@ -64,6 +67,11 @@ enum Cmd {
     Identity {
         #[command(subcommand)]
         cmd: IdentityCmd,
+    },
+    /// Goals: a measured hypothesis a lead and its members chase (`goal new|approve|stop|budget|list|status`).
+    Goal {
+        #[command(subcommand)]
+        cmd: GoalCmd,
     },
     /// Recurring jobs.
     Job {
@@ -114,6 +122,44 @@ enum IdentityCmd {
     },
     /// Stop it and remove it from the list; its conversation stays on disk.
     Forget {
+        name: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum GoalCmd {
+    /// Make a goal: `goal new <name> <folder> --objective TEXT`. Its lead (<name>-lead) proposes how to test it; you approve.
+    New {
+        name: String,
+        folder: String,
+        #[arg(long)]
+        objective: String,
+    },
+    /// Approve the lead's proposal and start the goal; optional budget: members, hours, wake cadence in minutes.
+    Approve {
+        name: String,
+        #[arg(long)]
+        members: Option<i64>,
+        #[arg(long)]
+        hours: Option<f64>,
+        #[arg(long)]
+        cadence: Option<f64>,
+    },
+    /// Change a running goal's budget.
+    Budget {
+        name: String,
+        #[arg(long)]
+        members: Option<i64>,
+        #[arg(long)]
+        hours: Option<f64>,
+        #[arg(long)]
+        cadence: Option<f64>,
+    },
+    Stop {
+        name: String,
+    },
+    List,
+    Status {
         name: String,
     },
 }
@@ -200,6 +246,7 @@ fn real_main() -> Result<()> {
         }
         Some(Cmd::Job { cmd }) => job(cmd),
         Some(Cmd::Identity { cmd }) => identity(cmd),
+        Some(Cmd::Goal { cmd }) => goal(cmd),
         Some(Cmd::Backup) => {
             println!("{}", backup::run(&open()?)?);
             Ok(())
@@ -311,6 +358,24 @@ fn identity(cmd: IdentityCmd) -> Result<()> {
     };
     println!("{}", serde_json::to_string_pretty(&row)?);
     if note && !supervisor::running() {
+        eprintln!("note: no supervisor is running, so nothing will act on this yet. Start `agentdesk daemon` (or the window).");
+    }
+    Ok(())
+}
+
+fn goal(cmd: GoalCmd) -> Result<()> {
+    let d = open()?;
+    let me = identity::Caller::from_env();
+    let out = match cmd {
+        GoalCmd::New { name, folder, objective } => goals::create(&d, &name, &objective, &folder)?,
+        GoalCmd::Approve { name, members, hours, cadence } => goals::approve(&d, &me, &name, members, hours, cadence)?,
+        GoalCmd::Budget { name, members, hours, cadence } => goals::set_budget(&d, &me, &name, members, hours, cadence)?,
+        GoalCmd::Stop { name } => goals::stop(&d, &me, &name)?,
+        GoalCmd::List => goals::list(&d)?,
+        GoalCmd::Status { name } => goals::status(&d, &name)?,
+    };
+    println!("{}", serde_json::to_string_pretty(&out)?);
+    if !supervisor::running() {
         eprintln!("note: no supervisor is running, so nothing will act on this yet. Start `agentdesk daemon` (or the window).");
     }
     Ok(())

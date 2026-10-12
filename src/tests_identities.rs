@@ -27,14 +27,14 @@ fn standin_claude(dir: &std::path::Path) -> std::path::PathBuf {
 }
 
 /// A scratch data folder, projects folder and stand-in claude, with the environment pointed at them. Hold the guard for the test.
-struct Env {
+pub(crate) struct Env {
     _guard: std::sync::MutexGuard<'static, ()>,
-    dir: tempfile::TempDir,
-    db: Db,
+    pub(crate) dir: tempfile::TempDir,
+    pub(crate) db: Db,
 }
 
 impl Env {
-    fn new() -> Env {
+    pub(crate) fn new() -> Env {
         let guard = ENV.lock().unwrap_or_else(|e| e.into_inner());
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("projects")).unwrap();
@@ -45,10 +45,11 @@ impl Env {
         db.init().unwrap();
         Env { _guard: guard, dir, db }
     }
-    fn folder(&self) -> &str {
+    pub(crate) fn folder(&self) -> &str {
         self.dir.path().to_str().unwrap()
     }
-    fn data(&self) -> std::path::PathBuf {
+    #[allow(dead_code)]
+    pub(crate) fn data(&self) -> std::path::PathBuf {
         self.dir.path().join("data")
     }
 }

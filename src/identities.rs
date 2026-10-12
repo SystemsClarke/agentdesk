@@ -138,6 +138,16 @@ pub fn start(db: &Db, name: &str) -> Result<Value> {
 }
 
 /// Ask for it to stop: its conversation is kept (`start` resumes it).
+/// `start`, with a first prompt for it (a reply to deliver, a goal wake, a task): kept until the supervisor launches it, then consumed.
+/// A running identity is left alone (its caller types into the session instead).
+pub fn start_with_prompt(db: &Db, name: &str, prompt: &str) -> Result<Value> {
+    let row = need(db, name)?;
+    if row["state"].as_str() != Some("running") {
+        db.exec("UPDATE identities SET wake_prompt=:p, state='queued', updated_ts=:ts WHERE name=:n", &[(":p", &prompt), (":ts", &now_iso()), (":n", &name)])?;
+    }
+    need(db, name)
+}
+
 pub fn stop(db: &Db, name: &str) -> Result<Value> {
     need(db, name)?;
     db.exec("UPDATE identities SET state='stopped', pid=NULL, phoenix_msg=NULL, phoenix_go=0, updated_ts=:ts WHERE name=:n", &[(":ts", &now_iso()), (":n", &name)])?;
@@ -190,7 +200,17 @@ pub fn pending_successor_prompt(db: &Db, row: &Value) -> Option<String> {
     }
     let body = db.row("SELECT body FROM messages WHERE id=:m", &[(":m", &msg)]).ok()??["body"].as_str()?.to_string();
     let handoff = body.split_once("\n\n").map(|(_, rest)| rest).unwrap_or(&body); // after pass_the_torch's "Handoff recorded" line
-    Some(successor_prompt(name, generation, handoff))
+    Some(successor_prompt_for(db, name, generation, handoff))
+}
+
+/// `successor_prompt`, plus the status of the goal the identity leads or works on (a Phoenix successor starts knowing where the goal is).
+pub fn successor_prompt_for(db: &Db, name: &str, generation: i64, handoff: &str) -> String {
+    let mut p = successor_prompt(name, generation, handoff);
+    if let Some(ctx) = crate::goals::context(db, name) {
+        p.push_str("\n\n");
+        p.push_str(&ctx);
+    }
+    p
 }
 
 // ---- launching

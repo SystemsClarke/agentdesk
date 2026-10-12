@@ -125,6 +125,14 @@ impl Host {
         }
     }
 
+    /// Writes raw bytes to the session's terminal.
+    pub fn input(&mut self, name: &str, bytes: &[u8]) -> Result<()> {
+        let l = self.live.get_mut(name).ok_or_else(|| anyhow!("{name} is not running"))?;
+        l.writer.write_all(bytes)?;
+        l.writer.flush()?;
+        Ok(())
+    }
+
     /// Types `text` and presses Enter, as if at the keyboard: how a reply from John reaches a session that is waiting.
     pub fn type_text(&mut self, name: &str, text: &str) -> Result<()> {
         let l = self.live.get_mut(name).ok_or_else(|| anyhow!("{name} is not running"))?;

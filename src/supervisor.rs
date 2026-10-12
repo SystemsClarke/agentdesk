@@ -22,6 +22,7 @@ pub struct Supervisor {
     resumed: bool,
     /// The newest human message already looked at: replies after it may need to wake an identity.
     last_human: i64,
+    goals: Option<crate::goals::Runner>,
 }
 
 /// Whether some process holds the supervisor lock right now (a CLI command warns when nothing will act on what it wrote).
@@ -47,7 +48,7 @@ fn claude_program() -> String {
 
 impl Supervisor {
     pub fn new() -> Supervisor {
-        Supervisor { host: Host::new(), lock: None, resumed: false, last_human: 0 }
+        Supervisor { host: Host::new(), lock: None, resumed: false, last_human: 0, goals: None }
     }
 
     /// Takes the lock if nobody has it. Cheap to call every tick.
@@ -107,12 +108,17 @@ impl Supervisor {
                 paths::log("WARN", &format!("phoenix for {} failed: {e}", name(r)));
             }
         }
+        let path = db.path.clone();
+        self.goals.get_or_insert_with(|| crate::goals::Runner::new(path)).tick(db, &mut self.host)?;
         let mut running = self.host.names().len();
         let mut queued: Vec<&Value> = rows.iter().filter(|r| r["state"].as_str() == Some("queued")).collect();
         queued.sort_by_key(|r| r["updated_ts"].as_str().unwrap_or("").to_string());
         for r in queued {
             if running >= ids::max_sessions() {
                 break;
+            }
+            if !crate::goals::member_may_start(db, &name(r)) {
+                continue; // its goal already runs max_members: it stays queued until one retires
             }
             match self.launch(db, &name(r), None) {
                 Ok(()) => running += 1,
@@ -202,7 +208,7 @@ impl Supervisor {
         // Still running but with no session: the slot is the successor's, and nothing queued takes it.
         db.exec("UPDATE identities SET pid=NULL, claude_session_id=NULL, generation=:g, updated_ts=:ts WHERE name=:n", &[(":g", &(gen + 1)), (":ts", &now_iso()), (":n", &name)])?;
         self.host.stop(name);
-        self.launch(db, name, Some(ids::successor_prompt(name, gen + 1, &handoff)))?;
+        self.launch(db, name, Some(ids::successor_prompt_for(db, name, gen + 1, &handoff)))?;
         db.reply(
             m["thread_id"].as_i64().unwrap_or(0),
             name,
