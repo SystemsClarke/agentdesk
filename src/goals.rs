@@ -66,8 +66,9 @@ pub fn measure_internal(db: &Db, cmd: &str) -> Result<f64> {
 
 /// The identity this process is a session of (`AGENTDESK_IDENTITY`, stamped by the supervisor), if any.
 pub fn identity_of(c: &Caller) -> Option<String> {
-    // Inside an identity's session the supervisor stamps AGENTDESK_IDENTITY and AGENTDESK_AUTHOR with its name.
-    std::env::var("AGENTDESK_IDENTITY").ok().filter(|n| !n.is_empty()).and(c.env_author.clone())
+    // Inside an identity's session the supervisor stamps AGENTDESK_IDENTITY (and AGENTDESK_AUTHOR) with its name.
+    let own = std::env::var("AGENTDESK_IDENTITY").ok().filter(|n| !n.is_empty())?;
+    Some(c.env_author.clone().filter(|a| !a.is_empty()).unwrap_or(own))
 }
 
 /// John: the window, or the CLI in his own terminal. Never an agent's session.

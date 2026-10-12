@@ -124,7 +124,7 @@ impl Supervisor {
             }
         }
         for live in self.host.names() {
-            let wanted = rows.iter().any(|r| name(r).eq_ignore_ascii_case(&live) && r["state"].as_str() == Some("running"));
+            let wanted = self.host.is_plain(&live) || rows.iter().any(|r| name(r).eq_ignore_ascii_case(&live) && r["state"].as_str() == Some("running"));
             if !wanted {
                 self.host.stop(&live);
                 paths::log("INFO", &format!("identity {live} stopped"));
@@ -139,6 +139,21 @@ impl Supervisor {
         self.goals.get_or_insert_with(|| crate::goals::Runner::new(path)).tick(db, &mut self.host)?;
         self.dispatch(db);
         self.pool(db)
+    }
+
+    /// Answers the requests other processes (`agentdesk ui`) left for the session host. Cheap: called several times a second.
+    pub fn requests(&mut self, db: &Db) {
+        if self.lock.is_none() {
+            return;
+        }
+        // `kick`: someone changed what the board wants (an identity started or stopped): act on it now rather than at the next tick.
+        if db.scalar_i64("SELECT 1 FROM session_requests WHERE state='pending' AND action='kick' LIMIT 1", &[]).ok().flatten().is_some() {
+            if let Err(e) = self.tick(db) {
+                paths::log("WARN", &format!("supervisor: {e}"));
+            }
+            let _ = db.exec("UPDATE session_requests SET state='done', result='{}' WHERE state='pending' AND action='kick'", &[]);
+        }
+        crate::requests::process(db, &mut self.host);
     }
 
     /// The Concierge's dispatcher: while it is on, open Work to Hire items get a worker (see `dispatcher`).

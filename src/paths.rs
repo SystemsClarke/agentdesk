@@ -34,7 +34,7 @@ pub fn log_file() -> PathBuf {
 
 /// Claude Code's user settings (permission rules are written here on approval).
 pub fn claude_settings() -> PathBuf {
-    dirs::home_dir().unwrap_or_default().join(".claude").join("settings.json")
+    home_dir().join(".claude").join("settings.json")
 }
 
 pub fn log(level: &str, msg: &str) {
@@ -46,4 +46,48 @@ pub fn log(level: &str, msg: &str) {
     if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(log_file()) {
         let _ = writeln!(f, "{} {level} {msg}", chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ"));
     }
+}
+
+/// Finds `program` the way a shell would. On Windows that includes the PATHEXT extensions, and a `.cmd`/`.bat` script (an npm-installed
+/// `claude`, a stand-in) is run through `cmd /d /c`, which `CreateProcess` will not do on its own. Returns the program and the
+/// arguments to put in front of the caller's. A name that is not found is returned as it is, so the spawn error names it.
+pub fn resolve(program: &str) -> (String, Vec<String>) {
+    if !cfg!(windows) {
+        return (program.to_string(), vec![]);
+    }
+    let exts: Vec<String> = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into()).split(';').map(|e| e.to_lowercase()).collect();
+    let has_ext = std::path::Path::new(program).extension().is_some();
+    let mut candidates: Vec<PathBuf> = vec![];
+    let dirs: Vec<PathBuf> =
+        if program.contains(std::path::is_separator) { vec![PathBuf::new()] } else { std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()).collect() };
+    for d in dirs {
+        let base = d.join(program);
+        if has_ext {
+            candidates.push(base.clone());
+        }
+        for e in &exts {
+            candidates.push(PathBuf::from(format!("{}{e}", base.display())));
+        }
+    }
+    for c in candidates {
+        if c.is_file() {
+            let ext = c.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+            return if ext == "cmd" || ext == "bat" { ("cmd".into(), vec!["/d".into(), "/c".into(), c.display().to_string()]) } else { (c.display().to_string(), vec![]) };
+        }
+    }
+    (program.to_string(), vec![])
+}
+
+/// A `std::process::Command` for `program` resolved by `resolve`.
+pub fn command(program: &str) -> std::process::Command {
+    let (p, pre) = resolve(program);
+    let mut c = std::process::Command::new(p);
+    c.args(pre);
+    c
+}
+
+/// The user's home folder. `USERPROFILE` (Windows) or `HOME` win over the system's answer, so a scratch environment can move it.
+pub fn home_dir() -> PathBuf {
+    let var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+    std::env::var_os(var).filter(|v| !v.is_empty()).map(PathBuf::from).or_else(dirs::home_dir).unwrap_or_default()
 }

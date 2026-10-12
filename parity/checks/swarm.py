@@ -103,6 +103,7 @@ def _phoenix(b):
     r = b.run("hook", "stop", input=json.dumps({"session_id": sid}), env=env)
     assert r.returncode == 0
     wait_for(lambda: b.sql("SELECT generation FROM identities")[0]["generation"] == 2, 15, what="generation 2")
+    wait_for(lambda: len(launches(log)) >= 2, 15, what="the successor's session")  # the row changes before the new process is up
     second = launches(log)[-1]["argv"]
     assert "You are builder, generation 2" in " ".join(second) and "Owns X. Next: Y." in " ".join(second)
     c = b.sql("SELECT generation, handoff_msg FROM phoenix_chain")[0]
@@ -258,7 +259,7 @@ def _forecast(b):
     import datetime as dt
     now = dt.datetime.now(dt.timezone.utc)
     for i in range(48):
-        t = now - dt.timedelta(hours=48 - i)
+        t = now - dt.timedelta(hours=47 - i, minutes=5)  # the newest reading is minutes old: past 30 minutes the governor fails closed
         sample(b, t.strftime("%Y-%m-%dT%H:%M:%S+00:00"), 10 + i * 0.5)
     reset = (now + dt.timedelta(days=3)).strftime("%Y-%m-%dT%H:%M:%S+00:00")
     b.sql("UPDATE usage_samples SET weekly_reset_ts=?", (reset,))

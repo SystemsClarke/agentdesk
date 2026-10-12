@@ -42,7 +42,7 @@ pub fn toggle(db: &Db, c: &Caller, folder: &str, on: Option<bool>) -> Result<Val
                     charter: CHARTER,
                     model: "opus",
                     hypothesis: "The core dispatches every ordinary open item itself, and the lead splits the rest, so the queue empties.",
-                    measure: "internal:open_triage",
+                    measure: "internal:open_work", // the dispatcher points it at open_triage once it runs
                     success: "value <= 0",
                     max_members: BASE_MEMBERS,
                     cadence_minutes: 10.0,

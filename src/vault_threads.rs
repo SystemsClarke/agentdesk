@@ -263,6 +263,20 @@ pub fn sync(vault: &Path) -> Value {
     if let Ok(e) = std::env::var("AGENTDESK_GIT_AUTHOR_EMAIL") {
         env.push(("GIT_AUTHOR_EMAIL", e));
     }
+    // The author is Claude unless told otherwise: what the backup writes is not John's own work (see the attribution rules). The committer
+    // is whoever the repository's config says; a machine with none gets the author, so the commit can be made at all.
+    if !env.iter().any(|(k, _)| *k == "GIT_AUTHOR_NAME") {
+        env.push(("GIT_AUTHOR_NAME", "claude[bot]".to_string()));
+        if !env.iter().any(|(k, _)| *k == "GIT_AUTHOR_EMAIL") {
+            env.push(("GIT_AUTHOR_EMAIL", "209825114+claude[bot]@users.noreply.github.com".to_string()));
+        }
+    }
+    let configured = git(vault, &["config", "user.email"], &[]).map(|o| !String::from_utf8_lossy(&o.stdout).trim().is_empty()).unwrap_or(false);
+    if !configured {
+        let (n, e) = (env.iter().find(|(k, _)| *k == "GIT_AUTHOR_NAME").map(|(_, v)| v.clone()), env.iter().find(|(k, _)| *k == "GIT_AUTHOR_EMAIL").map(|(_, v)| v.clone()));
+        env.push(("GIT_COMMITTER_NAME", n.unwrap_or_else(|| "claude[bot]".into())));
+        env.push(("GIT_COMMITTER_EMAIL", e.unwrap_or_else(|| "209825114+claude[bot]@users.noreply.github.com".into())));
+    }
     let mut add = vec!["add", "--"];
     add.extend(PATHS);
     git(vault, &add, &[]);

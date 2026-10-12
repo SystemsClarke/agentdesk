@@ -195,12 +195,12 @@ fn wake_resumes_the_asking_identity_with_johns_reply() {
     b.poll(&e.db).unwrap();
     e.db.john_replies(tid, "go ahead").unwrap();
     b.handle_reply(&e.db, &dm_event("wake!", Some("100.001"))).unwrap();
-    assert!(texts(&fake).last().unwrap().starts_with("Woke builder."), "{:?}", texts(&fake));
+    assert!(texts(&fake).last().unwrap().starts_with("Woke builder: resumed its session with your reply."), "{:?}", texts(&fake));
     let row = crate::identities::get(&e.db, "builder").unwrap().unwrap();
     assert_eq!(row["state"], "queued");
     assert!(row["wake_prompt"].as_str().unwrap().contains("go ahead"));
     e.db.exec("UPDATE identities SET state='running' WHERE name='builder'", &[]).unwrap();
-    assert_eq!(slack::wake(&e.db, tid), "builder is already running");
+    assert!(slack::wake(&e.db, tid).starts_with("could not wake it: no supervisor is running"), "a running identity is typed to through the supervisor, and none is up");
     assert!(slack::wake(&e.db, 9999).starts_with("could not wake it"));
 }
 

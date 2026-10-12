@@ -432,14 +432,14 @@ fn the_backup_writes_linked_thread_notes_a_map_and_pushes_the_vault() {
 #[test]
 fn a_snapshot_that_fails_the_integrity_check_is_set_aside() {
     let dir = tempfile::tempdir().unwrap();
-    let good = dir.path().join("agentdesk-20261012-000000.db");
+    let good = dir.path().join("agentdesk-20261012T000000.db");
     rusqlite::Connection::open(&good).unwrap().execute_batch("CREATE TABLE t(a);").unwrap();
     assert_eq!(crate::backup::verify(&good), "ok");
     assert!(good.exists());
-    let bad = dir.path().join("agentdesk-20261012-000001.db");
+    let bad = dir.path().join("agentdesk-20261012T000001.db");
     std::fs::write(&bad, "this is not a database".repeat(200)).unwrap();
     assert_ne!(crate::backup::verify(&bad), "ok");
-    assert!(!bad.exists() && dir.path().join("agentdesk-20261012-000001.db.corrupt").exists());
+    assert!(!bad.exists() && dir.path().join("agentdesk-20261012T000001.db.corrupt").exists());
 }
 
 #[test]

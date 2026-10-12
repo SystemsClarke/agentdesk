@@ -13,6 +13,7 @@ mod backup;
 mod concierge;
 mod db;
 mod dispatcher;
+mod folders;
 mod goals;
 mod governor;
 mod hooks;
@@ -27,6 +28,7 @@ mod parity;
 mod paths;
 mod permissions;
 mod prs;
+mod requests;
 mod service;
 mod sessions;
 mod slack;
@@ -53,10 +55,12 @@ mod tools;
 mod tools_gen;
 mod tui;
 mod ui_api;
+mod ui_core;
 mod update;
 mod usage;
 mod vault;
 mod vault_threads;
+mod wake;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -320,7 +324,7 @@ fn real_main() -> Result<()> {
             Ok(())
         }
         Some(Cmd::Migrate { apply }) => {
-            let home = dirs::home_dir().unwrap_or_default();
+            let home = paths::home_dir();
             println!("{}", migrate::run(apply, &home.join(".claude.json"), &paths::claude_settings())?);
             Ok(())
         }

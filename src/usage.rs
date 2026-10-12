@@ -201,7 +201,7 @@ pub const PROBE_ARGS: [&str; 5] = ["-p", "/usage", "--setting-sources", "project
 /// Asks the claude CLI for plan usage. True if the feed was updated.
 pub fn probe() -> bool {
     let exe = std::env::var("AGENTDESK_CLAUDE").unwrap_or_else(|_| "claude".into());
-    let Ok(child) = std::process::Command::new(exe).args(PROBE_ARGS).current_dir(std::env::temp_dir()).stdin(std::process::Stdio::null()).output() else { return false };
+    let Ok(child) = crate::paths::command(&exe).args(PROBE_ARGS).current_dir(std::env::temp_dir()).stdin(std::process::Stdio::null()).output() else { return false };
     apply(&String::from_utf8_lossy(&child.stdout), Utc::now())
 }
 

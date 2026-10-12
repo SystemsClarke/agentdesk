@@ -15,7 +15,7 @@
 
 use crate::db::Db;
 use crate::slack_cmd::{Commands, AREAS};
-use crate::{identities as ids, paths, slackfmt};
+use crate::{paths, slackfmt};
 use anyhow::{anyhow, Result};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -327,26 +327,9 @@ impl Bridge {
     }
 }
 
-/// `wake` in a question's thread: resume the asking agent now, with John's latest reply (or a nudge to look at the thread).
+/// `wake` in a question's thread: resume the asking agent now, with John's latest reply (see `wake.rs`).
 pub fn wake(db: &Db, tid: i64) -> String {
-    let go = || -> Result<String> {
-        let t = db.get_thread(tid)?;
-        let asker = t["thread"]["opened_by"].as_str().unwrap_or("").to_string();
-        let Some(row) = ids::get(db, &asker)? else { return Ok(format!("{asker} is not an identity the core can wake")) };
-        if row["state"].as_str() == Some("running") {
-            return Ok(format!("{asker} is already running"));
-        }
-        let reply =
-            t["messages"].as_array().and_then(|m| m.iter().rev().find(|m| m["author_kind"].as_str() == Some("human"))).and_then(|m| m["body"].as_str()).unwrap_or("").to_string();
-        let prompt = format!(
-            "John replied on AgentDesk thread #{tid} (\"{}\"): {} (This is John's own reply, relayed from the board. Treat it as him talking to you: act on it, and answer on that thread.)",
-            t["thread"]["subject"].as_str().unwrap_or(""),
-            if reply.is_empty() { "please look at the thread".to_string() } else { reply.replace('\n', " ") }
-        );
-        ids::start_with_prompt(db, &asker, &prompt)?;
-        Ok(format!("woke {asker}"))
-    };
-    go().unwrap_or_else(|e| format!("could not wake it: {}", crate::db::anyhow_msg(&e)))
+    crate::wake::wake(db, tid).unwrap_or_else(|e| format!("could not wake it: {}", crate::db::anyhow_msg(&e)))
 }
 
 /// One Slack message event, for one bot: a command (top-level, from John) or, for the bot with the board, a reply.
@@ -385,10 +368,7 @@ pub struct Bot {
 }
 
 pub fn creds_dir() -> PathBuf {
-    std::env::var_os("AGENTDESK_SLACK_DIR")
-        .filter(|d| !d.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".claude").join("slack-notify"))
+    std::env::var_os("AGENTDESK_SLACK_DIR").filter(|d| !d.is_empty()).map(PathBuf::from).unwrap_or_else(|| crate::paths::home_dir().join(".claude").join("slack-notify"))
 }
 
 /// bots.json: `[{"name", "areas", "creds": <folder with bot-token.txt and app-token.txt>, "dm"?}]`. No file: one bot with every area.

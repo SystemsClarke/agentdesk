@@ -58,8 +58,16 @@ pub fn call(db: &Db, c: &Caller, req: &str, a: &Value) -> Result<Value> {
                 "slack": std::fs::read_to_string(paths::data_dir().join("slack_bridge.state")).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()),
                 "usage": usage::report(),
                 "prs": prs,
-                "goals": [],
-            }))
+            })
+            .as_object()
+            .cloned()
+            .map(|mut o| {
+                if let Some(extra) = crate::ui_core::status_extra(db).as_object() {
+                    o.extend(extra.clone());
+                }
+                Value::Object(o)
+            })
+            .unwrap_or(Value::Null))
         }
         "check_prs" => {
             prs::check(db);
@@ -110,7 +118,10 @@ pub fn call(db: &Db, c: &Caller, req: &str, a: &Value) -> Result<Value> {
         }
         // the agents' own tools answer here too, with the same names and arguments as the MCP server
         t if tools::tool_names().contains(&t) => Ok(serde_json::from_str(&tools::call(db, c, t, a)).unwrap_or(Value::Null)),
-        _ => crate::db::err(format!("not implemented: ui:{name}")),
+        _ => match crate::ui_core::call(db, c, name, a) {
+            Some(r) => r,
+            None => crate::db::err(format!("not implemented: ui:{name}")),
+        },
     }
 }
 

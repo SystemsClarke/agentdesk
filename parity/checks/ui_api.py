@@ -53,6 +53,7 @@ def _reply(b):
 @feature("ui.reply.autowake", "ui-api", "5 s after a reply, an identity opener that was not handed it is woken (settings.json auto_wake)", SRC)
 def _autowake(b):
     b.stub("claude", SLEEPER)
+    _daemon(b)  # the wake is the core's work: here that is the daemon (or the window)
     b.need("ui:identity_create", {"name": "builder", "folder": b.work})
     b.need("ui:identity_start", {"name": "builder"})
     tid = b.tool("ask_human", {"subject": "Q", "body": "Go?", "author": "builder"}, session="sx")["thread_id"]

@@ -1,1 +1,3 @@
 /target
+parity/stubhost/target/
+parity/stubhost/Cargo.lock

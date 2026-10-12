@@ -41,6 +41,7 @@ pub fn run(stop: Arc<AtomicBool>) {
         if due(&mut t_toast, Duration::from_secs(2), Duration::ZERO) {
             toasts(&db, &mut known, &mut last_msg);
         }
+        supervisor.requests(&db);
         if due(&mut t_super, Duration::from_secs(2), Duration::ZERO) {
             if let Err(e) = supervisor.tick(&db) {
                 paths::log("WARN", &format!("supervisor: {e}"));

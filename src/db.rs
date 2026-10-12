@@ -101,6 +101,7 @@ CREATE TABLE IF NOT EXISTS experiments (id INTEGER PRIMARY KEY AUTOINCREMENT, go
     change TEXT NOT NULL, owner TEXT, started_ts TEXT NOT NULL, measured_ts TEXT, value REAL, verdict TEXT, measuring INTEGER NOT NULL DEFAULT 0, UNIQUE (goal, n));
 CREATE TABLE IF NOT EXISTS goal_members (identity TEXT PRIMARY KEY COLLATE NOCASE, goal TEXT NOT NULL COLLATE NOCASE, task TEXT NOT NULL,
     created_ts TEXT NOT NULL, work_id INTEGER);
+CREATE TABLE IF NOT EXISTS session_requests (id INTEGER PRIMARY KEY AUTOINCREMENT, action TEXT NOT NULL, args TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'pending', result TEXT, ts TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS slots (n INTEGER PRIMARY KEY CHECK (n BETWEEN 1 AND 10), channel_id TEXT, channel_name TEXT,
     persona_name TEXT, persona_icon TEXT, goal TEXT COLLATE NOCASE, updated_ts TEXT NOT NULL);
 "#;
@@ -284,7 +285,7 @@ impl Db {
         })
     }
 
-    fn insert(&self, sql: &str, p: Named) -> Result<i64> {
+    pub fn insert(&self, sql: &str, p: Named) -> Result<i64> {
         self.exec(sql, p)?;
         Ok(self.conn.last_insert_rowid())
     }

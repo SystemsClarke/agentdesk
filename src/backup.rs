@@ -9,7 +9,7 @@ pub fn run(db: &Db) -> Result<String> {
     let dir = paths::backup_dir();
     std::fs::create_dir_all(&dir)?;
     // Second resolution: two snapshots in one second (a manual run beside the scheduled one) must not overwrite or refuse each other.
-    let stamp = chrono::Utc::now().format("%Y%m%d-%H%M%S").to_string();
+    let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%S").to_string();
     let mut path = dir.join(format!("agentdesk-{stamp}.db"));
     for n in 1.. {
         if !path.exists() {
@@ -84,7 +84,7 @@ fn thin(dir: &std::path::Path) -> usize {
         .filter_map(|e| {
             let n = e.file_name().to_string_lossy().into_owned();
             let stamp = n.strip_prefix("agentdesk-")?.strip_suffix(".db")?.chars().take(15).collect::<String>(); // a "-N" suffix marks a same-second twin
-            let t = chrono::NaiveDateTime::parse_from_str(&stamp, "%Y%m%d-%H%M%S").ok()?;
+            let t = chrono::NaiveDateTime::parse_from_str(&stamp, "%Y%m%dT%H%M%S").ok()?;
             Some((t.and_utc(), e.path()))
         })
         .collect();

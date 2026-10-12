@@ -98,6 +98,10 @@ struct Live {
     shared: Arc<Shared>,
     #[cfg_attr(not(test), allow(dead_code))]
     command: Vec<String>,
+    folder: String,
+    started: String,
+    /// A plain session (`ui:session_start`), not an identity's: the supervisor leaves it alone.
+    plain: bool,
 }
 
 #[derive(Default)]
@@ -123,13 +127,26 @@ impl Host {
 
     /// Starts `program args` in `cwd` on a new PTY with `env` added. Returns the child's pid.
     pub fn launch(&mut self, name: &str, cwd: &str, program: &str, args: &[String], env: &[(String, String)]) -> Result<u32> {
+        self.launch_clean(name, cwd, program, args, env, &[])
+    }
+
+    /// `launch`, with every inherited variable whose name starts with one of `drop` removed first (a plain session must not see the
+    /// caller's CLAUDE* and AGENTDESK_* variables).
+    pub fn launch_clean(&mut self, name: &str, cwd: &str, program: &str, args: &[String], env: &[(String, String)], without: &[&str]) -> Result<u32> {
         if self.alive(name) {
             return Err(anyhow!("{name} is already running"));
         }
         let pair = native_pty_system().openpty(PtySize { rows: 40, cols: 160, pixel_width: 0, pixel_height: 0 }).map_err(|e| anyhow!("no pty: {e}"))?;
-        let mut cmd = CommandBuilder::new(program);
+        let (exe, pre) = crate::paths::resolve(program);
+        let mut cmd = CommandBuilder::new(exe);
+        cmd.args(pre);
         cmd.args(args);
         cmd.cwd(cwd);
+        for (k, _) in std::env::vars() {
+            if without.iter().any(|p| k.starts_with(p)) {
+                cmd.env_remove(&k);
+            }
+        }
         for (k, v) in env {
             cmd.env(k, v);
         }
@@ -171,7 +188,7 @@ impl Host {
         let mut command = vec![program.to_string()];
         command.extend(args.iter().cloned());
         self.registry.lock().unwrap_or_else(|e| e.into_inner()).insert(name.to_string(), shared.clone());
-        self.live.insert(name.to_string(), Live { child, shared, command });
+        self.live.insert(name.to_string(), Live { child, shared, command, folder: cwd.to_string(), started: crate::db::now_iso(), plain: false });
         Ok(pid)
     }
 
@@ -203,6 +220,43 @@ impl Host {
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn command(&self, name: &str) -> Option<&[String]> {
         self.live.get(name).map(|l| l.command.as_slice())
+    }
+
+    pub fn mark_plain(&mut self, name: &str) {
+        if let Some(l) = self.live.get_mut(name) {
+            l.plain = true;
+        }
+    }
+
+    pub fn is_plain(&self, name: &str) -> bool {
+        self.live.get(name).is_some_and(|l| l.plain)
+    }
+
+    /// The live sessions: name, folder, command, pid, when started and how many viewers are attached.
+    pub fn info(&mut self) -> Vec<serde_json::Value> {
+        let mut names = self.names();
+        names.sort();
+        let mut out = vec![];
+        for n in names {
+            if !self.alive(&n) {
+                continue;
+            }
+            if let Some(l) = self.live.get(&n) {
+                let viewers = l.shared.out.lock().unwrap_or_else(|e| e.into_inner()).subs.len();
+                out.push(serde_json::json!({"name": n, "folder": l.folder, "command": l.command.join(" "), "pid": l.child.process_id(), "started": l.started, "viewers": viewers}));
+            }
+        }
+        out
+    }
+
+    /// How many bytes of recent output a new viewer would be replayed.
+    pub fn replay_len(&self, name: &str) -> usize {
+        self.live.get(name).map(|l| l.shared.out.lock().unwrap_or_else(|e| e.into_inner()).tail.len()).unwrap_or(0)
+    }
+
+    pub fn resize(&mut self, name: &str, cols: u16, rows: u16) -> Result<()> {
+        self.live.get(name).ok_or_else(|| anyhow!("{name} is not running"))?.shared.resize(cols, rows);
+        Ok(())
     }
 
     /// Ends the session now. Its conversation stays on disk.
