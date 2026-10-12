@@ -752,10 +752,6 @@ If you need something else from him, ask a new question with ask_human.");
         found.truncate(keep);
         Ok(found)
     }
-
-    pub fn threads_waiting(&self) -> i64 {
-        self.scalar_i64("SELECT COUNT(*) FROM open_questions", &[]).ok().flatten().unwrap_or(0)
-    }
 }
 
 /// `@name` mentions: `@` must start the token (so e-mail addresses are not mentions); fenced code is ignored.
