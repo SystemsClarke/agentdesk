@@ -8,6 +8,7 @@ the registry against the original's own documents so a feature cannot be left ou
 import json
 import os
 import shutil
+import site
 import sqlite3
 import stat
 import subprocess
@@ -109,6 +110,7 @@ class Board:
             "AGENTDESK_VAULT": os.path.join(self.dir, "vault"),
             "HOME": self.home,
             "USERPROFILE": self.home,
+            "PYTHONUSERBASE": site.getuserbase(),  # packages pip installed for the user (numpy) must survive the moved HOME
             "TMPDIR": self.tmp,
             "TEMP": self.tmp,
             "TMP": self.tmp,
