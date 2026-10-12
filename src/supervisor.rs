@@ -23,6 +23,7 @@ pub struct Supervisor {
     /// The newest human message already looked at: replies after it may need to wake an identity.
     last_human: i64,
     goals: Option<crate::goals::Runner>,
+    attach: Option<crate::attach::Server>,
 }
 
 /// Whether some process holds the supervisor lock right now (a CLI command warns when nothing will act on what it wrote).
@@ -48,7 +49,7 @@ fn claude_program() -> String {
 
 impl Supervisor {
     pub fn new() -> Supervisor {
-        Supervisor { host: Host::new(), lock: None, resumed: false, last_human: 0, goals: None }
+        Supervisor { host: Host::new(), lock: None, resumed: false, last_human: 0, goals: None, attach: None }
     }
 
     /// Takes the lock if nobody has it. Cheap to call every tick.
@@ -59,6 +60,10 @@ impl Supervisor {
         match lock_file() {
             Ok(f) if f.try_lock().is_ok() => {
                 self.lock = Some(f);
+                match crate::attach::start(self.host.registry()) {
+                    Ok(server) => self.attach = Some(server),
+                    Err(e) => paths::log("WARN", &format!("attach endpoint did not start: {e}")),
+                }
                 true
             }
             _ => false,
@@ -73,6 +78,7 @@ impl Supervisor {
 
     pub fn shutdown(&mut self) {
         self.host.stop_all();
+        self.attach = None; // removes supervisor.addr
     }
 
     pub fn tick(&mut self, db: &Db) -> Result<()> {

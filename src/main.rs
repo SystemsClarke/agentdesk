@@ -8,6 +8,7 @@
 //!   agentdesk job ...              recurring jobs: a prompt run on a schedule
 //!   agentdesk backup | setup | usage-feed | check-prs
 
+mod attach;
 mod backup;
 mod db;
 mod goals;

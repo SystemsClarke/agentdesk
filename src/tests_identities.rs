@@ -225,3 +225,58 @@ fn a_reply_from_john_starts_the_stopped_identity_that_asked_with_it() {
     assert_eq!(e.db.row("SELECT state FROM deliveries WHERE method='wake'", &[]).unwrap().unwrap()["state"], "resumed");
     sup.shutdown();
 }
+
+#[test]
+fn attach_replays_output_takes_input_and_refuses_a_wrong_key() {
+    use std::io::{BufRead, BufReader, Read, Write};
+    let e = Env::new();
+    let mut sup = Supervisor::new();
+    assert!(sup.acquire());
+    let (program, args): (&str, Vec<String>) =
+        if cfg!(windows) { ("cmd", vec!["/c".into(), "echo hello-attach& ping -n 30 127.0.0.1 >nul".into()]) } else { ("sh", vec!["-c".into(), "echo hello-attach; cat".into()]) };
+    sup.host().launch("att", e.folder(), program, &args, &[]).unwrap();
+    let (port, key) = crate::attach::read_addr().expect("supervisor.addr is written");
+    let connect = |line: String| {
+        let mut c = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        c.set_read_timeout(Some(std::time::Duration::from_secs(10))).unwrap();
+        c.write_all(line.as_bytes()).unwrap();
+        c
+    };
+    let mut bad = BufReader::new(connect("ATTACH wrong att 80 24\n".to_string()));
+    let mut l = String::new();
+    bad.read_line(&mut l).unwrap();
+    assert!(l.starts_with("ERR"), "{l}");
+    let mut none = BufReader::new(connect(format!("ATTACH {key} nobody 80 24\n")));
+    l.clear();
+    none.read_line(&mut l).unwrap();
+    assert!(l.starts_with("ERR") && l.contains("not running"), "{l}");
+
+    let mut c = connect(format!("ATTACH {key} att 100 30\n"));
+    let mut seen = Vec::new();
+    let mut buf = [0u8; 4096];
+    while !String::from_utf8_lossy(&seen).contains("hello-attach") {
+        let n = c.read(&mut buf).unwrap_or_else(|e| panic!("{e}; so far {:?}", String::from_utf8_lossy(&seen)));
+        assert!(n > 0, "closed before the output arrived: {:?}", String::from_utf8_lossy(&seen));
+        seen.extend_from_slice(&buf[..n]);
+    }
+    assert!(String::from_utf8_lossy(&seen).starts_with("OK\n"));
+    if !cfg!(windows) {
+        // cat echoes what is typed: input reaches the session, and its output comes back down
+        c.write_all(format!("INPUT {}\nRESIZE 90 20\n", crate::attach::base64_encode(b"ping-from-client\r")).as_bytes()).unwrap();
+        while !String::from_utf8_lossy(&seen).contains("ping-from-client") {
+            let n = c.read(&mut buf).unwrap();
+            assert!(n > 0);
+            seen.extend_from_slice(&buf[..n]);
+        }
+    }
+    sup.shutdown();
+    assert!(crate::attach::read_addr().is_none(), "supervisor.addr is removed");
+}
+
+#[test]
+fn base64_round_trips() {
+    for s in [&b""[..], b"a", b"ab", b"abc", b"abcd", b"\x00\xff\x10\r\n"] {
+        assert_eq!(crate::attach::base64_decode(&crate::attach::base64_encode(s)).unwrap(), s);
+    }
+    assert_eq!(crate::attach::base64_encode(b"Man"), "TWFu");
+}
