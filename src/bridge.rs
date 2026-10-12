@@ -115,7 +115,7 @@ fn command() -> Result<Vec<String>, &'static str> {
     if std::env::var_os("AGENTDESK_DATA").is_some() {
         return Err("not supervised on a custom AGENTDESK_DATA without AGENTDESK_BRIDGE_CMD");
     }
-    let creds = std::env::var("AGENTDESK_SLACK_DIR").map(std::path::PathBuf::from).unwrap_or_else(|_| dirs::home_dir().unwrap_or_default().join(".claude").join("slack-notify"));
+    let creds = std::env::var("AGENTDESK_SLACK_DIR").map(std::path::PathBuf::from).unwrap_or_else(|_| crate::paths::home_dir().join(".claude").join("slack-notify"));
     if !creds.join("bot-token.txt").exists() && !creds.join("bots.json").exists() {
         return Err("not configured: no Slack credentials (set AGENTDESK_SLACK_DIR, or put bot-token.txt and app-token.txt in ~/.claude/slack-notify)");
     }

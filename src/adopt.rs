@@ -10,10 +10,7 @@ use std::time::SystemTime;
 
 /// `~/.claude/projects` (`AGENTDESK_CLAUDE_PROJECTS` overrides the root).
 pub fn projects_root() -> PathBuf {
-    std::env::var_os("AGENTDESK_CLAUDE_PROJECTS")
-        .filter(|v| !v.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".claude").join("projects"))
+    std::env::var_os("AGENTDESK_CLAUDE_PROJECTS").filter(|v| !v.is_empty()).map(PathBuf::from).unwrap_or_else(|| crate::paths::home_dir().join(".claude").join("projects"))
 }
 
 pub struct Convo {
@@ -167,9 +164,9 @@ pub fn folders(db: &Db) -> Result<Value> {
             add(&c, None, 1.0, m);
         }
     }
-    let temp = std::env::temp_dir().to_string_lossy().to_lowercase();
-    let mut out: Vec<(String, Score)> =
-        score.into_iter().filter(|(f, _)| Path::new(f).is_dir() && !f.to_lowercase().starts_with(&temp) && !f.to_lowercase().contains("appdata")).collect();
+    // scratch is not where John works: the temp folder, and the application-data folders under his home
+    let scratch = [std::env::temp_dir(), crate::paths::home_dir().join("AppData")].map(|p| p.to_string_lossy().to_lowercase());
+    let mut out: Vec<(String, Score)> = score.into_iter().filter(|(f, _)| Path::new(f).is_dir() && !scratch.iter().any(|s| f.to_lowercase().starts_with(s.as_str()))).collect();
     out.sort_by(|a, b| b.1 .0.partial_cmp(&a.1 .0).unwrap_or(std::cmp::Ordering::Equal));
     Ok(
         json!({"folders": out.into_iter().take(30).map(|(f, e)| json!({"path": f, "who": e.3, "uses": e.1, "last": e.2.format("%Y-%m-%dT%H:%M:%SZ").to_string()})).collect::<Vec<_>>()}),
