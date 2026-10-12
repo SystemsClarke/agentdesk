@@ -24,6 +24,8 @@ pub struct Shared {
     writer: Mutex<Box<dyn Write + Send>>,
     /// The newest output (replayed to a client that attaches) and the clients now listening.
     out: Mutex<Out>,
+    /// The startup cursor query has been answered.
+    answered: std::sync::atomic::AtomicBool,
 }
 
 #[derive(Default)]
@@ -47,12 +49,17 @@ impl Shared {
         o.subs.retain(|s| s.send(chunk.to_vec()).is_ok());
     }
 
-    /// Windows' ConPTY asks the terminal where the cursor is (ESC[6n) and holds the session's output until it is told. With nobody
-    /// attached, nobody would answer, so the host does; an attached client's own terminal answers for itself.
-    fn answer_cursor_query(&self, chunk: &[u8]) {
-        let unattended = self.out.lock().unwrap_or_else(|e| e.into_inner()).subs.is_empty();
-        if unattended && chunk.windows(4).any(|w| w == b"[6n") {
-            let _ = self.write(b"[1;1R");
+    /// Windows' ConPTY asks the terminal where the cursor is (ESC[6n) when it starts, and holds the session's output until it is told.
+    /// The host always answers that first query itself, and keeps it out of what clients see (a client's terminal would answer a
+    /// replayed one too, and the stray reply would land in the session as typing). Later queries are the program's own: left alone.
+    fn answer_startup_query(&self, chunk: &[u8]) -> Vec<u8> {
+        let at = chunk.windows(4).position(|w| w == b"[6n");
+        match at {
+            Some(i) if !self.answered.swap(true, std::sync::atomic::Ordering::SeqCst) => {
+                let _ = self.write(b"[1;1R");
+                [&chunk[..i], &chunk[i + 4..]].concat()
+            }
+            _ => chunk.to_vec(),
         }
     }
 
@@ -130,7 +137,7 @@ impl Host {
         drop(pair.slave);
         let mut reader = pair.master.try_clone_reader().map_err(|e| anyhow!("pty reader: {e}"))?;
         let writer = pair.master.take_writer().map_err(|e| anyhow!("pty writer: {e}"))?;
-        let shared = Arc::new(Shared { master: Mutex::new(pair.master), writer: Mutex::new(writer), out: Mutex::new(Out::default()) });
+        let shared = Arc::new(Shared { master: Mutex::new(pair.master), writer: Mutex::new(writer), out: Mutex::new(Out::default()), answered: Default::default() });
         let feed = shared.clone();
         let pid = child.process_id().unwrap_or(0);
         let log = log_path(name);
@@ -142,8 +149,7 @@ impl Host {
                 if n == 0 {
                     break;
                 }
-                feed.push(&buf[..n]);
-                feed.answer_cursor_query(&buf[..n]);
+                feed.push(&feed.answer_startup_query(&buf[..n]));
                 let _ = f.write_all(&buf[..n]);
                 written += n as u64;
                 if written > LOG_LIMIT {

@@ -238,7 +238,7 @@ fn attach_replays_output_takes_input_and_refuses_a_wrong_key() {
     let (port, key) = crate::attach::read_addr().expect("supervisor.addr is written");
     let connect = |line: String| {
         let mut c = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
-        c.set_read_timeout(Some(std::time::Duration::from_secs(45))).unwrap(); // a loaded CI runner starts ConPTY slowly
+        c.set_read_timeout(Some(std::time::Duration::from_secs(45))).unwrap();
         c.write_all(line.as_bytes()).unwrap();
         c
     };
@@ -260,6 +260,7 @@ fn attach_replays_output_takes_input_and_refuses_a_wrong_key() {
         seen.extend_from_slice(&buf[..n]);
     }
     assert!(String::from_utf8_lossy(&seen).starts_with("OK\n"));
+    assert!(!String::from_utf8_lossy(&seen).contains("\x1b[6n"), "the host answers ConPTY's startup query; clients never see it");
     if !cfg!(windows) {
         // cat echoes what is typed: input reaches the session, and its output comes back down
         c.write_all(format!("INPUT {}\nRESIZE 90 20\n", crate::attach::base64_encode(b"ping-from-client\r")).as_bytes()).unwrap();
