@@ -165,6 +165,8 @@ fn table(rows: &[Vec<String>], width: usize) -> Vec<L> {
 pub fn render(body: &str, width: usize) -> Vec<L> {
     let mut out: Vec<L> = Vec::new();
     let mut in_code = false;
+    let mut fence_lang = String::new();
+    let mut fence_buf: Vec<String> = Vec::new();
     let mut pending: Vec<Vec<String>> = Vec::new();
     for raw in body.lines() {
         let line = raw.trim_end();
@@ -173,15 +175,30 @@ pub fn render(body: &str, width: usize) -> Vec<L> {
             if !pending.is_empty() {
                 out.extend(table(&std::mem::take(&mut pending), width));
             }
-            in_code = !in_code;
-            let lang = t.trim_start_matches('`');
-            if in_code && !lang.is_empty() {
-                out.push(vec![s(format!("┌ {lang}"), "fa")]);
+            if in_code {
+                in_code = false;
+                let src = fence_buf.join("\n");
+                match fence_lang.as_str() {
+                    "chart" => out.extend(super::charts::chart(&src, width)),
+                    "mermaid" => out.extend(super::charts::mermaid(&src)),
+                    _ => {}
+                }
+                fence_buf.clear();
+                continue;
+            }
+            in_code = true;
+            fence_lang = t.trim_start_matches('`').trim().to_string();
+            if !fence_lang.is_empty() && fence_lang != "chart" && fence_lang != "mermaid" {
+                out.push(vec![s(format!("┌ {fence_lang}"), "fa")]);
             }
             continue;
         }
         if in_code {
-            out.push(vec![s("│ ", "fa"), s(line.to_string(), "gr")]);
+            if fence_lang == "chart" || fence_lang == "mermaid" {
+                fence_buf.push(line.to_string());
+            } else {
+                out.push(vec![s("│ ", "fa"), s(line.to_string(), "gr")]);
+            }
             continue;
         }
         if t.starts_with('|') && t.ends_with('|') && t.len() > 1 {
