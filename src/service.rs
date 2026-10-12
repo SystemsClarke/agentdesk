@@ -22,6 +22,8 @@ pub fn run(stop: Arc<AtomicBool>) {
     let mut last_msg = db.max_message_id();
     let start = Instant::now();
     let mut t_update = None::<Instant>;
+    let mut t_super = None::<Instant>;
+    let mut supervisor = crate::supervisor::Supervisor::new();
     let (mut t_jobs, mut t_prs, mut t_usage, mut t_sweep, mut t_toast) = (None::<Instant>, None::<Instant>, None::<Instant>, None::<Instant>, None::<Instant>);
     let due = |t: &mut Option<Instant>, every: Duration, first: Duration| -> bool {
         let now = Instant::now();
@@ -37,6 +39,11 @@ pub fn run(stop: Arc<AtomicBool>) {
     while !stop.load(Ordering::Relaxed) {
         if due(&mut t_toast, Duration::from_secs(2), Duration::ZERO) {
             toasts(&db, &mut known, &mut last_msg);
+        }
+        if due(&mut t_super, Duration::from_secs(2), Duration::ZERO) {
+            if let Err(e) = supervisor.tick(&db) {
+                paths::log("WARN", &format!("supervisor: {e}"));
+            }
         }
         if due(&mut t_jobs, Duration::from_secs(30), Duration::ZERO) {
             let _ = jobs::tick(&db);
@@ -55,6 +62,7 @@ pub fn run(stop: Arc<AtomicBool>) {
         }
         std::thread::sleep(Duration::from_millis(250));
     }
+    supervisor.shutdown(); // its sessions end with it; the next supervisor resumes them
 }
 
 fn toasts(db: &Db, known: &mut HashSet<i64>, last_msg: &mut i64) {

@@ -256,6 +256,58 @@ row; you get the existing one back with created=false."####,
         r####"{"type": "object", "properties": {"pr_url": {"type": "string"}, "thread_id": {"type": "integer"}, "note": {"type": "string"}, "author": {"type": "string"}}, "required": ["pr_url"]}"####,
     ),
     (
+        "goal_propose",
+        r####"For a goal's lead: propose how the goal is tested. The core runs measure_cmd
+itself in the goal's folder; the metric is the last number it prints (a
+non-zero exit is an error), or, for success 'pass', exit code 0. success is
+'value < N', 'value <= N', 'value > N', 'value >= N', 'value == N' or 'pass';
+samples is how many runs each measurement takes (the median counts). John
+approves the proposal; until then the goal is a draft and you can re-propose."####,
+        r####"{"type": "object", "properties": {"name": {"type": "string"}, "hypothesis": {"type": "string"}, "measure_cmd": {"type": "string"}, "success": {"type": "string"}, "samples": {"type": "integer", "default": 1}}, "required": ["name", "hypothesis", "measure_cmd", "success"]}"####,
+    ),
+    (
+        "experiment_start",
+        r####"For a running goal's lead and members: open an experiment before making a
+change. Returns its number n; call experiment_done with it once the change is
+in place."####,
+        r####"{"type": "object", "properties": {"goal": {"type": "string"}, "change": {"type": "string"}}, "required": ["goal", "change"]}"####,
+    ),
+    (
+        "experiment_done",
+        r####"The change for experiment n is in place: the core runs the goal's measure,
+records the value and the verdict (met, improved, no gain, or error), posts it
+on the goal thread and wakes the lead. A measure that crosses the success line
+ends the goal. Never report a measured value yourself; this is how it is
+measured."####,
+        r####"{"type": "object", "properties": {"goal": {"type": "string"}, "n": {"type": "integer"}}, "required": ["goal", "n"]}"####,
+    ),
+    (
+        "member_spawn",
+        r####"For a running goal's lead: start a member identity <goal>-<name> with one
+small task (model haiku, sonnet or opus; sonnet by default). It starts when
+the session pool allows (the goal's max_members, the session ceiling) and
+queues until then. The member
+hands off with pass_the_torch or retires with member_done. work_id (a Work to
+Hire item the lead has claimed) hands that claim to the member, which then
+completes it with complete_work; one it leaves unfinished returns to the lead."####,
+        r####"{"type": "object", "properties": {"goal": {"type": "string"}, "name": {"type": "string"}, "task": {"type": "string"}, "model": {"type": "string"}, "work_id": {"type": "integer"}}, "required": ["goal", "name", "task"]}"####,
+    ),
+    (
+        "member_done",
+        r####"For a goal member whose task is finished: posts the summary on the goal
+thread, wakes the lead, and retires this identity (its session ends)."####,
+        r####"{"type": "object", "properties": {"summary": {"type": "string"}}, "required": ["summary"]}"####,
+    ),
+    (
+        "retire",
+        r####"For a session the daemon runs (an identity): like typing /exit. Call it when your work is
+done, or when John asks you to retire. Your session is ended immediately and its
+slot goes back to the pool. Nothing is lost: John's reply on a
+thread you asked on, or the next wake, starts you again on the same
+conversation. Post what you did first; call retire last, then stop."####,
+        r####"{"type": "object", "properties": {}, "required": []}"####,
+    ),
+    (
         "propose_permission_rule",
         r####"Propose a Claude Code permission rule for John to approve. Use it when the auto-mode classifier refuses something John asked you to do,
 instead of working around the refusal: say what the rule is (for example `Bash(python tools/trigger_pipeline.py:*)` or `mcp__server__tool`),

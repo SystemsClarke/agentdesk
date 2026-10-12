@@ -7,7 +7,7 @@ use serde_json::{json, Value};
 use std::sync::Mutex;
 
 /// Tests that set AGENTDESK_DATA take this lock: the environment is shared by the whole test process.
-static ENV: Mutex<()> = Mutex::new(());
+pub(crate) static ENV: Mutex<()> = Mutex::new(());
 
 fn board() -> (tempfile::TempDir, Db) {
     let dir = tempfile::tempdir().unwrap();
@@ -20,7 +20,7 @@ fn caller(session: &str) -> Caller {
     Caller { session_id: Some(session.into()), env_author: None, cwd: Some("/work/proj".into()), harness: Some("claude-code".into()), pid: 1 }
 }
 
-fn call(db: &Db, c: &Caller, tool: &str, args: Value) -> Value {
+pub(crate) fn call(db: &Db, c: &Caller, tool: &str, args: Value) -> Value {
     serde_json::from_str(&tools::call(db, c, tool, &args)).unwrap_or(Value::Null)
 }
 
@@ -184,7 +184,7 @@ fn mcp_handshake_lists_the_tools_and_calls_one() {
     assert!(init["result"]["instructions"].as_str().unwrap().contains("shared message board"));
     assert!(mcp::handle(&db, &c, &json!({"jsonrpc": "2.0", "method": "notifications/initialized"})).is_none());
     let list = mcp::handle(&db, &c, &json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})).unwrap();
-    assert_eq!(list["result"]["tools"].as_array().unwrap().len(), 18);
+    assert_eq!(list["result"]["tools"].as_array().unwrap().len(), 24);
     let r = mcp::handle(&db, &c, &json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "recent_messages", "arguments": {}}})).unwrap();
     assert!(r["result"]["content"][0]["text"].as_str().unwrap().contains("messages"));
     assert_eq!(mcp::handle(&db, &c, &json!({"jsonrpc": "2.0", "id": 4, "method": "nope"})).unwrap()["error"]["code"], -32601);
@@ -440,4 +440,28 @@ fn a_snapshot_that_fails_the_integrity_check_is_set_aside() {
     std::fs::write(&bad, "this is not a database".repeat(200)).unwrap();
     assert_ne!(crate::backup::verify(&bad), "ok");
     assert!(!bad.exists() && dir.path().join("agentdesk-20261012-000001.db.corrupt").exists());
+}
+
+#[test]
+fn the_stop_hook_reads_only_what_is_new_and_waits_for_a_whole_line() {
+    use std::io::Write;
+    let (_d, db) = board();
+    let dir = tempfile::tempdir().unwrap();
+    let transcript = dir.path().join("incremental.jsonl");
+    let (edit, post) = (r#"{"message":{"content":[{"type":"tool_use","name":"Edit"}]}}"#, r#"{"message":{"content":[{"type":"tool_use","name":"mcp__agentdesk__post_message"}]}}"#);
+    std::fs::write(&transcript, "{\"type\":\"user\"}\n").unwrap();
+    let input = json!({"session_id": "S10", "stop_hook_active": false, "transcript_path": transcript.to_str().unwrap()});
+    let stop = || hooks::run(&db, "stop", &input);
+    assert_eq!(stop(), ""); // nothing edited yet
+
+    let mut f = std::fs::OpenOptions::new().append(true).open(&transcript).unwrap();
+    write!(f, "{}", &edit[..30]).unwrap(); // claude is mid-line: not read yet
+    assert_eq!(stop(), "");
+    writeln!(f, "{}", &edit[30..]).unwrap();
+    assert!(stop().contains("you changed files this session"), "the edit is found without rereading the start");
+    writeln!(f, "{post}").unwrap();
+    assert_eq!(stop(), "", "and the post that follows it clears the block");
+
+    std::fs::write(&transcript, format!("{edit}\n")).unwrap(); // shorter: a new transcript, read from the start
+    assert!(stop().contains("you changed files this session"));
 }

@@ -30,7 +30,13 @@ pub fn run(db: &Db, event: &str, input: &Value) -> String {
     match event {
         "session-start" => context("SessionStart", &(replies(db, sid) + &briefing(db))),
         "context" => context("PostToolUse", &(replies(db, sid) + &phoenix(sid, transcript))),
-        "stop" => stop(db, sid, transcript, input["stop_hook_active"].as_bool().unwrap_or(false)),
+        "stop" => {
+            let result = stop(db, sid, transcript, input["stop_hook_active"].as_bool().unwrap_or(false));
+            if !result.contains("\"block\"") {
+                crate::identities::turn_ended(db, sid); // the turn really ends: a session that passed the torch may now be replaced
+            }
+            result
+        }
         _ => String::new(),
     }
 }
@@ -246,10 +252,28 @@ fn stop(db: &Db, sid: &str, transcript: &str, already_blocked: bool) -> String {
 }
 
 /// Whether the session edited a file and whether it posted to the board.
+///
+/// A long session's transcript is tens of megabytes and this runs at the end of every turn, so it reads only what is new since the last
+/// time: how far it got and what it had seen are kept in a small file in the temp folder (every hook is its own process, so there is no
+/// memory to keep them in). Only whole lines count, claude may be mid-write, and a transcript that got shorter is a different file.
 fn scan(transcript: &str) -> (bool, bool) {
-    let Ok(text) = std::fs::read_to_string(transcript) else { return (false, false) };
-    let (mut edited, mut posted) = (false, false);
-    for line in text.lines().filter(|l| l.contains("\"tool_use\"")) {
+    use std::io::{Read, Seek, SeekFrom};
+    let key = transcript.bytes().fold(0xcbf29ce484222325u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x100000001b3));
+    let cache = std::env::temp_dir().join(format!("agentdesk-scan-{key:016x}.json"));
+    let saved: Value = std::fs::read_to_string(&cache).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(Value::Null);
+    let same = saved["path"].as_str() == Some(transcript);
+    let (mut offset, mut edited, mut posted) =
+        if same { (saved["offset"].as_u64().unwrap_or(0), saved["edited"].as_bool().unwrap_or(false), saved["posted"].as_bool().unwrap_or(false)) } else { (0, false, false) };
+    let Ok(mut f) = std::fs::File::open(transcript) else { return (edited, posted) };
+    if f.metadata().map(|m| m.len()).unwrap_or(0) < offset {
+        (offset, edited, posted) = (0, false, false);
+    }
+    let mut buf = Vec::new();
+    if f.seek(SeekFrom::Start(offset)).is_err() || f.read_to_end(&mut buf).is_err() {
+        return (edited, posted);
+    }
+    let Some(end) = buf.iter().rposition(|b| *b == b'\n') else { return (edited, posted) };
+    for line in String::from_utf8_lossy(&buf[..=end]).lines().filter(|l| l.contains("\"tool_use\"")) {
         let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
         for p in v["message"]["content"].as_array().into_iter().flatten() {
             if p["type"].as_str() != Some("tool_use") {
@@ -260,6 +284,8 @@ fn scan(transcript: &str) -> (bool, bool) {
             posted |= name.starts_with("mcp__agentdesk__") && BOARD_WRITES.contains(&name.rsplit("__").next().unwrap_or(""));
         }
     }
+    offset += end as u64 + 1;
+    let _ = std::fs::write(&cache, json!({"path": transcript, "offset": offset, "edited": edited, "posted": posted}).to_string());
     (edited, posted)
 }
 

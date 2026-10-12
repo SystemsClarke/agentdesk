@@ -8,9 +8,15 @@
 //!   agentdesk job ...              recurring jobs: a prompt run on a schedule
 //!   agentdesk backup | setup | usage-feed | check-prs
 
+mod attach;
 mod backup;
+mod concierge;
 mod db;
+mod dispatcher;
+mod goals;
+mod governor;
 mod hooks;
+mod identities;
 mod identity;
 mod jobs;
 mod mcp;
@@ -22,8 +28,18 @@ mod paths;
 mod permissions;
 mod prs;
 mod service;
+mod sessions;
+mod supervisor;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_concierge;
+#[cfg(test)]
+mod tests_goals;
+#[cfg(test)]
+mod tests_governor;
+#[cfg(test)]
+mod tests_identities;
 mod tools;
 mod tools_gen;
 mod tui;
@@ -55,6 +71,29 @@ enum Cmd {
     Hook { event: String },
     /// Block until John replies on the thread, then print his reply.
     Wait { thread: i64 },
+    /// Identities: long-lived named Claude sessions the daemon keeps running (`identity new|list|start|stop|forget`).
+    Identity {
+        #[command(subcommand)]
+        cmd: IdentityCmd,
+    },
+    /// Goals: a measured hypothesis a lead and its members chase (`goal new|approve|stop|budget|list|status`).
+    Goal {
+        #[command(subcommand)]
+        cmd: GoalCmd,
+    },
+    /// The usage governor: `governor` shows the plan and the session pool, `governor on|off` turns enforcement on or off.
+    Governor {
+        /// on, off or show (the default)
+        action: Option<String>,
+    },
+    /// The Concierge: keeps Work to Hire drained with a small swarm. `concierge` shows it, `concierge on|off` turns it on or off.
+    Concierge {
+        /// on, off or show (the default)
+        action: Option<String>,
+        /// The folder its lead and workers run in (default: $AGENTDESK_CONCIERGE_FOLDER, else here).
+        #[arg(long)]
+        folder: Option<String>,
+    },
     /// Recurring jobs.
     Job {
         #[command(subcommand)]
@@ -77,6 +116,72 @@ enum Cmd {
     Migrate {
         #[arg(long)]
         apply: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum IdentityCmd {
+    /// Sign up an identity: `identity new <name> <folder> [--charter TEXT] [--model haiku|sonnet|opus] [--autostart]`.
+    New {
+        name: String,
+        folder: String,
+        #[arg(long)]
+        charter: Option<String>,
+        #[arg(long)]
+        model: Option<String>,
+        #[arg(long)]
+        autostart: bool,
+    },
+    List,
+    /// Ask for it to run; the daemon starts it (resuming its conversation) when it has a slot.
+    Start {
+        name: String,
+    },
+    /// Ask for it to stop; its conversation is kept.
+    Stop {
+        name: String,
+    },
+    /// Stop it and remove it from the list; its conversation stays on disk.
+    Forget {
+        name: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum GoalCmd {
+    /// Make a goal: `goal new <name> <folder> --objective TEXT`. Its lead (<name>-lead) proposes how to test it; you approve.
+    New {
+        name: String,
+        folder: String,
+        #[arg(long)]
+        objective: String,
+    },
+    /// Approve the lead's proposal and start the goal; optional budget: members, hours, wake cadence in minutes.
+    Approve {
+        name: String,
+        #[arg(long)]
+        members: Option<i64>,
+        #[arg(long)]
+        hours: Option<f64>,
+        #[arg(long)]
+        cadence: Option<f64>,
+    },
+    /// Change a running goal's budget.
+    Budget {
+        name: String,
+        #[arg(long)]
+        members: Option<i64>,
+        #[arg(long)]
+        hours: Option<f64>,
+        #[arg(long)]
+        cadence: Option<f64>,
+    },
+    Stop {
+        name: String,
+    },
+    List,
+    Status {
+        name: String,
     },
 }
 
@@ -161,6 +266,10 @@ fn real_main() -> Result<()> {
             Ok(())
         }
         Some(Cmd::Job { cmd }) => job(cmd),
+        Some(Cmd::Identity { cmd }) => identity(cmd),
+        Some(Cmd::Goal { cmd }) => goal(cmd),
+        Some(Cmd::Governor { action }) => governor_cmd(action.as_deref()),
+        Some(Cmd::Concierge { action, folder }) => concierge_cmd(action.as_deref(), folder),
         Some(Cmd::Backup) => {
             println!("{}", backup::run(&open()?)?);
             Ok(())
@@ -247,4 +356,84 @@ fn setup() {
     println!("{}\n", serde_json::to_string_pretty(&cfg).unwrap());
     println!("3. Optional, the usage meter: set the status line command to `\"{exe}\" usage-feed`.");
     println!("4. Open the window with `agentdesk`; keep `agentdesk daemon` running (or the window open) for toasts and recurring jobs.");
+}
+
+fn identity(cmd: IdentityCmd) -> Result<()> {
+    let d = open()?;
+    let (row, note) = match cmd {
+        IdentityCmd::New { name, folder, charter, model, autostart } => (identities::create(&d, &name, &folder, charter.as_deref(), model.as_deref(), autostart)?, false),
+        IdentityCmd::List => {
+            for r in identities::list(&d)? {
+                println!(
+                    "{:<24} {:<8} gen {:<3} {:<7} {}",
+                    r["name"].as_str().unwrap_or(""),
+                    r["state"].as_str().unwrap_or(""),
+                    r["generation"].as_i64().unwrap_or(1),
+                    r["model"].as_str().unwrap_or(""),
+                    r["folder"].as_str().unwrap_or("")
+                );
+            }
+            return Ok(());
+        }
+        IdentityCmd::Start { name } => (identities::start(&d, &name)?, true),
+        IdentityCmd::Stop { name } => (identities::stop(&d, &name)?, true),
+        IdentityCmd::Forget { name } => (identities::forget(&d, &name)?, false),
+    };
+    println!("{}", serde_json::to_string_pretty(&row)?);
+    if note && !supervisor::running() {
+        eprintln!("note: no supervisor is running, so nothing will act on this yet. Start `agentdesk daemon` (or the window).");
+    }
+    Ok(())
+}
+
+fn concierge_cmd(action: Option<&str>, folder: Option<String>) -> Result<()> {
+    let on = match action {
+        Some("on") => Some(true),
+        Some("off") => Some(false),
+        Some("show") | None => None,
+        Some(other) => anyhow::bail!("concierge takes on, off or show, not {other}"),
+    };
+    let folder = folder
+        .or_else(|| std::env::var("AGENTDESK_CONCIERGE_FOLDER").ok().filter(|f| !f.is_empty()))
+        .or_else(|| std::env::current_dir().ok().map(|p| p.to_string_lossy().into_owned()))
+        .unwrap_or_default();
+    let d = open()?;
+    let out = concierge::toggle(&d, &identity::Caller::from_env(), &folder, on)?;
+    println!("{}", serde_json::to_string_pretty(&out)?);
+    if on.is_some() && !supervisor::running() {
+        eprintln!("note: no supervisor is running, so nothing will act on this yet. Start `agentdesk daemon` (or the window).");
+    }
+    Ok(())
+}
+
+fn governor_cmd(action: Option<&str>) -> Result<()> {
+    match action {
+        Some("on") => governor::set_enforce(true)?,
+        Some("off") => governor::set_enforce(false)?,
+        Some("show") | None => {}
+        Some(other) => anyhow::bail!("governor takes on, off or show, not {other}"),
+    }
+    let d = open()?;
+    let r = governor::report(&d, chrono::Utc::now(), false, None);
+    println!("{}", r["summary"].as_str().unwrap_or(""));
+    println!("{}", serde_json::to_string_pretty(&r)?);
+    Ok(())
+}
+
+fn goal(cmd: GoalCmd) -> Result<()> {
+    let d = open()?;
+    let me = identity::Caller::from_env();
+    let out = match cmd {
+        GoalCmd::New { name, folder, objective } => goals::create(&d, &name, &objective, &folder)?,
+        GoalCmd::Approve { name, members, hours, cadence } => goals::approve(&d, &me, &name, members, hours, cadence)?,
+        GoalCmd::Budget { name, members, hours, cadence } => goals::set_budget(&d, &me, &name, members, hours, cadence)?,
+        GoalCmd::Stop { name } => goals::stop(&d, &me, &name)?,
+        GoalCmd::List => goals::list(&d)?,
+        GoalCmd::Status { name } => goals::status(&d, &name)?,
+    };
+    println!("{}", serde_json::to_string_pretty(&out)?);
+    if !supervisor::running() {
+        eprintln!("note: no supervisor is running, so nothing will act on this yet. Start `agentdesk daemon` (or the window).");
+    }
+    Ok(())
 }

@@ -30,16 +30,9 @@ pub fn report() -> Value {
     json!({"lines": lines, "summary": summary, "week_pct": week, "five_hour_pct": five})
 }
 
-/// Records the current reading (at most one per hour bucket).
+/// Records the current reading in `usage_samples` (once per timestamp), with the sessions running now: what the governor learns from.
 pub fn sample(db: &Db) {
-    let r = report();
-    // The board's table is the original's (`weekly_pct` is NOT NULL: a reading with no weekly figure is not a sample).
-    let Some(week) = r["week_pct"].as_f64() else {
-        return;
-    };
-    let ts = crate::db::now_iso();
-    let _ =
-        db.exec("INSERT OR REPLACE INTO usage_samples (ts, weekly_pct, five_hour_pct) VALUES (:ts, :w, :f)", &[(":ts", &ts), (":w", &week), (":f", &r["five_hour_pct"].as_f64())]);
+    crate::governor::record(db);
 }
 
 /// Claude Code status-line feed: reads the status-line JSON on stdin, writes `claude_usage.json`, prints a short line.
