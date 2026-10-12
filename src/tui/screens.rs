@@ -531,7 +531,7 @@ impl App {
         } else {
             vec![s("○ Concierge off", "or"), s(" · Ctrl+W starts it", "fa")]
         };
-        let slack_up = self.st.slack.as_ref().and_then(|(t, _, _)| *t).map(|t| Local::now() - t < chrono::Duration::seconds(90)).unwrap_or(false);
+        let slack_up = crate::bridge::running();
         let mut right: L = vec![
             if self.st.open_qs.is_empty() { s("nobody's calling", "mu") } else { s(format!("{} ringing for you", self.st.open_qs.len()), "pk b") },
             s(" · ", "fa"),
@@ -1259,7 +1259,7 @@ impl App {
         } else {
             stat("Concierge", vec![s("○ off", "or"), s("  Ctrl+W starts it", "fa")]);
         }
-        let slack_up = st.slack.as_ref().and_then(|(t, _, _)| *t).map(|t| Local::now() - t < chrono::Duration::seconds(90)).unwrap_or(false);
+        let slack_up = crate::bridge::running();
         if slack_up {
             let (_, poll, relay) = st.slack.unwrap();
             let mut v = vec![s("● up", "gr"), s(format!(" · polling every {poll}s"), "mu")];

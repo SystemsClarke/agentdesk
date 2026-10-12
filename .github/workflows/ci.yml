@@ -34,6 +34,7 @@ jobs:
         shell: bash
         run: |
           PY=python3; command -v python3 >/dev/null || PY=python
+          $PY -m pip install numpy >/dev/null 2>&1 || true
           $PY parity/coverage.py
           # Linux enforces the ratchet (nothing that passed may stop passing); macOS and Windows report, so a
           # platform quirk in a check is visible in the artifact without blocking, until the checks are proven there.

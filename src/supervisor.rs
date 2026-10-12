@@ -27,6 +27,8 @@ pub struct Supervisor {
     last_human: i64,
     goals: Option<crate::goals::Runner>,
     attach: Option<crate::attach::Server>,
+    /// The Slack bridge's keeper thread and its stop flag.
+    bridge: Option<(std::sync::Arc<std::sync::atomic::AtomicBool>, std::thread::JoinHandle<()>)>,
     /// Swarm identities held queued by the pool or the governor, and why (logged once per hold).
     held: std::collections::BTreeMap<String, String>,
     /// Advisory mode: what enforcement would have shed, so each is logged once.
@@ -66,6 +68,7 @@ impl Supervisor {
             last_human: 0,
             goals: None,
             attach: None,
+            bridge: None,
             held: Default::default(),
             would_shed: Default::default(),
             warned: None,
@@ -85,6 +88,9 @@ impl Supervisor {
                     Ok(server) => self.attach = Some(server),
                     Err(e) => paths::log("WARN", &format!("attach endpoint did not start: {e}")),
                 }
+                let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let flag = stop.clone();
+                self.bridge = Some((stop, std::thread::spawn(move || crate::bridge::run(flag))));
                 true
             }
             _ => false,
@@ -100,6 +106,10 @@ impl Supervisor {
     pub fn shutdown(&mut self) {
         self.host.stop_all();
         self.attach = None; // removes supervisor.addr
+        if let Some((stop, handle)) = self.bridge.take() {
+            stop.store(true, std::sync::atomic::Ordering::Relaxed);
+            let _ = handle.join();
+        }
     }
 
     pub fn tick(&mut self, db: &Db) -> Result<()> {

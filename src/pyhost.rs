@@ -60,7 +60,11 @@ pub fn command() -> Result<Command> {
     let py = interpreter().ok_or_else(|| anyhow!("no Python 3 interpreter found (set AGENTDESK_PYTHON_BIN)"))?;
     let root = dir()?;
     let mut c = Command::new(py);
-    c.current_dir(&root).env("PYTHONPATH", &root).env("PYTHONIOENCODING", "utf-8").env("AGENTDESK_DATA", paths::data_dir()).env("AGENTDESK_VAULT", paths::vault_dir());
+    let path = match std::env::var_os("PYTHONPATH") {
+        Some(p) if !p.is_empty() => std::env::join_paths(std::iter::once(root.clone()).chain(std::env::split_paths(&p)))?,
+        _ => root.clone().into_os_string(),
+    };
+    c.current_dir(&root).env("PYTHONPATH", path).env("PYTHONIOENCODING", "utf-8").env("AGENTDESK_DATA", paths::data_dir()).env("AGENTDESK_VAULT", paths::vault_dir());
     if let Ok(exe) = std::env::current_exe() {
         c.env("AGENTDESK_EXE", exe);
     }

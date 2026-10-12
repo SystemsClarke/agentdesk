@@ -61,6 +61,7 @@ pub fn call(db: &Db, c: &Caller, req: &str, a: &Value) -> Result<Value> {
             Ok(json!({
                 "slack": std::fs::read_to_string(paths::data_dir().join("slack_bridge.state")).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()),
                 "concierge": concierge::state(db)?,
+                "bridge": crate::bridge::status(),
                 "sessions": pool,
                 "usage": usage::report(),
                 "governor": gov,

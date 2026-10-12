@@ -124,7 +124,9 @@ pub fn tick(db: &Db, host: &mut Host) -> Result<()> {
         }
     }
     for m in db.rows("SELECT * FROM session_inbox ORDER BY id", &[])? {
-        let key = format!("plain:{}", m["name"].as_str().unwrap_or(""));
+        let n = m["name"].as_str().unwrap_or("");
+        // a plain session, else an identity's session (the Slack bridge types into a goal's lead by its name)
+        let key = if host.names().contains(&format!("plain:{n}")) { format!("plain:{n}") } else { n.to_string() };
         let id = m["id"].as_i64().unwrap_or(0);
         match m["kind"].as_str() {
             Some("input") => {

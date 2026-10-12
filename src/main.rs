@@ -11,6 +11,7 @@
 mod adopt;
 mod attach;
 mod backup;
+mod bridge;
 mod concierge;
 mod db;
 mod dispatcher;
