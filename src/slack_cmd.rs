@@ -6,15 +6,17 @@
 //! Only John's Slack user may run them.
 
 use crate::db::Db;
+use crate::swarm::Swarms;
 use crate::{concierge, governor, identities as ids, paths, update, usage};
 use regex::Regex;
 use serde_json::{json, Value};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 pub const AREAS: [&str; 5] = ["board", "agents", "concierge", "ops", "swarms"];
 const BOARD_HELP: &str = "Reply *in a question's thread* to answer it; `wake` there resumes the agent.";
-const NO_SWARMS: &str = "Swarm slots are not in this build yet.";
+const NO_SWARMS: &str = "Swarm slots need the Slack bridge's client (this bot has none).";
+const SWARM_USAGE: &str = "Usage: `swarm new <name> <folder> <objective>` · `swarm approve <slot> [members=N hours=H cadence=M]` · `swarm end <slot>` · `swarm reset <slot>`";
 
 /// (area, command word, help line); the help line is None for a command that is only a reply (`yes`).
 const TABLE: [(&str, &str, Option<&str>); 10] = [
@@ -36,6 +38,8 @@ pub struct Commands {
     bot: String,
     /// `agent forget` waits for a `yes` within five minutes.
     pending: Mutex<Option<(String, Instant)>>,
+    /// The swarm slots, on the bot that has the swarms area.
+    swarm: Option<Arc<Swarms>>,
 }
 
 fn warn(r: &anyhow::Error) -> String {
@@ -53,7 +57,12 @@ fn word(text: &str, n: usize) -> String {
 
 impl Commands {
     pub fn new(areas: &[String], john: &str, bot: &str) -> Commands {
-        Commands { areas: areas.to_vec(), john: john.into(), bot: bot.into(), pending: Mutex::new(None) }
+        Commands { areas: areas.to_vec(), john: john.into(), bot: bot.into(), pending: Mutex::new(None), swarm: None }
+    }
+
+    pub fn with_swarm(mut self, s: Arc<Swarms>) -> Commands {
+        self.swarm = Some(s);
+        self
     }
 
     fn has(&self, word: &str) -> bool {
@@ -96,8 +105,36 @@ impl Commands {
             "status" => self.status(db),
             "update" => self.update(text),
             "governor" => self.governor(db, text),
-            _ => NO_SWARMS.to_string(),
+            "swarms" => self.swarm.as_ref().map(|s| s.list(db)).unwrap_or_else(|| NO_SWARMS.to_string()),
+            _ => self.swarm_cmd(db, text),
         })
+    }
+
+    fn swarm_cmd(&self, db: &Db, text: &str) -> String {
+        let Some(s) = &self.swarm else { return NO_SWARMS.into() };
+        if let Some(m) = Regex::new(r#"(?is)^swarm\s+new\s+(\S+)\s+("[^"]+"|\S+)\s+(\S.*)$"#).unwrap().captures(text) {
+            return s.new_swarm(db, &m[1], m[2].trim_matches('"'), m[3].trim());
+        }
+        let Some(m) = Regex::new(r"(?i)^swarm\s+(approve|end|reset)\s+(\d+)((?:\s+\w+=[\d.]+)*)\s*$").unwrap().captures(text) else { return SWARM_USAGE.into() };
+        let (verb, n) = (m[1].to_lowercase(), m[2].parse::<i64>().unwrap_or(0));
+        let (mut members, mut hours, mut cadence) = (None, None, None);
+        for o in m[3].split_whitespace() {
+            let (k, v) = o.split_once('=').unwrap_or(("", ""));
+            let ok = match (verb.as_str(), k.to_lowercase().as_str()) {
+                ("approve", "members") => v.parse().map(|x| members = Some(x)).is_ok(),
+                ("approve", "hours") => v.parse().map(|x| hours = Some(x)).is_ok(),
+                ("approve", "cadence") => v.parse().map(|x| cadence = Some(x)).is_ok(),
+                _ => false,
+            };
+            if !ok {
+                return SWARM_USAGE.into();
+            }
+        }
+        match verb.as_str() {
+            "approve" => s.approve(db, n, members, hours, cadence),
+            "end" => s.end(db, n),
+            _ => s.reset(db, n),
+        }
     }
 
     fn agents(&self, db: &Db) -> String {

@@ -228,7 +228,7 @@ fn phone_commands_run_only_for_john_and_only_in_the_bots_areas() {
     std::env::remove_var("AGENTDESK_CONCIERGE_FOLDER");
     let status = cmds.handle(&e.db, "status", Some(JOHN)).unwrap();
     assert!(status.contains("*Slack* down") && status.contains("*Open questions* 0"), "{status}");
-    assert!(cmds.handle(&e.db, "swarms", Some(JOHN)).unwrap().contains("not in this build"));
+    assert!(cmds.handle(&e.db, "swarms", Some(JOHN)).unwrap().contains("need the Slack bridge"));
     let only_agents = Commands::new(&["agents".to_string()], JOHN, "Helper");
     assert!(only_agents.handle(&e.db, "concierge", Some(JOHN)).is_none(), "another bot's area");
     assert!(!only_agents.help().contains("concierge"));

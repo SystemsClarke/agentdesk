@@ -32,7 +32,9 @@ mod sessions;
 mod slack;
 mod slack_cmd;
 mod slackfmt;
+mod slots;
 mod supervisor;
+mod swarm;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
@@ -45,6 +47,8 @@ mod tests_governor;
 mod tests_identities;
 #[cfg(test)]
 mod tests_slack;
+#[cfg(test)]
+mod tests_swarm;
 mod tools;
 mod tools_gen;
 mod tui;

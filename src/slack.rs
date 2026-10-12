@@ -44,14 +44,23 @@ impl Web {
         Web { token: token.trim().to_string() }
     }
 
-    fn call(&self, method: &str, token: &str, body: &Value) -> Result<Value> {
+    pub fn call(&self, method: &str, token: &str, body: &Value) -> Result<Value> {
         for attempt in 0..2 {
-            let r =
-                ureq::post(&format!("https://slack.com/api/{method}")).set("Authorization", &format!("Bearer {token}")).timeout(Duration::from_secs(30)).send_json(body.clone());
+            let req = ureq::post(&format!("https://slack.com/api/{method}")).set("Authorization", &format!("Bearer {token}")).timeout(Duration::from_secs(30));
+            // chat.* takes JSON (blocks); the rest of the Web API is happiest with a form
+            let r = if method.starts_with("chat.") {
+                req.send_json(body.clone())
+            } else {
+                let pairs: Vec<(String, String)> = body
+                    .as_object()
+                    .map(|o| o.iter().map(|(k, v)| (k.clone(), v.as_str().map(String::from).unwrap_or_else(|| v.to_string().trim_matches('"').to_string()))).collect())
+                    .unwrap_or_default();
+                req.send_form(&pairs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect::<Vec<_>>())
+            };
             match r {
                 Ok(resp) => {
                     let v: Value = resp.into_json()?;
-                    return if v["ok"] == json!(true) { Ok(v) } else { Err(anyhow!("slack {method}: {}", v["error"].as_str().unwrap_or("not ok"))) };
+                    return if v["ok"] == json!(true) { Ok(v) } else { Err(SlackError(v["error"].as_str().unwrap_or("not_ok").to_string()).into()) };
                 }
                 Err(ureq::Error::Status(429, resp)) if attempt == 0 => {
                     std::thread::sleep(Duration::from_secs(resp.header("Retry-After").and_then(|s| s.parse().ok()).unwrap_or(5).min(60)));
@@ -60,6 +69,34 @@ impl Web {
             }
         }
         Err(anyhow!("slack {method}: rate limited"))
+    }
+}
+
+/// Slack answered `ok: false`: its error code (`missing_scope`, `channel_not_found`, ...).
+#[derive(Debug)]
+pub struct SlackError(pub String);
+
+impl std::fmt::Display for SlackError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "slack: {}", self.0)
+    }
+}
+
+impl std::error::Error for SlackError {}
+
+/// Slack's error code in `e`, if it is one.
+pub fn slack_error(e: &anyhow::Error) -> Option<&str> {
+    e.downcast_ref::<SlackError>().map(|s| s.0.as_str())
+}
+
+/// Any Web API method with this bot's token (the swarm slots use channels and history).
+pub trait Api: Send + Sync {
+    fn api(&self, method: &str, body: &Value) -> Result<Value>;
+}
+
+impl Api for Web {
+    fn api(&self, method: &str, body: &Value) -> Result<Value> {
+        self.call(method, &self.token, body)
     }
 }
 
@@ -483,10 +520,17 @@ pub fn spawn(stop: Arc<AtomicBool>) {
     let Some(lock) = lock_file() else { return };
     let john = setting("slack_user").as_str().unwrap_or(DEFAULT_JOHN).to_string();
     let mut bridge = None;
+    let mut swarms: Vec<Arc<crate::swarm::Swarms>> = vec![];
     for bot in bots {
         let web: Arc<dyn Chat> = Arc::new(Web::new(&token(&bot.creds, "bot-token.txt").unwrap_or_default()));
         let app = token(&bot.creds, "app-token.txt").unwrap_or_default();
-        let cmds = Commands::new(&bot.areas, &john, &bot.name);
+        let mut cmds = Commands::new(&bot.areas, &john, &bot.name);
+        if bot.areas.iter().any(|a| a == "swarms") {
+            let api: Arc<dyn Api> = Arc::new(Web::new(&token(&bot.creds, "bot-token.txt").unwrap_or_default()));
+            let sw = Arc::new(crate::swarm::Swarms::new(api, &john, paths::data_dir().join("swarm_state.json")));
+            swarms.push(sw.clone());
+            cmds = cmds.with_swarm(sw);
+        }
         let b = bot
             .areas
             .iter()
@@ -508,9 +552,14 @@ pub fn spawn(stop: Arc<AtomicBool>) {
         while !stop.load(Ordering::Relaxed) {
             if last.is_none_or(|t| t.elapsed() >= POLL) {
                 last = Some(Instant::now());
-                if let (Some(db), Some(b)) = (&db, &bridge) {
-                    if let Err(e) = b.poll(db) {
-                        paths::log("WARN", &format!("slack: poll error: {}", crate::db::anyhow_msg(&e)));
+                if let Some(db) = &db {
+                    if let Some(b) = &bridge {
+                        if let Err(e) = b.poll(db) {
+                            paths::log("WARN", &format!("slack: poll error: {}", crate::db::anyhow_msg(&e)));
+                        }
+                    }
+                    for sw in &swarms {
+                        crate::swarm::pass(sw, db);
                     }
                 }
                 heartbeat(bridge.as_ref().and_then(|b| b.last_relay.lock().ok().and_then(|l| l.clone())));

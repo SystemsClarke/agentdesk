@@ -605,7 +605,7 @@ pub fn summary(db: &Db, name: &str) -> Result<String> {
 }
 
 /// A number as the original printed it: integers without a decimal point.
-fn num(v: &Value) -> String {
+pub fn num(v: &Value) -> String {
     match v.as_f64() {
         Some(f) if f == f.trunc() && f.abs() < 1e15 => format!("{}", f as i64),
         Some(f) => format!("{f}"),

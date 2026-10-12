@@ -167,3 +167,21 @@ pub fn base64_decode(text: &str) -> Option<Vec<u8>> {
     }
     Some(out)
 }
+
+/// Types `text` into a running session through the supervisor's attach endpoint, then presses Enter 300 ms later (text and Enter in one
+/// write read as a paste). For other processes (the Slack bridge) that do not own the session host.
+pub fn type_into(name: &str, text: &str) -> Result<()> {
+    let (port, key) = read_addr().ok_or_else(|| anyhow::anyhow!("no supervisor is running"))?;
+    let mut conn = TcpStream::connect(("127.0.0.1", port))?;
+    conn.set_read_timeout(Some(std::time::Duration::from_secs(5)))?;
+    conn.write_all(format!("ATTACH {key} {name} 160 40\n").as_bytes())?;
+    let mut reply = String::new();
+    BufReader::new(conn.try_clone()?).read_line(&mut reply)?;
+    if !reply.starts_with("OK") {
+        anyhow::bail!("{}", reply.trim().trim_start_matches("ERR "));
+    }
+    conn.write_all(format!("INPUT {}\n", base64_encode(text.as_bytes())).as_bytes())?;
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    conn.write_all(format!("INPUT {}\nDETACH\n", base64_encode(b"\r")).as_bytes())?;
+    Ok(())
+}
