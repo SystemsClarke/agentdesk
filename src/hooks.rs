@@ -30,7 +30,13 @@ pub fn run(db: &Db, event: &str, input: &Value) -> String {
     match event {
         "session-start" => context("SessionStart", &(replies(db, sid) + &briefing(db))),
         "context" => context("PostToolUse", &(replies(db, sid) + &phoenix(sid, transcript))),
-        "stop" => stop(db, sid, transcript, input["stop_hook_active"].as_bool().unwrap_or(false)),
+        "stop" => {
+            let result = stop(db, sid, transcript, input["stop_hook_active"].as_bool().unwrap_or(false));
+            if !result.contains("\"block\"") {
+                crate::identities::turn_ended(db, sid); // the turn really ends: a session that passed the torch may now be replaced
+            }
+            result
+        }
         _ => String::new(),
     }
 }

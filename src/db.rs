@@ -89,7 +89,7 @@ CREATE TABLE IF NOT EXISTS usage_samples (id INTEGER PRIMARY KEY AUTOINCREMENT, 
 CREATE TABLE IF NOT EXISTS identities (name TEXT PRIMARY KEY COLLATE NOCASE, folder TEXT NOT NULL, charter TEXT, host TEXT NOT NULL DEFAULT 'local',
     claude_session_id TEXT, pid INTEGER, state TEXT NOT NULL DEFAULT 'stopped', autostart INTEGER NOT NULL DEFAULT 0,
     created_ts TEXT NOT NULL, updated_ts TEXT NOT NULL, generation INTEGER NOT NULL DEFAULT 1, phoenix_msg INTEGER,
-    model TEXT NOT NULL DEFAULT 'sonnet', running_model TEXT);
+    model TEXT NOT NULL DEFAULT 'sonnet', running_model TEXT, phoenix_go INTEGER NOT NULL DEFAULT 0, wake_prompt TEXT);
 CREATE TABLE IF NOT EXISTS phoenix_chain (identity TEXT NOT NULL COLLATE NOCASE, generation INTEGER NOT NULL, claude_session_id TEXT,
     handoff_msg INTEGER, ts TEXT NOT NULL, PRIMARY KEY (identity, generation));
 CREATE TABLE IF NOT EXISTS goals (name TEXT PRIMARY KEY COLLATE NOCASE, objective TEXT NOT NULL, hypothesis TEXT, measure_cmd TEXT,
@@ -216,6 +216,8 @@ impl Db {
         self.add_column("identities", "phoenix_msg", "INTEGER")?;
         self.add_column("identities", "model", "TEXT NOT NULL DEFAULT 'sonnet'")?;
         self.add_column("identities", "running_model", "TEXT")?;
+        self.add_column("identities", "wake_prompt", "TEXT")?; // John's reply, for a stopped identity to start with (the Rust build's own column)
+        self.add_column("identities", "phoenix_go", "INTEGER NOT NULL DEFAULT 0")?; // the turn that passed the torch has ended (the Rust build's own column)
         self.add_column("goals", "standing", "INTEGER NOT NULL DEFAULT 0")?;
         self.add_column("goal_members", "work_id", "INTEGER")?;
         for tier in ["haiku", "sonnet", "opus"] {

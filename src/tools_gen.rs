@@ -256,6 +256,15 @@ row; you get the existing one back with created=false."####,
         r####"{"type": "object", "properties": {"pr_url": {"type": "string"}, "thread_id": {"type": "integer"}, "note": {"type": "string"}, "author": {"type": "string"}}, "required": ["pr_url"]}"####,
     ),
     (
+        "retire",
+        r####"For a session the daemon runs (an identity): like typing /exit. Call it when your work is
+done, or when John asks you to retire. Your session is ended immediately and its
+slot goes back to the pool. Nothing is lost: John's reply on a
+thread you asked on, or the next wake, starts you again on the same
+conversation. Post what you did first; call retire last, then stop."####,
+        r####"{"type": "object", "properties": {}, "required": []}"####,
+    ),
+    (
         "propose_permission_rule",
         r####"Propose a Claude Code permission rule for John to approve. Use it when the auto-mode classifier refuses something John asked you to do,
 instead of working around the refusal: say what the rule is (for example `Bash(python tools/trigger_pipeline.py:*)` or `mcp__server__tool`),

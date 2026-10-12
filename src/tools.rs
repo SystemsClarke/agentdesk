@@ -159,6 +159,10 @@ fn dispatch(db: &Db, c: &Caller, tool: &str, a: &Args) -> Result<Value> {
                 None => db.start_thread("discussion", &format!("bio: {who}"), &who, AGENT, &note, Some(&meta), None)?,
             };
             deliver_acks(db, &who, c);
+            // An identity's own session: remember which message holds its handoff; the Stop hook says when the turn is over.
+            if let (Some(name), Some(sid)) = (c.env_author.as_deref().filter(|_| std::env::var_os("AGENTDESK_IDENTITY").is_some()), c.session_id.as_deref()) {
+                crate::identities::torch_passed(db, name, sid, bio, &who);
+            }
             Ok(ok(json!({"name": who, "updated_ts": ts, "path": null, "bio_thread_id": bio})))
         }
         "answer_thread" => {
@@ -201,6 +205,10 @@ fn dispatch(db: &Db, c: &Caller, tool: &str, a: &Args) -> Result<Value> {
         }
         "request_merge" => request_merge(db, c, a),
         "propose_permission_rule" => crate::permissions::propose(db, c, a.0),
+        "retire" => match (std::env::var("AGENTDESK_IDENTITY").ok().filter(|n| !n.is_empty()), c.session_id.as_deref()) {
+            (Some(name), Some(_)) => crate::identities::retire(db, &name),
+            _ => err("retire is for sessions the daemon runs: an identity's own"),
+        },
         _ => err(format!("no such tool: {tool}")),
     }
 }

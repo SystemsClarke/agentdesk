@@ -11,6 +11,7 @@
 mod backup;
 mod db;
 mod hooks;
+mod identities;
 mod identity;
 mod jobs;
 mod mcp;
@@ -22,8 +23,12 @@ mod paths;
 mod permissions;
 mod prs;
 mod service;
+mod sessions;
+mod supervisor;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_identities;
 mod tools;
 mod tools_gen;
 mod tui;
@@ -55,6 +60,11 @@ enum Cmd {
     Hook { event: String },
     /// Block until John replies on the thread, then print his reply.
     Wait { thread: i64 },
+    /// Identities: long-lived named Claude sessions the daemon keeps running (`identity new|list|start|stop|forget`).
+    Identity {
+        #[command(subcommand)]
+        cmd: IdentityCmd,
+    },
     /// Recurring jobs.
     Job {
         #[command(subcommand)]
@@ -77,6 +87,34 @@ enum Cmd {
     Migrate {
         #[arg(long)]
         apply: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum IdentityCmd {
+    /// Sign up an identity: `identity new <name> <folder> [--charter TEXT] [--model haiku|sonnet|opus] [--autostart]`.
+    New {
+        name: String,
+        folder: String,
+        #[arg(long)]
+        charter: Option<String>,
+        #[arg(long)]
+        model: Option<String>,
+        #[arg(long)]
+        autostart: bool,
+    },
+    List,
+    /// Ask for it to run; the daemon starts it (resuming its conversation) when it has a slot.
+    Start {
+        name: String,
+    },
+    /// Ask for it to stop; its conversation is kept.
+    Stop {
+        name: String,
+    },
+    /// Stop it and remove it from the list; its conversation stays on disk.
+    Forget {
+        name: String,
     },
 }
 
@@ -161,6 +199,7 @@ fn real_main() -> Result<()> {
             Ok(())
         }
         Some(Cmd::Job { cmd }) => job(cmd),
+        Some(Cmd::Identity { cmd }) => identity(cmd),
         Some(Cmd::Backup) => {
             println!("{}", backup::run(&open()?)?);
             Ok(())
@@ -247,4 +286,32 @@ fn setup() {
     println!("{}\n", serde_json::to_string_pretty(&cfg).unwrap());
     println!("3. Optional, the usage meter: set the status line command to `\"{exe}\" usage-feed`.");
     println!("4. Open the window with `agentdesk`; keep `agentdesk daemon` running (or the window open) for toasts and recurring jobs.");
+}
+
+fn identity(cmd: IdentityCmd) -> Result<()> {
+    let d = open()?;
+    let (row, note) = match cmd {
+        IdentityCmd::New { name, folder, charter, model, autostart } => (identities::create(&d, &name, &folder, charter.as_deref(), model.as_deref(), autostart)?, false),
+        IdentityCmd::List => {
+            for r in identities::list(&d)? {
+                println!(
+                    "{:<24} {:<8} gen {:<3} {:<7} {}",
+                    r["name"].as_str().unwrap_or(""),
+                    r["state"].as_str().unwrap_or(""),
+                    r["generation"].as_i64().unwrap_or(1),
+                    r["model"].as_str().unwrap_or(""),
+                    r["folder"].as_str().unwrap_or("")
+                );
+            }
+            return Ok(());
+        }
+        IdentityCmd::Start { name } => (identities::start(&d, &name)?, true),
+        IdentityCmd::Stop { name } => (identities::stop(&d, &name)?, true),
+        IdentityCmd::Forget { name } => (identities::forget(&d, &name)?, false),
+    };
+    println!("{}", serde_json::to_string_pretty(&row)?);
+    if note && !supervisor::running() {
+        eprintln!("note: no supervisor is running, so nothing will act on this yet. Start `agentdesk daemon` (or the window).");
+    }
+    Ok(())
 }
