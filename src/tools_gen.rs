@@ -285,7 +285,7 @@ measured."####,
         "member_spawn",
         r####"For a running goal's lead: start a member identity <goal>-<name> with one
 small task (model haiku, sonnet or opus; sonnet by default). It starts when
-the session pool allows (the goal's max_members, the session ceiling) and
+the session pool allows (the goal's max_members, its share, the ceiling) and
 queues until then. The member
 hands off with pass_the_torch or retires with member_done. work_id (a Work to
 Hire item the lead has claimed) hands that claim to the member, which then
@@ -300,11 +300,13 @@ thread, wakes the lead, and retires this identity (its session ends)."####,
     ),
     (
         "retire",
-        r####"For a session the daemon runs (an identity): like typing /exit. Call it when your work is
-done, or when John asks you to retire. Your session is ended immediately and its
+        r####"For a session the core runs (an identity, a goal's lead or member, or a session
+started from AgentDesk's window): like typing /exit. Call it when your work is
+done, or when John asks you to retire. Your session is killed immediately and its
 slot goes back to the pool. Nothing is lost: John's reply on a
-thread you asked on, or the next wake, starts you again on the same
-conversation. Post what you did first; call retire last, then stop."####,
+thread you asked on, or the core's next wake, starts you again on the same
+conversation. A goal member is retired for good, as with member_done. Post what
+you did first; call retire last, then stop."####,
         r####"{"type": "object", "properties": {}, "required": []}"####,
     ),
     (

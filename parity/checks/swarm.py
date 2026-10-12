@@ -111,7 +111,27 @@ def _phoenix(b):
 
 @feature("phoenix.rate-limit", "swarm", "At most one Phoenix restart per identity per 2 minutes: a handoff inside that window just ends the turn", "docs/ui-api.md Phoenix")
 def _phoenix_rate(b):
-    raise Missing("needs phoenix.handoff-restart first")
+    p, log = up(b)
+    ident(b)
+    b.need("ui:identity_start", {"name": "builder"})
+    wait_for(lambda: launches(log), 8, what="start")
+
+    def handoff(note):
+        sid = b.sql("SELECT claude_session_id FROM identities")[0]["claude_session_id"]
+        env = {"AGENTDESK_IDENTITY": "builder", "AGENTDESK_AUTHOR": "builder", "CLAUDE_CODE_SESSION_ID": sid, "CLAUDECODE": "1"}
+        m = b.mcp(env=env)
+        m.initialize()
+        m.call("pass_the_torch", {"handoff": note})
+        m.close()
+        b.run("hook", "stop", input=json.dumps({"session_id": sid}), env=env)
+
+    handoff("first")
+    wait_for(lambda: b.sql("SELECT generation FROM identities")[0]["generation"] == 2, 15, what="generation 2")
+    wait_for(lambda: len(launches(log)) >= 2, 10, what="the successor")
+    handoff("second, inside two minutes")
+    time.sleep(6)
+    assert b.sql("SELECT generation FROM identities")[0]["generation"] == 2, "a second restart inside 2 minutes is refused: the handoff just ends the turn"
+    assert b.sql("SELECT COUNT(*) n FROM phoenix_chain")[0]["n"] == 1
 
 
 @feature("phoenix.state-file", "swarm", "Each identity has state/<name>.md edited in place; the chain charter says so; the session starts with --add-dir for it; the successor's prompt carries the file (cut at 12,000 chars; phoenix_state_file:false removes it)", "phoenix.md")
@@ -138,17 +158,66 @@ def _wakeident(b):
 
 @feature("identity.adopt-folders", "swarm", "Any agent's last Claude Code session (the sessions table) is adopted as an identity of the same name, in its folder, on wake", "docs/ui-api.md ui:wake")
 def _adoptwake(b):
-    raise Missing("needs identity.wake first")
+    p, log = up(b)
+    proj = os.path.join(b.home, ".claude", "projects", "p")
+    os.makedirs(proj, exist_ok=True)
+    open(os.path.join(proj, "sess-scout.jsonl"), "w").write(json.dumps({"type": "user", "cwd": b.work}) + "\n")
+    tid = b.tool("ask_human", {"subject": "Q", "body": "Go?", "author": "scout"}, session="sess-scout")["thread_id"]
+    b.sql("UPDATE sessions SET cwd=? WHERE author='scout'", (b.work,))
+    b.need("ui:reply", {"thread_id": tid, "body": "yes"})
+    d = b.need("ui:wake", {"thread_id": tid})
+    assert d["said"].startswith("woke scout")
+    row = b.sql("SELECT folder, claude_session_id FROM identities WHERE name='scout'")[0]
+    assert row["folder"] == b.work and row["claude_session_id"] == "sess-scout"
+    run = wait_for(lambda: launches(log), 8, what="the resumed session")[0]["argv"]
+    assert "--resume" in run and "sess-scout" in run
 
 
 @feature("session.headless-env", "swarm", "A session starts with CLAUDE*, AGENTDESK_SESSION and AGENTDESK_AUTHOR dropped and AGENTDESK_HEADLESS=<name> set", "docs/ui-api.md ui:session_start")
 def _headless(b):
-    raise Missing("needs ui.session_start first")
+    p = b.spawn("daemon")
+    time.sleep(1)
+    out = os.path.join(b.work, "env.txt")
+    script = make_stub(b.stubs, "agent", "import os,time\nopen(%r,'w').write(repr(sorted(k for k in os.environ if k.startswith(('CLAUDE','AGENTDESK')))))\ntime.sleep(20)\n" % out)
+    b.need("ui:session_start", {"name": "s1", "folder": b.work, "command": script}, env={"CLAUDE_CODE_SESSION_ID": "x", "CLAUDECODE": "1", "AGENTDESK_AUTHOR": "leak", "AGENTDESK_SESSION": "leak"})
+    seen = wait_for(lambda: os.path.exists(out) and open(out).read(), 8, what="the session's environment")
+    assert "'CLAUDE" not in seen and "AGENTDESK_AUTHOR" not in seen and "AGENTDESK_SESSION" not in seen and "AGENTDESK_HEADLESS" in seen, seen
 
 
 @feature("session.attach-replay", "swarm", "A viewer gets the last 256 KB of output first, then everything new; one that falls 256 chunks behind is dropped with session.overflow", "docs/ui-api.md ui:attach")
 def _replay(b):
-    raise Missing("needs session attach")
+    import base64
+    import socket
+    p = b.spawn("daemon")
+    time.sleep(1)
+    script = make_stub(b.stubs, "agent", "import sys,time\nprint('hello from the session', flush=True)\nfor line in sys.stdin:\n    print('echo:' + line.strip(), flush=True)\n")
+    b.need("ui:session_start", {"name": "s1", "folder": b.work, "command": script})
+    time.sleep(1.5)
+    port, key = open(os.path.join(b.data, "supervisor.addr")).read().split()
+
+    def viewer(cols=100, rows=30):
+        c = socket.create_connection(("127.0.0.1", int(port)), timeout=5)
+        f = c.makefile("rwb", buffering=0)
+        f.write(("ATTACH %s plain:s1 %d %d\n" % (key, cols, rows)).encode())
+        assert f.readline().strip() == b"OK"
+        return c, f
+
+    def read_until(c, needle):
+        got = b""
+        c.settimeout(5)
+        while needle not in got:
+            got += c.recv(4096)
+        return got
+
+    c1, f1 = viewer()
+    read_until(c1, b"hello from the session")
+    c2, f2 = viewer()
+    read_until(c2, b"hello from the session")
+    f1.write(("INPUT %s\n" % base64.b64encode(b"ping\r").decode()).encode())
+    read_until(c2, b"echo:ping")
+    bad = socket.create_connection(("127.0.0.1", int(port)), timeout=5)
+    bad.sendall(b"ATTACH wrongkey plain:s1 80 24\n")
+    assert bad.makefile("rb").readline().startswith(b"ERR")
 
 
 # ---- goals
@@ -212,12 +281,41 @@ def _spawn(b):
 
 @feature("goal.member-done", "swarm", "member_done posts the summary, forgets the member, wakes the lead; an item it held but did not complete goes back to the lead", "docs/ui-api.md Goals")
 def _mdone(b):
-    raise Missing("needs goal.member-spawn first")
+    goal(b)
+    b.need("ui:goal_propose", {"name": "g1", "hypothesis": "h", "measure_cmd": "echo 5", "success": "value < 3"})
+    b.need("ui:goal_approve", {"name": "g1"})
+    lead = {"AGENTDESK_IDENTITY": "g1-lead", "AGENTDESK_AUTHOR": "g1-lead", "CLAUDE_CODE_SESSION_ID": "lead", "CLAUDECODE": "1"}
+    m = b.mcp(env=lead)
+    m.initialize()
+    m.call("member_spawn", {"goal": "g1", "name": "m1", "task": "small", "model": "haiku"})
+    m.close()
+    member = {"AGENTDESK_IDENTITY": "g1-m1", "AGENTDESK_AUTHOR": "g1-m1", "CLAUDE_CODE_SESSION_ID": "mem", "CLAUDECODE": "1"}
+    m = b.mcp(env=member)
+    m.initialize()
+    m.call("member_done", {"summary": "I tidied the cache."})
+    m.close()
+    assert b.sql("SELECT COUNT(*) n FROM goal_members")[0]["n"] == 0
+    tid = b.sql("SELECT thread_id FROM goals WHERE name='g1'")[0]["thread_id"]
+    assert any("I tidied the cache." in x["body"] for x in b.sql("SELECT body FROM messages WHERE thread_id=?", (tid,)))
+    assert not b.sql("SELECT * FROM identities WHERE name='g1-m1'"), "the member is forgotten"
 
 
 @feature("goal.work-returns", "swarm", "When a goal ends, work items its lead or members still hold go back on the queue, open", "docs/ui-api.md Goals")
 def _wreturn(b):
-    raise Missing("needs goal.member-spawn first")
+    goal(b)
+    b.need("ui:goal_propose", {"name": "g1", "hypothesis": "h", "measure_cmd": "echo 5", "success": "value < 3"})
+    b.need("ui:goal_approve", {"name": "g1"})
+    wid = b.tool("post_work", {"subject": "job", "body": "do", "author": "boss", "claim": "anyone"})["thread_id"]
+    lead = {"AGENTDESK_IDENTITY": "g1-lead", "AGENTDESK_AUTHOR": "g1-lead", "CLAUDE_CODE_SESSION_ID": "lead", "CLAUDECODE": "1"}
+    m = b.mcp(env=lead)
+    m.initialize()
+    assert m.call("claim_work", {"thread_id": wid})["claimed"] is True
+    m.call("member_spawn", {"goal": "g1", "name": "m1", "task": "the job", "work_id": wid})
+    m.close()
+    assert b.sql("SELECT json_extract(meta,'$.assignee') a FROM threads WHERE id=?", (wid,))[0]["a"] == "g1-m1", "the claim is handed to the member"
+    b.need("ui:goal_stop", {"name": "g1"})
+    t = b.sql("SELECT status, meta FROM threads WHERE id=?", (wid,))[0]
+    assert t["status"] == "open" and "assignee" not in (t["meta"] or ""), t
 
 
 @feature("goal.internal-measure", "swarm", "measure_cmd internal:open_work counts Work to Hire items open and not reserved (claim: anyone); standing goals idle at the line and never end", "docs/ui-api.md Goals")
@@ -231,7 +329,14 @@ def _internal(b):
 
 @feature("goal.lead-wake", "swarm", "A lead is woken by cadence with the goal summary typed into its session (or started with it as its prompt)", "docs/ui-api.md Goals")
 def _leadwake(b):
-    raise Missing("needs identity.wake first")
+    log = goal(b)
+    b.need("ui:goal_propose", {"name": "g1", "hypothesis": "h", "measure_cmd": "echo 5", "success": "value < 3"})
+    b.need("ui:goal_approve", {"name": "g1", "cadence_minutes": 1})
+    b.need("ui:identity_stop", {"name": "g1-lead"})
+    n = len(launches(log))
+    b.sql("UPDATE goals SET woke_ts='2020-01-01T00:00:00+00:00' WHERE name='g1'")
+    run = wait_for(lambda: len(launches(log)) > n and launches(log)[-1], 45, what="the lead to be woken")["argv"]
+    assert "g1" in " ".join(run) and "reduce the count" in " ".join(run), "started with the goal summary as its prompt"
 
 
 @feature("goal.permissions", "swarm", "goal_propose is for the lead or John; approve/budget/stop are John-only or the lead as documented", "docs/ui-api.md Goals")
@@ -243,7 +348,11 @@ def _gperm(b):
 
 @feature("concierge.drains-work", "swarm", "The Concierge (a standing goal) keeps Work to Hire drained: its lead claims open items and hands them to a small swarm", "docs/ui-api.md ui:concierge")
 def _drain(b):
-    raise Missing("needs the goal machinery first")
+    p, log = up(b)
+    wid = b.tool("post_work", {"subject": "Build it", "body": "please", "author": "boss"})["thread_id"]
+    b.need("ui:concierge", {"on": True})
+    wait_for(lambda: b.sql("SELECT status FROM threads WHERE id=?", (wid,))[0]["status"] == "claimed", 40, what="the dispatcher to hand the item to a worker")
+    assert b.sql("SELECT COUNT(*) n FROM goal_members WHERE goal='concierge'")[0]["n"] >= 1
 
 
 # ---- governor
@@ -269,7 +378,18 @@ def _forecast(b):
 
 @feature("governor.caps-and-tiers", "governor", "Caps (sessions, swarms x members) from the allowed rate / per-session burn; five_hour>=90 recommends no swarm sessions; step-down tiers at <1 session or 5h>=75", "governor.md Forecast")
 def _caps(b):
-    raise Missing("needs governor.forecast first")
+    import datetime as dt
+    b.need("ui:governor")
+    now = dt.datetime.now(dt.timezone.utc)
+    reset = (now + dt.timedelta(days=3)).strftime("%Y-%m-%dT%H:%M:%S+00:00")
+    for i in range(12):
+        t = (now - dt.timedelta(hours=11 - i)).strftime("%Y-%m-%dT%H:%M:%S+00:00")
+        b.sql("INSERT INTO usage_samples (ts, weekly_pct, weekly_reset_ts, five_hour_pct, swarm_sessions) VALUES (?,?,?,?,0)", (t, 10 + i * 0.2, reset, 95 if i == 11 else 10))
+    d = b.need("ui:governor")
+    assert d["caps"]["new_sessions"] == 0 and d["caps"]["total_sessions"] == 0, "five_hour >= 90: no swarm sessions at all: %s" % d["caps"]
+    b.sql("UPDATE usage_samples SET five_hour_pct=80 WHERE ts=(SELECT MAX(ts) FROM usage_samples)")
+    d = b.need("ui:governor")
+    assert d["models"]["step_down"] is True and d["models"]["member"] == "haiku", "five_hour >= 75: step down a tier: %s" % d["models"]
 
 
 @feature("governor.fail-closed", "governor", "A stale sample (>30 min) or two failed /usage probes fail closed: no new swarm session starts, and `reason` says why", "governor.md, ui-api.md ui:governor")
@@ -282,7 +402,21 @@ def _failclosed(b):
 
 @feature("governor.enforcement", "governor", "governor_enforce (default off): when on, sessions past the plan's total are queued/shed at the next start or 15 s tick; advisory logs what it would have done", "governor.md Enforcement")
 def _enforce(b):
-    raise Missing("needs governor.forecast first")
+    import datetime as dt
+    p, log = up(b)
+    now = dt.datetime.now(dt.timezone.utc)
+    reset = (now + dt.timedelta(days=3)).strftime("%Y-%m-%dT%H:%M:%S+00:00")
+    for i in range(12):
+        t = (now - dt.timedelta(minutes=55 - i * 5)).strftime("%Y-%m-%dT%H:%M:%S+00:00")
+        b.sql("INSERT INTO usage_samples (ts, weekly_pct, weekly_reset_ts, five_hour_pct, swarm_sessions) VALUES (?,?,?,?,0)", (t, 10, reset, 95))
+    b.need("ui:governor_enforce", {"on": False})
+    b.need("ui:goal_create", {"name": "g1", "objective": "o", "folder": b.work})
+    wait_for(lambda: b.sql("SELECT state FROM identities WHERE name='g1-lead'")[0]["state"] == "running", 15, what="advisory mode to start the lead anyway")
+    b.need("ui:identity_stop", {"name": "g1-lead"})
+    b.need("ui:governor_enforce", {"on": True})
+    b.need("ui:identity_start", {"name": "g1-lead"})
+    time.sleep(6)
+    assert b.sql("SELECT state FROM identities WHERE name='g1-lead'")[0]["state"] == "queued", "enforcing, the plan's cap of 0 holds the swarm lead queued"
 
 
 @feature("governor.pool-fair-share", "governor", "Goals split the swarm's part of the ceiling: lead first, then members round-robin, longest-waiting goal first; John's own identities answer only to max_sessions", "governor.md The session pool")
@@ -295,4 +429,14 @@ def _fair(b):
 
 @feature("governor.session-sampling", "governor", "Every reading is recorded in usage_samples with the running swarm session count and the per-tier counts (running_model)", "governor.md Samples")
 def _sampling(b):
-    raise Missing("needs the usage probe and the session host")
+    import datetime as dt
+    now = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S+00:00")
+    with open(os.path.join(b.data, "claude_usage.json"), "w") as f:
+        json.dump({"five_hour": {"used": 20, "resets_at": now}, "seven_day": {"used": 30, "resets_at": now}, "captured_ts": now}, f)
+    p, log = up(b)
+    row = wait_for(lambda: b.sql("SELECT * FROM usage_samples"), 15, what="a sample")[0]
+    assert row["weekly_pct"] == 30 and row["five_hour_pct"] == 20
+    for col in ("swarm_sessions", "haiku_sessions", "sonnet_sessions", "opus_sessions"):
+        assert col in row, col
+
+
