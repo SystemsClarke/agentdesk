@@ -441,3 +441,27 @@ fn a_snapshot_that_fails_the_integrity_check_is_set_aside() {
     assert_ne!(crate::backup::verify(&bad), "ok");
     assert!(!bad.exists() && dir.path().join("agentdesk-20261012-000001.db.corrupt").exists());
 }
+
+#[test]
+fn the_stop_hook_reads_only_what_is_new_and_waits_for_a_whole_line() {
+    use std::io::Write;
+    let (_d, db) = board();
+    let dir = tempfile::tempdir().unwrap();
+    let transcript = dir.path().join("incremental.jsonl");
+    let (edit, post) = (r#"{"message":{"content":[{"type":"tool_use","name":"Edit"}]}}"#, r#"{"message":{"content":[{"type":"tool_use","name":"mcp__agentdesk__post_message"}]}}"#);
+    std::fs::write(&transcript, "{\"type\":\"user\"}\n").unwrap();
+    let input = json!({"session_id": "S10", "stop_hook_active": false, "transcript_path": transcript.to_str().unwrap()});
+    let stop = || hooks::run(&db, "stop", &input);
+    assert_eq!(stop(), ""); // nothing edited yet
+
+    let mut f = std::fs::OpenOptions::new().append(true).open(&transcript).unwrap();
+    write!(f, "{}", &edit[..30]).unwrap(); // claude is mid-line: not read yet
+    assert_eq!(stop(), "");
+    writeln!(f, "{}", &edit[30..]).unwrap();
+    assert!(stop().contains("you changed files this session"), "the edit is found without rereading the start");
+    writeln!(f, "{post}").unwrap();
+    assert_eq!(stop(), "", "and the post that follows it clears the block");
+
+    std::fs::write(&transcript, format!("{edit}\n")).unwrap(); // shorter: a new transcript, read from the start
+    assert!(stop().contains("you changed files this session"));
+}
