@@ -139,8 +139,26 @@ enum Cmd {
         #[command(subcommand)]
         cmd: JobCmd,
     },
-    /// Snapshot the board and write a vault note per settled thread.
-    Backup,
+    /// Snapshot the board and write a vault note per settled thread (`--prune-dry-run` lists what thinning would delete).
+    Backup {
+        #[arg(long)]
+        json: bool,
+        #[arg(long)]
+        prune_dry_run: bool,
+        /// Only the snapshot: leave the vault alone (for an ad hoc run against a real board).
+        #[arg(long)]
+        skip_vault: bool,
+    },
+    /// Restore the board from a snapshot: a dry run unless --yes. `restore <archive> [--yes] [--force-newer] [--json]`.
+    Restore {
+        archive: std::path::PathBuf,
+        #[arg(long)]
+        yes: bool,
+        #[arg(long)]
+        force_newer: bool,
+        #[arg(long)]
+        json: bool,
+    },
     /// Check the merge list against GitHub now.
     CheckPrs,
     /// Claude Code status-line feed: writes claude_usage.json from the status-line JSON on stdin.
@@ -344,10 +362,25 @@ fn real_main() -> Result<()> {
         Some(Cmd::Attach { name }) => attach::client(&name),
         Some(Cmd::Governor { action }) => governor_cmd(action.as_deref()),
         Some(Cmd::Concierge { action, folder }) => concierge_cmd(action.as_deref(), folder),
-        Some(Cmd::Backup) => {
-            println!("{}", backup::run(&open()?)?);
+        Some(Cmd::Backup { json, prune_dry_run, skip_vault }) => {
+            if prune_dry_run {
+                println!("{}", backup::prune_dry_run());
+                return Ok(());
+            }
+            let out = backup::run_with(&open()?, skip_vault)?;
+            println!("{}", if json { serde_json::json!({"result": out}).to_string() } else { out });
             Ok(())
         }
+        Some(Cmd::Restore { archive, yes, force_newer, json }) => match backup::restore(&open()?, &archive, yes, force_newer, json) {
+            Ok(m) => {
+                println!("{m}");
+                Ok(())
+            }
+            Err(e) => {
+                println!("{}", db::anyhow_msg(&e));
+                std::process::exit(1);
+            }
+        },
         Some(Cmd::CheckPrs) => {
             println!("{} settled", prs::check(&open()?));
             Ok(())

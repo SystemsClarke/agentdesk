@@ -306,7 +306,10 @@ def _gitpush(b):
     for c in (["init", "-q"], ["remote", "add", "origin", remote], ["checkout", "-q", "-b", "main"]):
         subprocess.run(["git", "-C", v] + c, check=True)
     b.tool("post_message", {"channel": "discussion", "subject": "S", "body": "x", "author": "a"})
-    b.run("backup")
+    # the commit identity is the machine's own git config, or what AGENTDESK_GIT_AUTHOR_NAME/_EMAIL say (the original hard-coded claude[bot])
+    ident = {"AGENTDESK_GIT_AUTHOR_NAME": "claude[bot]", "AGENTDESK_GIT_AUTHOR_EMAIL": "209825114+claude[bot]@users.noreply.github.com",
+             "GIT_COMMITTER_NAME": "claude[bot]", "GIT_COMMITTER_EMAIL": "209825114+claude[bot]@users.noreply.github.com"}
+    b.run("backup", env=ident)
     st = json.load(open(os.path.join(b.data, "vault_state.json"))) if os.path.exists(os.path.join(b.data, "vault_state.json")) else None
     if not st:
         raise Missing("no vault_state.json: the vault is not committed and pushed")
@@ -324,7 +327,10 @@ def _restore(b):
     r = b.run("restore", snap, "--yes", "--force-newer")
     if r.returncode == 2 and "unrecognized" in r.stderr:
         raise Missing("no restore command")
-    assert [t["subject"] for t in b.sql("SELECT subject FROM threads")] == ["keep"]
+    subjects = [t["subject"] for t in b.sql("SELECT subject FROM threads")]
+    assert "keep" in subjects and "later" not in subjects, subjects
+    assert any(x.startswith("Database restored from ") for x in subjects), "a restore says so on the board"
+    assert len(os.listdir(os.path.join(b.data, "backups"))) >= 2, "the state it overwrote was snapshotted first"
 
 
 @feature("log.core-log", "ops", "Activity is logged to core.log in the data folder (acks delivered, jobs started, permission decisions, failures)", "README")
