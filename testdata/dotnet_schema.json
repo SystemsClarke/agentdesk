@@ -1,0 +1,204 @@
+{
+ "acks": [
+  "message_id",
+  "thread_id",
+  "agent",
+  "state",
+  "created_ts",
+  "noted_ts",
+  "settled_ts"
+ ],
+ "deliveries": [
+  "message_id",
+  "method",
+  "state",
+  "detail",
+  "ts"
+ ],
+ "experiments": [
+  "id",
+  "goal",
+  "n",
+  "change",
+  "owner",
+  "started_ts",
+  "measured_ts",
+  "value",
+  "verdict"
+ ],
+ "goal_members": [
+  "identity",
+  "goal",
+  "task",
+  "created_ts",
+  "work_id"
+ ],
+ "goals": [
+  "name",
+  "objective",
+  "hypothesis",
+  "measure_cmd",
+  "measure_folder",
+  "success",
+  "samples",
+  "max_members",
+  "max_hours",
+  "max_tokens",
+  "cadence_minutes",
+  "state",
+  "lead",
+  "thread_id",
+  "started_ts",
+  "woke_ts",
+  "created_ts",
+  "updated_ts",
+  "standing"
+ ],
+ "handoffs": [
+  "name",
+  "body",
+  "path",
+  "updated_ts",
+  "updated_by",
+  "torch_due"
+ ],
+ "identities": [
+  "name",
+  "folder",
+  "charter",
+  "host",
+  "claude_session_id",
+  "pid",
+  "state",
+  "autostart",
+  "created_ts",
+  "updated_ts",
+  "generation",
+  "phoenix_msg",
+  "model",
+  "running_model"
+ ],
+ "messages": [
+  "id",
+  "ts",
+  "thread_id",
+  "author",
+  "author_kind",
+  "body",
+  "reply_to",
+  "meta"
+ ],
+ "permission_proposals": [
+  "id",
+  "rule",
+  "scope",
+  "project_dir",
+  "reason",
+  "blocked",
+  "requested_by",
+  "thread_id",
+  "status",
+  "created_ts",
+  "decided_ts",
+  "reverted_ts",
+  "settings_path",
+  "backup"
+ ],
+ "phoenix_chain": [
+  "identity",
+  "generation",
+  "claude_session_id",
+  "handoff_msg",
+  "ts"
+ ],
+ "presence": [
+  "author",
+  "seen_ts"
+ ],
+ "pull_requests": [
+  "id",
+  "url",
+  "repo",
+  "number",
+  "title",
+  "requested_by",
+  "requested_ts",
+  "thread_id",
+  "state",
+  "checked_ts",
+  "settled_ts",
+  "last_error",
+  "notified_ts",
+  "source",
+  "triage",
+  "triage_ts"
+ ],
+ "receipts": [
+  "agent",
+  "thread_id",
+  "created_ts",
+  "message_id"
+ ],
+ "recurring_jobs": [
+  "name",
+  "folder",
+  "prompt",
+  "model",
+  "at",
+  "days",
+  "every_minutes",
+  "catch_up_minutes",
+  "enabled",
+  "next_run_ts",
+  "last_run_ts",
+  "last_status",
+  "runs",
+  "created_ts"
+ ],
+ "sessions": [
+  "author",
+  "session_id",
+  "cwd",
+  "pid",
+  "channels",
+  "seen_ts"
+ ],
+ "slots": [
+  "n",
+  "channel_id",
+  "channel_name",
+  "persona_name",
+  "persona_icon",
+  "goal",
+  "updated_ts"
+ ],
+ "threads": [
+  "id",
+  "created_ts",
+  "updated_ts",
+  "channel",
+  "subject",
+  "opened_by",
+  "status",
+  "meta"
+ ],
+ "usage_samples": [
+  "id",
+  "ts",
+  "weekly_pct",
+  "weekly_reset_ts",
+  "five_hour_pct",
+  "five_hour_reset_ts",
+  "swarm_sessions",
+  "haiku_sessions",
+  "sonnet_sessions",
+  "opus_sessions"
+ ],
+ "work_events": [
+  "id",
+  "work_id",
+  "ts",
+  "kind",
+  "body"
+ ]
+}

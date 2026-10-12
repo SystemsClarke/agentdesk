@@ -346,3 +346,18 @@ fn a_usage_sample_lands_in_the_originals_table_shape() {
     let r = db.row("SELECT weekly_pct, swarm_sessions, sonnet_sessions FROM usage_samples", &[]).unwrap().unwrap();
     assert_eq!((r["weekly_pct"].as_f64(), r["swarm_sessions"].as_i64(), r["sonnet_sessions"].as_i64()), (Some(41.5), Some(0), Some(0)));
 }
+
+/// `testdata/dotnet_schema.json` is every table and column of a live .NET board (dumped 2026-10-12 with `PRAGMA table_info`): a fresh
+/// Rust board must have all of them, so the two builds can open each other's boards and the backup/vault tools work on either.
+#[test]
+fn a_fresh_board_has_every_table_and_column_of_a_dotnet_board() {
+    let (_d, db) = board();
+    let golden: Value = serde_json::from_str(include_str!("../testdata/dotnet_schema.json")).unwrap();
+    for (table, cols) in golden.as_object().unwrap() {
+        let have: Vec<String> = db.rows(&format!("PRAGMA table_info({table})"), &[]).unwrap().iter().filter_map(|r| r["name"].as_str().map(String::from)).collect();
+        assert!(!have.is_empty(), "missing table {table}");
+        for c in cols.as_array().unwrap() {
+            assert!(have.iter().any(|h| h == c.as_str().unwrap()), "{table} is missing column {}", c);
+        }
+    }
+}

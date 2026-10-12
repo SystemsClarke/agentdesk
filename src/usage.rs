@@ -38,10 +38,8 @@ pub fn sample(db: &Db) {
         return;
     };
     let ts = crate::db::now_iso();
-    let _ = db.exec(
-        "INSERT OR REPLACE INTO usage_samples (ts, weekly_pct, five_hour_pct) VALUES (:ts, :w, :f)",
-        &[(":ts", &ts), (":w", &week), (":f", &r["five_hour_pct"].as_f64())],
-    );
+    let _ =
+        db.exec("INSERT OR REPLACE INTO usage_samples (ts, weekly_pct, five_hour_pct) VALUES (:ts, :w, :f)", &[(":ts", &ts), (":w", &week), (":f", &r["five_hour_pct"].as_f64())]);
 }
 
 /// Claude Code status-line feed: reads the status-line JSON on stdin, writes `claude_usage.json`, prints a short line.
