@@ -150,6 +150,7 @@ fn the_loop_sleeps_until_something_needs_it() {
 
 #[test]
 fn the_worker_brings_in_a_change_without_the_window_thread_waiting_for_it() {
+    let _env = crate::tests::ENV.lock().unwrap_or_else(|e| e.into_inner()); // what a refresh reads from the environment must not change under it
     let (d, mut a) = file_app(200);
     press(&mut a, 'd');
     let before = a.rows_of("discussion").len();
