@@ -21,6 +21,8 @@ mod governor;
 mod hooks;
 mod identities;
 mod identity;
+mod install;
+mod install_dotnet;
 mod jobs;
 mod mcp;
 mod migrate;
@@ -58,6 +60,7 @@ mod tests_slack_http;
 mod tests_swarm;
 mod tools;
 mod tools_gen;
+mod tray;
 mod tui;
 mod ui_api;
 mod update;
@@ -84,6 +87,11 @@ enum Cmd {
     Mcp,
     /// The terminal window.
     Tui,
+    /// The system tray / menu-bar icon: core status, open questions, open the window. `--self-test` prints the menu and icons and exits.
+    Tray {
+        #[arg(long)]
+        self_test: bool,
+    },
     /// The core: the one background process that owns sessions, jobs, the governor, the Concierge, Slack and toasts. Exits if one already runs.
     Daemon,
     /// The core: `core status` (default), `core start`, `core stop`, `core restart`.
@@ -207,10 +215,43 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// Time the window on a board and print JSON (reload, draw, markdown, keys, console bytes). Needs AGENTDESK_DATA to point at a COPY of a board.
+    #[command(hide = true)]
+    UiBench {
+        /// How many times each measurement is repeated (the median is reported).
+        #[arg(long, default_value_t = 15)]
+        runs: usize,
+        /// A short run (a few seconds): fewer repeats and shorter loop measurements.
+        #[arg(long)]
+        quick: bool,
+    },
     /// Check GitHub for a newer release; with --apply, download it and swap it in.
     Update {
         #[arg(long)]
         apply: bool,
+    },
+    /// Start the core (and the tray) at login: Run key (Windows), LaunchAgents (macOS), systemd user unit + autostart (Linux). Idempotent.
+    Install {
+        /// Register only the core, not the tray.
+        #[arg(long)]
+        no_tray: bool,
+        /// Windows: also move from the .NET app (quit it, migrate, repoint the backup task and PATH, start the core).
+        #[arg(long)]
+        from_dotnet: bool,
+        /// Say what would change, change nothing.
+        #[arg(long)]
+        dry_run: bool,
+        /// Print what is registered as JSON.
+        #[arg(long)]
+        status: bool,
+        /// Undo --from-dotnet from its saved record.
+        #[arg(long)]
+        rollback: bool,
+    },
+    /// Remove exactly what `install` registered.
+    Uninstall {
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Move a machine from the .NET AgentDesk: back up the board, point Claude Code at this binary. Dry run unless --apply.
     Migrate {
@@ -347,6 +388,7 @@ fn real_main() -> Result<()> {
         }
         Some(Cmd::Mcp) => mcp::serve(),
         Some(Cmd::Tui) => tui::run(),
+        Some(Cmd::Tray { self_test }) => tray::run(self_test),
         Some(Cmd::Daemon) => daemon::run_daemon(),
         Some(Cmd::Core { action }) => core_cmd(action.as_deref()),
         Some(Cmd::Hook { event }) => {
@@ -429,6 +471,8 @@ fn real_main() -> Result<()> {
             }
             Ok(())
         }
+        Some(Cmd::Install { no_tray, from_dotnet, dry_run, status, rollback }) => install::cmd_install(no_tray, from_dotnet, dry_run, status, rollback),
+        Some(Cmd::Uninstall { dry_run }) => install::cmd_uninstall(dry_run),
         Some(Cmd::Migrate { apply }) => {
             let home = paths::home_dir();
             println!("{}", migrate::run(apply, &home.join(".claude.json"), &paths::claude_settings())?);
@@ -437,6 +481,10 @@ fn real_main() -> Result<()> {
         Some(Cmd::Ui { request, args }) => std::process::exit(ui_api::run(&request, args.as_deref())),
         Some(Cmd::UiSnapshot { size, keys, json }) => {
             println!("{}", tui::snapshot(&size, &keys, json)?);
+            Ok(())
+        }
+        Some(Cmd::UiBench { runs, quick }) => {
+            println!("{}", tui::bench(runs.max(1), quick)?);
             Ok(())
         }
         Some(Cmd::UsageProbe) => {

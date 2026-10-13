@@ -9,18 +9,18 @@ fn app() -> (tempfile::TempDir, App) {
     (dir, App::with_db(db))
 }
 
-fn screen(app: &mut App, w: u16, h: u16) -> String {
+pub fn screen(app: &mut App, w: u16, h: u16) -> String {
     let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
     t.draw(|f| app.draw(f)).unwrap();
     let buf = t.backend().buffer().clone();
     (0..h).map(|y| (0..w).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>().trim_end().to_string()).collect::<Vec<_>>().join("\n")
 }
 
-fn key(c: KeyCode) -> KeyEvent {
+pub fn key(c: KeyCode) -> KeyEvent {
     KeyEvent::new(c, KeyModifiers::NONE)
 }
 
-fn press(app: &mut App, c: char) {
+pub fn press(app: &mut App, c: char) {
     app.on_key(key(KeyCode::Char(c)));
 }
 

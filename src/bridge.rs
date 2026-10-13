@@ -34,14 +34,31 @@ fn secs_env(name: &str, default: u64) -> Duration {
     Duration::from_secs(std::env::var(name).ok().and_then(|v| v.parse().ok()).unwrap_or(default))
 }
 
-/// Whether a process with this pid is alive.
+/// Whether a process with this pid is alive. On Windows this is a handle query, not a `tasklist` spawn: starting a process costs
+/// 300 ms or more on a managed machine, and this runs on every window refresh and every daemon pass.
 pub fn pid_alive(pid: i64) -> bool {
     if pid <= 0 {
         return false;
     }
-    if cfg!(windows) {
-        Command::new("tasklist").args(["/FI", &format!("PID eq {pid}"), "/NH"]).output().map(|o| String::from_utf8_lossy(&o.stdout).contains(&pid.to_string())).unwrap_or(false)
-    } else {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::Threading::{GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+        const STILL_ACTIVE: u32 = 259;
+        // SAFETY: plain FFI; the handle is closed before returning.
+        unsafe {
+            let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid as u32);
+            if h.is_null() {
+                return false;
+            }
+            let mut code = 0u32;
+            let ok = GetExitCodeProcess(h, &mut code) != 0;
+            CloseHandle(h);
+            ok && code == STILL_ACTIVE
+        }
+    }
+    #[cfg(not(windows))]
+    {
         Command::new("kill").args(["-0", &pid.to_string()]).stderr(Stdio::null()).status().map(|s| s.success()).unwrap_or(false)
     }
 }
