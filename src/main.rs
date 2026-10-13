@@ -191,6 +191,16 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// Time the window on a board and print JSON (reload, draw, markdown, keys, console bytes). Needs AGENTDESK_DATA to point at a COPY of a board.
+    #[command(hide = true)]
+    UiBench {
+        /// How many times each measurement is repeated (the median is reported).
+        #[arg(long, default_value_t = 15)]
+        runs: usize,
+        /// A short run (a few seconds): fewer repeats and shorter loop measurements.
+        #[arg(long)]
+        quick: bool,
+    },
     /// Check GitHub for a newer release; with --apply, download it and swap it in.
     Update {
         #[arg(long)]
@@ -420,6 +430,10 @@ fn real_main() -> Result<()> {
         Some(Cmd::Ui { request, args }) => std::process::exit(ui_api::run(&request, args.as_deref())),
         Some(Cmd::UiSnapshot { size, keys, json }) => {
             println!("{}", tui::snapshot(&size, &keys, json)?);
+            Ok(())
+        }
+        Some(Cmd::UiBench { runs, quick }) => {
+            println!("{}", tui::bench(runs.max(1), quick)?);
             Ok(())
         }
         Some(Cmd::UsageProbe) => {
