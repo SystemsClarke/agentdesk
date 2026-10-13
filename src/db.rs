@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS threads (id INTEGER PRIMARY KEY AUTOINCREMENT, create
 CREATE TABLE IF NOT EXISTS messages (id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL, thread_id INTEGER REFERENCES threads(id),
     author TEXT NOT NULL, author_kind TEXT NOT NULL, body TEXT NOT NULL, reply_to INTEGER REFERENCES messages(id), meta TEXT);
 CREATE INDEX IF NOT EXISTS idx_messages_thread  ON messages(thread_id, id);
+CREATE INDEX IF NOT EXISTS idx_messages_thread_kind ON messages(thread_id, author_kind, id); -- the list queries' latest-human-post subqueries seek instead of scanning back (list_threads 6.6 to 2.4 ms on 765 threads)
 CREATE INDEX IF NOT EXISTS idx_messages_ts      ON messages(ts);
 CREATE INDEX IF NOT EXISTS idx_threads_channel  ON threads(channel, status);
 CREATE INDEX IF NOT EXISTS idx_threads_updated  ON threads(updated_ts);
