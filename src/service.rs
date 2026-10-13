@@ -40,6 +40,9 @@ pub fn run(stop: Arc<AtomicBool>) {
         go
     };
     while !stop.load(Ordering::Relaxed) {
+        if crate::daemon::stop_path().exists() {
+            break; // `agentdesk core stop`
+        }
         if due(&mut t_toast, Duration::from_secs(2), Duration::ZERO) {
             toasts(&db, &mut known, &mut last_msg);
             ack_watch(&db, &mut last_human);

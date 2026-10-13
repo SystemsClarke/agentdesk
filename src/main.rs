@@ -13,6 +13,7 @@ mod attach;
 mod backup;
 mod bridge;
 mod concierge;
+mod daemon;
 mod db;
 mod dispatcher;
 mod goals;
@@ -73,8 +74,13 @@ enum Cmd {
     Mcp,
     /// The terminal window.
     Tui,
-    /// Headless background work: toasts, recurring jobs, merge-list checks, usage meter, sweep.
+    /// The core: the one background process that owns sessions, jobs, the governor, the Concierge, Slack and toasts. Exits if one already runs.
     Daemon,
+    /// The core: `core status` (default), `core start`, `core stop`, `core restart`.
+    Core {
+        /// status, start, stop or restart
+        action: Option<String>,
+    },
     /// Claude Code hook: session-start | context | stop (stdin JSON in, hook JSON out).
     Hook { event: String },
     /// Block until John replies on the thread, then print his reply.
@@ -325,12 +331,8 @@ fn real_main() -> Result<()> {
         }
         Some(Cmd::Mcp) => mcp::serve(),
         Some(Cmd::Tui) => tui::run(),
-        Some(Cmd::Daemon) => {
-            let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-            println!("agentdesk daemon running on {}", paths::db_path().display());
-            service::run(stop);
-            Ok(())
-        }
+        Some(Cmd::Daemon) => daemon::run_daemon(),
+        Some(Cmd::Core { action }) => core_cmd(action.as_deref()),
         Some(Cmd::Hook { event }) => {
             // a hook must never break a session
             let mut input = String::new();
@@ -534,6 +536,29 @@ fn concierge_cmd(action: Option<&str>, folder: Option<String>) -> Result<()> {
     if on.is_some() && !supervisor::running() {
         eprintln!("note: no supervisor is running, so nothing will act on this yet. Start `agentdesk daemon` (or the window).");
     }
+    Ok(())
+}
+
+fn core_cmd(action: Option<&str>) -> Result<()> {
+    let wait = std::time::Duration::from_secs(15);
+    match action {
+        Some("start") => {
+            daemon::ensure(wait)?;
+        }
+        Some("stop") => {
+            if !daemon::stop(wait)? {
+                println!("no core is running");
+                return Ok(());
+            }
+        }
+        Some("restart") => {
+            daemon::stop(wait)?;
+            daemon::ensure(wait)?;
+        }
+        Some("status") | None => {}
+        Some(other) => anyhow::bail!("core takes status, start, stop or restart, not {other}"),
+    }
+    println!("{}", serde_json::to_string_pretty(&daemon::status_json())?);
     Ok(())
 }
 
