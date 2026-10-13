@@ -643,6 +643,12 @@ pub fn attach_input() -> Arc<Input> {
         std::thread::sleep(ENTER_AFTER);
         writeln!(conn, "INPUT {}", crate::attach::base64_encode(b"\r"))?;
         writeln!(conn, "DETACH")?;
+        // Do not just drop the socket: it still holds the session's replayed output unread, and closing a socket with unread data sends a reset,
+        // which on Linux discards the lines the server has received but not yet read (the Enter). Say we are done writing and wait for the
+        // server to close its end.
+        let _ = conn.shutdown(std::net::Shutdown::Write);
+        let mut sink = [0u8; 4096];
+        while matches!(std::io::Read::read(&mut conn, &mut sink), Ok(n) if n > 0) {}
         Ok(())
     })
 }

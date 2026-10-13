@@ -665,11 +665,17 @@ pub mod fake {
         pub fn note(&self, s: String) {
             self.log.borrow_mut().push(s);
         }
+        /// A path built with `Path::join` on Linux has `/` where the Windows fixtures write `\`: compare them alike.
+        fn norm(s: &str) -> String {
+            s.replace('\', "/")
+        }
         pub fn pos(&self, prefix: &str) -> usize {
-            self.log.borrow().iter().position(|l| l.starts_with(prefix)).unwrap_or_else(|| panic!("no `{prefix}` in {:#?}", self.log.borrow()))
+            let want = Self::norm(prefix);
+            self.log.borrow().iter().position(|l| Self::norm(l).starts_with(&want)).unwrap_or_else(|| panic!("no `{prefix}` in {:#?}", self.log.borrow()))
         }
         pub fn count(&self, prefix: &str) -> usize {
-            self.log.borrow().iter().filter(|l| l.starts_with(prefix)).count()
+            let want = Self::norm(prefix);
+            self.log.borrow().iter().filter(|l| Self::norm(l).starts_with(&want)).count()
         }
         pub fn mutations(&self) -> usize {
             self.log.borrow().iter().filter(|l| !l.starts_with("read") && !l.starts_with("run systemctl --user show-environment")).count()
