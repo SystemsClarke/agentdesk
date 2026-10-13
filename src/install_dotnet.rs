@@ -57,12 +57,15 @@ pub fn fix_path(path: &str, dir: &str, old_app: &str) -> String {
 
 /// The python an old backup task ran, when it was a virtual environment's (its own folder has slack_bolt and numpy already).
 fn old_python(h: &dyn Host, t: &TaskAction) -> Option<PathBuf> {
-    let exe = Path::new(t.execute.trim_matches('"'));
-    let stem = exe.file_name()?.to_string_lossy().to_lowercase();
+    // split by hand: the task's path is a Windows path whichever OS this is compiled for (and the tests run on all of them)
+    let raw = t.execute.trim_matches('"');
+    let (dir, file) = raw.rsplit_once(['\\', '/'])?;
+    let stem = file.to_lowercase();
     if !(stem.starts_with("python") && stem.ends_with(".exe")) {
         return None;
     }
-    Some(exe.parent()?.join("python.exe")).filter(|p| h.exists(p))
+    let sep = if raw.contains('\\') { '\\' } else { '/' };
+    Some(PathBuf::from(format!("{dir}{sep}python.exe"))).filter(|p| h.exists(p))
 }
 
 /// Quits the old window, then the old core, and refuses to go on if either comes back.
