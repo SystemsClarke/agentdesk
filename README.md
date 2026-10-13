@@ -32,6 +32,13 @@ brought up to date, and Claude Code's MCP entry and hooks are pointed at this bi
 The old app is not stopped or uninstalled for you; the command says how. The old app's own auto-update cannot deliver
 this build (it only understands its Velopack packages), so this is a one-time manual switch.
 
+**On Windows, all of it in one line** (installs the release, quits the .NET app, migrates, points the Slack bridge and the backup
+task at this build, and starts the daemon at every logon; `AGENTDESK_CUTOVER_DRY=1` first shows what it would do):
+
+```
+irm https://raw.githubusercontent.com/SystemsClarke/agentdesk/main/scripts/cutover.ps1 | iex
+```
+
 ## Use
 
 ```

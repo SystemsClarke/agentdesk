@@ -171,7 +171,7 @@ pub fn run(apply: bool, claude_json: &Path, claude_settings: &Path) -> Result<St
             ));
         }
     }
-    r.push("  Settings the old app kept (Slack bridge, goals, identities, the usage governor) are left in place but this build does not run them.".into());
+    r.push("  What the old app kept (Slack credentials, goals, identities, the usage governor, swarm slots) is read as it is: this build runs all of it. Start `agentdesk daemon` (or `agentdesk tui`) once the old core is quit.".into());
     r.push(format!("\nThis binary: {exe}\nAfter --apply, restart Claude Code sessions so they reconnect to the new MCP server."));
     Ok(r.join("\n"))
 }
