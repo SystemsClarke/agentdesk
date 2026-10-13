@@ -667,7 +667,7 @@ pub mod fake {
         }
         /// A path built with `Path::join` on Linux has `/` where the Windows fixtures write `\`: compare them alike.
         fn norm(s: &str) -> String {
-            s.replace('\', "/")
+            s.replace([std::path::MAIN_SEPARATOR, '\\'], "/")
         }
         pub fn pos(&self, prefix: &str) -> usize {
             let want = Self::norm(prefix);
