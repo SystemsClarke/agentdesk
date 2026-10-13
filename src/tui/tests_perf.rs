@@ -250,6 +250,7 @@ fn db_fill(db: &Db, tid: i64, n: usize) {
 
 #[test]
 fn an_identical_refresh_has_the_same_signature_and_a_changed_one_does_not() {
+    let _env = crate::tests::ENV.lock().unwrap_or_else(|e| e.into_inner()); // the refresh reads AGENTDESK_DATA and settings that other tests switch
     let (_d, a) = file_app(30);
     let load = |a: &App| Fresh::load(&a.db, a.want(), None, None);
     let (first, mut second) = (load(&a), load(&a));
