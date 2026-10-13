@@ -15,6 +15,9 @@
 # Going back: run   $env:AGENTDESK_ROLLBACK=1; irm <the same URL> | iex
 
 $ErrorActionPreference = 'Stop'
+$log = Join-Path $env:LOCALAPPDATA 'AgentDesk\cutover.log'
+New-Item -ItemType Directory -Force (Split-Path $log) | Out-Null
+try { Start-Transcript -Path $log -Force | Out-Null } catch { }   # what happened, if it goes wrong: %LOCALAPPDATA%\AgentDesk\cutover.log
 $dry = [bool]$env:AGENTDESK_CUTOVER_DRY
 $repo = 'SystemsClarke/agentdesk'
 $data = Join-Path $env:LOCALAPPDATA 'AgentDesk'
@@ -62,7 +65,10 @@ Act "download $($asset.browser_download_url) into $dest" {
     Remove-Item $zip
     Remove-Item "$exe.old" -ErrorAction SilentlyContinue
 }
-if (-not $dry) { Write-Host "    installed $(& $exe --version)" }
+if (-not $dry) {
+    if (-not (Test-Path $exe)) { throw "$exe is not there after installing" }
+    Write-Host "    installed $(& $exe --version)"
+}
 
 # ---- 2. quit the .NET app
 Say '2. quitting the .NET app and core'
@@ -74,8 +80,13 @@ Act "save how to go back to $saved" {
     New-Item -ItemType Directory -Force $data | Out-Null
     @{ run = $run; path = $userPath; backupExecute = $act.Execute; backupArguments = $act.Arguments; backupDir = $act.WorkingDirectory } | ConvertTo-Json | Set-Content $saved -Encoding UTF8
 }
-Act 'stop AgentDesk.App and AgentDesk.Core (their hosted agent sessions end; the daemon resumes the ones the board says were running)' {
+Act 'stop AgentDesk.App first, then AgentDesk.Core (the window relaunches the core if it is left running); their hosted agent sessions end, and the daemon resumes the ones the board says were running' {
+    Get-Process AgentDesk.App -ErrorAction SilentlyContinue | Stop-Process -Force
+    Start-Sleep -Seconds 2
+    Get-Process AgentDesk.Core -ErrorAction SilentlyContinue | Stop-Process -Force
+    Start-Sleep -Seconds 20   # if something relaunches them, stop them again
     Get-Process AgentDesk.App, AgentDesk.Core -ErrorAction SilentlyContinue | Stop-Process -Force
+    if (Get-Process AgentDesk.App, AgentDesk.Core -ErrorAction SilentlyContinue) { throw 'the .NET app or core is still running: quit it from its tray icon and run this again' }
 }
 Act 'remove the .NET core from logon' { Remove-ItemProperty $runKey -Name AgentDesk -ErrorAction SilentlyContinue }
 
@@ -122,15 +133,21 @@ Act "put $dest first on the user PATH, drop $oldApp\current" {
 Say '7. starting the daemon, now and at every logon'
 $cmd = "conhost.exe --headless `"$exe`" daemon"
 Act 'register the daemon in the logon Run key' { Set-ItemProperty $runKey -Name AgentDeskRust -Value $cmd }
-Act 'start it now (hidden)' {
-    $env:Path = "$dest;$env:Path"
-    Start-Process conhost.exe -ArgumentList '--headless', "`"$exe`"", 'daemon' -WindowStyle Hidden
-    Start-Sleep -Seconds 5
+Act 'start it now, detached from this shell (a one-shot scheduled task)' {
+    if (-not (Test-Path $exe)) { throw "$exe vanished before the daemon could start (see $log)" }
+    $a = New-ScheduledTaskAction -Execute 'conhost.exe' -Argument "--headless `"$exe`" daemon"
+    $t = New-ScheduledTaskTrigger -Once -At (Get-Date).AddYears(10)
+    Register-ScheduledTask -TaskName AgentDesk-Daemon -Action $a -Trigger $t -Force | Out-Null
+    Start-ScheduledTask -TaskName AgentDesk-Daemon
+    Start-Sleep -Seconds 8
+    if (-not (Get-Process agentdesk -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $exe })) { throw "the daemon is not running (see $log)" }
 }
 if (-not $dry) {
     Say 'state'
     & $exe ui status | Out-String | ConvertFrom-Json | ForEach-Object { Write-Host "    slack bridge: $($_.bridge.state)   concierge: $(if ($_.concierge.on) {'on'} else {'off'})   sessions: $($_.sessions.summary)" }
 }
+if (-not $dry -and -not (Test-Path $exe)) { throw "$exe is gone again at the end of the run" }
+try { Stop-Transcript | Out-Null } catch { }
 Write-Host ''
 Write-Host 'Done. Restart your Claude Code sessions so they reconnect to the new MCP server. `agentdesk tui` is the window.' -ForegroundColor Green
 if ($dry) { Write-Host 'That was a dry run: nothing was changed.' }
