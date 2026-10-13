@@ -10,7 +10,7 @@ mod seg;
 mod state;
 
 use crate::db::{anyhow_msg, Db};
-use crate::{jobs, paths, permissions, prs, service, update};
+use crate::{jobs, paths, permissions, prs, update};
 use anyhow::Result;
 use editor::Editor;
 use ratatui::crossterm::event::{self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -24,8 +24,6 @@ use seg::{palettes, Palette};
 use serde_json::{json, Value};
 use state::{Detail, State};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -1387,11 +1385,11 @@ pub fn run() -> Result<()> {
     let db = Db::open(&paths::db_path())?;
     db.init()?;
     let mut app = App::with_db(db);
-    let stop = Arc::new(AtomicBool::new(false));
-    let worker = {
-        let stop = stop.clone();
-        std::thread::spawn(move || service::run(stop))
-    };
+    // The window is a client: the core (`agentdesk daemon`) owns the sessions, jobs and the Slack bridge. Start it if it is not running.
+    if let Err(e) = crate::daemon::ensure(Duration::from_secs(15)) {
+        eprintln!("agentdesk: {e}. The window works on the board, but nothing will run agents or send toasts until the core is up (`agentdesk core start`).");
+        std::thread::sleep(Duration::from_secs(2));
+    }
     let mut terminal = ratatui::init();
     let _ = execute!(std::io::stdout(), EnableBracketedPaste);
     let mut last_save = Instant::now();
@@ -1443,8 +1441,6 @@ pub fn run() -> Result<()> {
     crate::pyhost::shutdown();
     let _ = execute!(std::io::stdout(), DisableBracketedPaste);
     ratatui::restore();
-    stop.store(true, Ordering::Relaxed);
-    let _ = worker.join();
     result
 }
 
