@@ -81,7 +81,7 @@ Act 'remove the .NET core from logon' { Remove-ItemProperty $runKey -Name AgentD
 
 # ---- 3. migrate
 Say '3. migrating the board and Claude Code'
-if ($dry) { if (Test-Path $exe) { & $exe migrate | ForEach-Object { Write-Host "    $_" } } else { Write-Host '    (dry run) would: agentdesk migrate --apply' } } else { & $exe migrate --apply | ForEach-Object { Write-Host "    $_" } }
+if ($dry) { Write-Host '    (dry run) would: agentdesk migrate --apply   (run `agentdesk migrate` after installing for its full dry run)' } else { & $exe migrate --apply | ForEach-Object { Write-Host "    $_" } }
 
 # ---- 4. python for the Slack bridge, vault search and dictation
 Say '4. Python for the Slack bridge'
