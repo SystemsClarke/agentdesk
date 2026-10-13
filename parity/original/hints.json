@@ -1,0 +1,370 @@
+{
+ "main": [
+  [
+   "Q D W J",
+   "message bases"
+  ],
+  [
+   "P",
+   "PRs"
+  ],
+  [
+   "S",
+   "SysOp"
+  ],
+  [
+   "B",
+   "who's on"
+  ],
+  [
+   "A",
+   "agents & goals"
+  ],
+  [
+   "R",
+   "recurring jobs"
+  ],
+  [
+   "X",
+   "permission rules"
+  ],
+  [
+   "O",
+   "options"
+  ],
+  [
+   "T",
+   "theme"
+  ],
+  [
+   "G",
+   "hang up"
+  ]
+ ],
+ "list": [
+  [
+   "↑↓",
+   "move"
+  ],
+  [
+   "↵",
+   "read"
+  ],
+  [
+   "N",
+   "new post"
+  ],
+  [
+   "H",
+   "active"
+  ],
+  [
+   "Ctrl+R",
+   "wake agent"
+  ],
+  [
+   "Esc",
+   "main menu"
+  ]
+ ],
+ "read": [
+  [
+   "type",
+   "to reply"
+  ],
+  [
+   "Ctrl+↵",
+   "send"
+  ],
+  [
+   "Ctrl+D",
+   "dictate"
+  ],
+  [
+   "PgUp/PgDn",
+   "scroll"
+  ],
+  [
+   "Alt+N/P",
+   "next/prev"
+  ],
+  [
+   "Alt+C",
+   "close"
+  ],
+  [
+   "Alt+U",
+   "bring back"
+  ],
+  [
+   "Esc",
+   "back"
+  ]
+ ],
+ "prs": [
+  [
+   "↑↓",
+   "move"
+  ],
+  [
+   "↵ O",
+   "open on GitHub"
+  ],
+  [
+   "C",
+   "check now"
+  ],
+  [
+   "H",
+   "open only"
+  ],
+  [
+   "Esc",
+   "menu"
+  ]
+ ],
+ "sysop": [
+  [
+   "Ctrl+W",
+   "stop the Concierge"
+  ],
+  [
+   "J",
+   "job board"
+  ],
+  [
+   "L",
+   "read held item"
+  ],
+  [
+   "Esc",
+   "menu"
+  ]
+ ],
+ "jobs": [
+  [
+   "↑↓",
+   "move"
+  ],
+  [
+   "R",
+   "run now"
+  ],
+  [
+   "E",
+   "on/off"
+  ],
+  [
+   "N",
+   "new job"
+  ],
+  [
+   "X",
+   "delete"
+  ],
+  [
+   "Esc",
+   "menu"
+  ]
+ ],
+ "rules": [
+  [
+   "↑↓",
+   "move"
+  ],
+  [
+   "A",
+   "approve"
+  ],
+  [
+   "R",
+   "reject"
+  ],
+  [
+   "V",
+   "revert"
+  ],
+  [
+   "↵",
+   "read its thread"
+  ],
+  [
+   "H",
+   "pending only"
+  ],
+  [
+   "Esc",
+   "menu"
+  ]
+ ],
+ "who": [
+  [
+   "↑↓",
+   "pick a caller"
+  ],
+  [
+   "↵",
+   "read bio"
+  ],
+  [
+   "P",
+   "page them"
+  ],
+  [
+   "Esc",
+   "menu"
+  ]
+ ],
+ "options": [
+  [
+   "↑↓",
+   "move"
+  ],
+  [
+   "↵",
+   "change"
+  ],
+  [
+   "←→",
+   "adjust"
+  ],
+  [
+   "C",
+   "ops console"
+  ],
+  [
+   "Esc",
+   "menu"
+  ]
+ ],
+ "compose": [
+  [
+   "↵",
+   "subject → body"
+  ],
+  [
+   "Ctrl+↵",
+   "post"
+  ],
+  [
+   "Ctrl+D",
+   "dictate"
+  ],
+  [
+   "Esc",
+   "twice: discard"
+  ]
+ ],
+ "agents": [
+  [
+   "↑↓",
+   "move"
+  ],
+  [
+   "↵",
+   "read"
+  ],
+  [
+   "A",
+   "approve"
+  ],
+  [
+   "X",
+   "stop goal"
+  ],
+  [
+   "S",
+   "start/stop lead"
+  ],
+  [
+   "L",
+   "goal's lead"
+  ],
+  [
+   "+ -",
+   "members (] [ ±10)"
+  ],
+  [
+   "↵",
+   "attach"
+  ],
+  [
+   "S",
+   "start/stop"
+  ],
+  [
+   "A",
+   "adopt"
+  ],
+  [
+   "F",
+   "forget"
+  ],
+  [
+   "N",
+   "new agent"
+  ],
+  [
+   "G",
+   "new goal"
+  ],
+  [
+   "Esc",
+   "menu"
+  ]
+ ],
+ "adopt": [
+  [
+   "↑↓",
+   "move"
+  ],
+  [
+   "↵",
+   "adopt"
+  ],
+  [
+   "Esc",
+   "agents"
+  ]
+ ],
+ "goal": [
+  [
+   "A",
+   "approve"
+  ],
+  [
+   "S",
+   "start/stop lead"
+  ],
+  [
+   "+ -",
+   "members (] [ ±10)"
+  ],
+  [
+   "X",
+   "stop"
+  ],
+  [
+   "L",
+   "attach to lead"
+  ],
+  [
+   "↑↓",
+   "scroll"
+  ],
+  [
+   "Esc",
+   "agents"
+  ]
+ ],
+ "ask": [
+  [
+   "↵",
+   "next"
+  ],
+  [
+   "Esc",
+   "cancel"
+  ]
+ ]
+}

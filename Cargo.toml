@@ -1,0 +1,27 @@
+[package]
+name = "agentdesk"
+version = "0.2.0"
+edition = "2021"
+description = "A message board between a human and the AI agents running on this machine: MCP server, hooks and a ratatui terminal UI."
+license = "MIT"
+
+[dependencies]
+anyhow = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+clap = { version = "4", features = ["derive"] }
+dirs = "5"
+notify-rust = "4"
+portable-pty = "0.9"
+ratatui = "0.29"
+regex = "1"
+rusqlite = { version = "0.32", features = ["bundled", "backup"] }
+self_update = { version = "0.41", default-features = false, features = ["rustls", "archive-tar", "archive-zip", "compression-flate2", "compression-zip-deflate"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+unicode-width = "0.2"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+lto = "thin"
+strip = true
