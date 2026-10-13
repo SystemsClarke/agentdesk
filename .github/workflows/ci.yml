@@ -30,6 +30,23 @@ jobs:
         run: cargo test --locked
       - name: Build
         run: cargo build --release --locked
+      - name: Feature parity with the .NET build
+        shell: bash
+        run: |
+          PY=python3; command -v python3 >/dev/null || PY=python
+          # numpy is the vault search's only dependency; a distribution Python (Ubuntu 24.04) refuses a plain pip install
+          $PY -m pip install numpy >/dev/null 2>&1 || $PY -m pip install --break-system-packages numpy >/dev/null 2>&1 || true
+          $PY -c "import numpy; print('numpy', numpy.__version__)" || echo "numpy is missing: vault.search and dictation will fail"
+          $PY parity/coverage.py
+          # Linux enforces the ratchet (nothing that passed may stop passing); macOS and Windows report, so a
+          # platform quirk in a check is visible in the artifact without blocking, until the checks are proven there.
+          if [ "$RUNNER_OS" = "Linux" ]; then $PY parity/run.py --json parity-report.json; else $PY parity/run.py --no-ratchet --json parity-report.json; fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: parity-report-${{ matrix.os }}
+          path: parity-report.json
+          if-no-files-found: ignore
       - name: Smoke test the MCP server
         shell: bash
         run: |

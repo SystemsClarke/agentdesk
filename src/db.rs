@@ -83,6 +83,9 @@ CREATE TABLE IF NOT EXISTS recurring_jobs (name TEXT PRIMARY KEY COLLATE NOCASE,
 CREATE TABLE IF NOT EXISTS permission_proposals (id INTEGER PRIMARY KEY AUTOINCREMENT, rule TEXT NOT NULL, scope TEXT NOT NULL, project_dir TEXT,
     reason TEXT NOT NULL, blocked TEXT, requested_by TEXT NOT NULL, thread_id INTEGER, status TEXT NOT NULL DEFAULT 'pending',
     created_ts TEXT NOT NULL, decided_ts TEXT, reverted_ts TEXT, settings_path TEXT, backup TEXT);
+CREATE TABLE IF NOT EXISTS plain_sessions (name TEXT PRIMARY KEY COLLATE NOCASE, folder TEXT NOT NULL, command TEXT, state TEXT NOT NULL DEFAULT 'queued',
+    pid INTEGER, started_ts TEXT, created_ts TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS session_inbox (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, kind TEXT NOT NULL, data TEXT, cols INTEGER, rows INTEGER, ts TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS usage_samples (id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL UNIQUE, weekly_pct REAL NOT NULL,
     weekly_reset_ts TEXT, five_hour_pct REAL, five_hour_reset_ts TEXT, swarm_sessions INTEGER NOT NULL DEFAULT 0,
     haiku_sessions INTEGER NOT NULL DEFAULT 0, sonnet_sessions INTEGER NOT NULL DEFAULT 0, opus_sessions INTEGER NOT NULL DEFAULT 0);
@@ -199,35 +202,41 @@ impl Db {
         if self.conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))? == version {
             return Ok(());
         }
-        self.conn.execute_batch(SCHEMA)?;
-        self.conn.execute_batch("DROP VIEW IF EXISTS open_questions;")?;
-        self.conn.execute_batch(&format!(
-            "CREATE VIEW open_questions AS SELECT t.id AS thread_id, t.subject, t.opened_by, t.created_ts, t.updated_ts FROM threads t WHERE {WAITING_SQL};"
-        ))?;
-        let cols: Vec<String> = self.rows("PRAGMA table_info(pull_requests)", &[])?.iter().filter_map(|r| r["name"].as_str().map(String::from)).collect();
-        if !cols.iter().any(|c| c == "source") {
-            self.conn.execute_batch("ALTER TABLE pull_requests ADD COLUMN source TEXT NOT NULL DEFAULT 'agent-registered'")?;
-        }
-        for col in ["triage", "triage_ts"] {
-            if !cols.iter().any(|c| c == col) {
-                self.conn.execute_batch(&format!("ALTER TABLE pull_requests ADD COLUMN {col} TEXT"))?;
+        // one process at a time rebuilds the schema: twelve first-opens at once raced on DROP/CREATE VIEW
+        self.tx(|| {
+            if self.conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))? == version {
+                return Ok(());
             }
-        }
-        // Boards made by older builds: the columns later versions added.
-        self.add_column("identities", "generation", "INTEGER NOT NULL DEFAULT 1")?;
-        self.add_column("identities", "phoenix_msg", "INTEGER")?;
-        self.add_column("identities", "model", "TEXT NOT NULL DEFAULT 'sonnet'")?;
-        self.add_column("identities", "running_model", "TEXT")?;
-        self.add_column("identities", "wake_prompt", "TEXT")?; // John's reply, for a stopped identity to start with (the Rust build's own column)
-        self.add_column("identities", "phoenix_go", "INTEGER NOT NULL DEFAULT 0")?; // the turn that passed the torch has ended (the Rust build's own column)
-        self.add_column("goals", "standing", "INTEGER NOT NULL DEFAULT 0")?;
-        self.add_column("experiments", "measuring", "INTEGER NOT NULL DEFAULT 0")?; // experiment_done asked for a measurement (the Rust build's own column)
-        self.add_column("goal_members", "work_id", "INTEGER")?;
-        for tier in ["haiku", "sonnet", "opus"] {
-            self.add_column("usage_samples", &format!("{tier}_sessions"), "INTEGER NOT NULL DEFAULT 0")?;
-        }
-        self.conn.execute_batch(&format!("PRAGMA user_version={version}"))?;
-        Ok(())
+            self.conn.execute_batch(SCHEMA)?;
+            self.conn.execute_batch("DROP VIEW IF EXISTS open_questions;")?;
+            self.conn.execute_batch(&format!(
+                "CREATE VIEW open_questions AS SELECT t.id AS thread_id, t.subject, t.opened_by, t.created_ts, t.updated_ts FROM threads t WHERE {WAITING_SQL};"
+            ))?;
+            let cols: Vec<String> = self.rows("PRAGMA table_info(pull_requests)", &[])?.iter().filter_map(|r| r["name"].as_str().map(String::from)).collect();
+            if !cols.iter().any(|c| c == "source") {
+                self.conn.execute_batch("ALTER TABLE pull_requests ADD COLUMN source TEXT NOT NULL DEFAULT 'agent-registered'")?;
+            }
+            for col in ["triage", "triage_ts"] {
+                if !cols.iter().any(|c| c == col) {
+                    self.conn.execute_batch(&format!("ALTER TABLE pull_requests ADD COLUMN {col} TEXT"))?;
+                }
+            }
+            // Boards made by older builds: the columns later versions added.
+            self.add_column("identities", "generation", "INTEGER NOT NULL DEFAULT 1")?;
+            self.add_column("identities", "phoenix_msg", "INTEGER")?;
+            self.add_column("identities", "model", "TEXT NOT NULL DEFAULT 'sonnet'")?;
+            self.add_column("identities", "running_model", "TEXT")?;
+            self.add_column("identities", "wake_prompt", "TEXT")?; // John's reply, for a stopped identity to start with (the Rust build's own column)
+            self.add_column("identities", "phoenix_go", "INTEGER NOT NULL DEFAULT 0")?; // the turn that passed the torch has ended (the Rust build's own column)
+            self.add_column("goals", "standing", "INTEGER NOT NULL DEFAULT 0")?;
+            self.add_column("experiments", "measuring", "INTEGER NOT NULL DEFAULT 0")?; // experiment_done asked for a measurement (the Rust build's own column)
+            self.add_column("goal_members", "work_id", "INTEGER")?;
+            for tier in ["haiku", "sonnet", "opus"] {
+                self.add_column("usage_samples", &format!("{tier}_sessions"), "INTEGER NOT NULL DEFAULT 0")?;
+            }
+            self.conn.execute_batch(&format!("PRAGMA user_version={version}"))?;
+            Ok(())
+        })
     }
 
     // ---- helpers
@@ -751,10 +760,6 @@ If you need something else from him, ask a new question with ask_human.");
         let keep = if limit < 0 { found.len().saturating_sub(limit.unsigned_abs() as usize) } else { limit as usize };
         found.truncate(keep);
         Ok(found)
-    }
-
-    pub fn threads_waiting(&self) -> i64 {
-        self.scalar_i64("SELECT COUNT(*) FROM open_questions", &[]).ok().flatten().unwrap_or(0)
     }
 }
 

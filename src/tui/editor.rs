@@ -10,6 +10,11 @@ pub struct Editor {
 }
 
 impl Editor {
+    pub fn from(text: &str) -> Editor {
+        let mut e = Editor::new();
+        e.insert_str(text);
+        e
+    }
     pub fn new() -> Editor {
         Editor { lines: vec![String::new()], row: 0, col: 0 }
     }

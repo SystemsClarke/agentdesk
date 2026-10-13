@@ -123,13 +123,24 @@ impl Host {
 
     /// Starts `program args` in `cwd` on a new PTY with `env` added. Returns the child's pid.
     pub fn launch(&mut self, name: &str, cwd: &str, program: &str, args: &[String], env: &[(String, String)]) -> Result<u32> {
+        self.launch_with(name, cwd, program, args, env, &[])
+    }
+
+    /// `launch`, with these variables removed from the environment the child inherits first (a plain session must not see the
+    /// `CLAUDE*` / `AGENTDESK_SESSION` / `AGENTDESK_AUTHOR` of whatever session started the daemon).
+    pub fn launch_with(&mut self, name: &str, cwd: &str, program: &str, args: &[String], env: &[(String, String)], remove: &[String]) -> Result<u32> {
         if self.alive(name) {
             return Err(anyhow!("{name} is already running"));
         }
         let pair = native_pty_system().openpty(PtySize { rows: 40, cols: 160, pixel_width: 0, pixel_height: 0 }).map_err(|e| anyhow!("no pty: {e}"))?;
-        let mut cmd = CommandBuilder::new(program);
+        let (exe, pre) = crate::paths::resolve(program);
+        let mut cmd = CommandBuilder::new(exe);
+        cmd.args(pre);
         cmd.args(args);
         cmd.cwd(cwd);
+        for k in remove {
+            cmd.env_remove(k);
+        }
         for (k, v) in env {
             cmd.env(k, v);
         }
@@ -223,6 +234,12 @@ impl Host {
     /// Writes raw bytes to the session's terminal.
     pub fn input(&mut self, name: &str, bytes: &[u8]) -> Result<()> {
         self.live.get(name).ok_or_else(|| anyhow!("{name} is not running"))?.shared.write(bytes)
+    }
+
+    /// Resizes the session's terminal.
+    pub fn resize(&mut self, name: &str, cols: u16, rows: u16) -> Result<()> {
+        self.live.get(name).ok_or_else(|| anyhow!("{name} is not running"))?.shared.resize(cols, rows);
+        Ok(())
     }
 
     /// Types `text` and presses Enter, as if at the keyboard: how a reply from John reaches a session that is waiting.

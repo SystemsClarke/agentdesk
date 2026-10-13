@@ -397,7 +397,7 @@ fn the_backup_writes_linked_thread_notes_a_map_and_pushes_the_vault() {
     let bio = db.start_thread("discussion", "bio: builder", "builder", AGENT, "I build things", None, None).unwrap();
     let t = db.start_thread("discussion", "Fix \"quotes\" in the parser", "builder", AGENT, &format!("see thread {bio} and thread 999"), None, None).unwrap();
 
-    let first = crate::backup::run(&db).unwrap();
+    let first = crate::backup::run_with(&db, false).unwrap();
     assert!(first.contains("integrity ok") && first.contains("committed, pushed"), "{first}");
     let note = std::fs::read_to_string(vault.join("agentdesk/threads").join(format!("thread-{t}.md"))).unwrap();
     assert!(note.contains(r#"aliases: ["Fix \"quotes\" in the parser"]"#));
@@ -414,13 +414,13 @@ fn the_backup_writes_linked_thread_notes_a_map_and_pushes_the_vault() {
     assert_eq!((state["pushed"].as_bool(), state["error"].is_null()), (Some(true), true));
 
     let head = git_ok(&vault, &["rev-parse", "HEAD"]);
-    let again = crate::backup::run(&db).unwrap();
+    let again = crate::backup::run_with(&db, false).unwrap();
     assert!(again.contains("0 thread notes"), "nothing rewritten: {again}");
     assert_eq!(head, git_ok(&vault, &["rev-parse", "HEAD"]), "a quiet hour makes no commit");
 
     git_ok(&vault, &["remote", "set-url", "origin", dir.path().join("nowhere.git").to_str().unwrap()]);
     db.start_thread("discussion", "another", "builder", AGENT, "x", None, None).unwrap();
-    let broken = crate::backup::run(&db).unwrap();
+    let broken = crate::backup::run_with(&db, false).unwrap();
     assert!(broken.contains("GIT ERROR: push failed"), "a dead remote is reported, not raised: {broken}");
     assert_eq!(git_ok(&vault, &["rev-list", "--count", "origin/Main..HEAD"]), "1", "the commit stays local for the next run");
 

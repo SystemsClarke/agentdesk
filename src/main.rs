@@ -8,8 +8,10 @@
 //!   agentdesk job ...              recurring jobs: a prompt run on a schedule
 //!   agentdesk backup | setup | usage-feed | check-prs
 
+mod adopt;
 mod attach;
 mod backup;
+mod bridge;
 mod concierge;
 mod db;
 mod dispatcher;
@@ -26,9 +28,12 @@ mod notify;
 mod parity;
 mod paths;
 mod permissions;
+mod plain;
 mod prs;
+mod pyhost;
 mod service;
 mod sessions;
+mod slots;
 mod supervisor;
 #[cfg(test)]
 mod tests;
@@ -43,13 +48,16 @@ mod tests_identities;
 mod tools;
 mod tools_gen;
 mod tui;
+mod ui_api;
 mod update;
 mod usage;
 mod vault;
 mod vault_threads;
+mod web;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use serde_json::{json, Value};
 use std::io::{IsTerminal, Read};
 
 #[derive(Parser)]
@@ -94,19 +102,89 @@ enum Cmd {
         #[arg(long)]
         folder: Option<String>,
     },
+    /// The headless sessions the daemon hosts (`ui:session_list`).
+    Sessions,
+    /// `start <name>` runs the identity; `start <name> <folder> [command...]` runs a plain headless session (default command: claude).
+    Start {
+        name: String,
+        folder: Option<String>,
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        command: Vec<String>,
+    },
+    /// Stops the identity or plain session called <name>.
+    Stop { name: String },
+    /// Stops the identity and removes it from the list; its conversation stays on disk.
+    Forget { name: String },
+    /// Signs up an identity: `new <name> <folder> [--charter T] [--host H] [--autostart] [--model M]`.
+    New {
+        name: String,
+        folder: String,
+        #[arg(long)]
+        charter: Option<String>,
+        #[arg(long)]
+        host: Option<String>,
+        #[arg(long)]
+        model: Option<String>,
+        #[arg(long)]
+        autostart: bool,
+    },
+    /// Lists the identities.
+    List,
+    /// Claude Code conversations of the last day that someone typed in.
+    Adoptable,
+    /// Makes a conversation an identity and starts it: `adopt <session-id> <name>`.
+    Adopt { session_id: String, name: String },
+    /// Uses a hosted session from this console, like tmux attach; Ctrl+] detaches.
+    Attach { name: String },
     /// Recurring jobs.
     Job {
         #[command(subcommand)]
         cmd: JobCmd,
     },
-    /// Snapshot the board and write a vault note per settled thread.
-    Backup,
+    /// Snapshot the board and write a vault note per settled thread (`--prune-dry-run` lists what thinning would delete).
+    Backup {
+        #[arg(long)]
+        json: bool,
+        #[arg(long)]
+        prune_dry_run: bool,
+        /// Only the snapshot: leave the vault alone (for an ad hoc run against a real board).
+        #[arg(long)]
+        skip_vault: bool,
+    },
+    /// Restore the board from a snapshot: a dry run unless --yes. `restore <archive> [--yes] [--force-newer] [--json]`.
+    Restore {
+        archive: std::path::PathBuf,
+        #[arg(long)]
+        yes: bool,
+        #[arg(long)]
+        force_newer: bool,
+        #[arg(long)]
+        json: bool,
+    },
     /// Check the merge list against GitHub now.
     CheckPrs,
     /// Claude Code status-line feed: writes claude_usage.json from the status-line JSON on stdin.
     UsageFeed,
+    /// Refresh the usage feed now with `claude -p /usage` (the original does this every 5 minutes).
+    UsageProbe,
+    /// Runs a Python script or module of the embedded Python half with its packages importable: `python scripts/slack_bridge.py`, `python -m agentdesk.backup`.
+    Python {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
     /// Print where things live and the Claude Code configuration to add.
     Setup,
+    /// Run one of the original's `ui:*` requests (or an agent tool) against the board and print its JSON: `agentdesk ui ui:thread '{"thread_id":1}'`.
+    Ui { request: String, args: Option<String> },
+    /// Render the window headlessly after some keys and print the screen (for tests): `agentdesk ui-snapshot --keys "q enter"`.
+    UiSnapshot {
+        #[arg(long, default_value = "110x36")]
+        size: String,
+        #[arg(long, default_value = "")]
+        keys: String,
+        #[arg(long)]
+        json: bool,
+    },
     /// Check GitHub for a newer release; with --apply, download it and swap it in.
     Update {
         #[arg(long)]
@@ -153,8 +231,11 @@ enum GoalCmd {
     New {
         name: String,
         folder: String,
+        /// What it should achieve (or give the words after the folder: `goal new g1 . make it faster`).
         #[arg(long)]
-        objective: String,
+        objective: Option<String>,
+        #[arg(trailing_var_arg = true)]
+        words: Vec<String>,
     },
     /// Approve the lead's proposal and start the goal; optional budget: members, hours, wake cadence in minutes.
     Approve {
@@ -268,12 +349,45 @@ fn real_main() -> Result<()> {
         Some(Cmd::Job { cmd }) => job(cmd),
         Some(Cmd::Identity { cmd }) => identity(cmd),
         Some(Cmd::Goal { cmd }) => goal(cmd),
+        Some(Cmd::Sessions) => verb("ui:session_list", None),
+        Some(Cmd::Start { name, folder, command }) => match folder {
+            None => verb("ui:identity_start", Some(json!({"name": name}))),
+            Some(f) => {
+                let f = std::fs::canonicalize(&f).map(|p| p.to_string_lossy().into_owned()).unwrap_or(f);
+                verb("ui:session_start", Some(json!({"name": name, "folder": f, "command": if command.is_empty() { Value::Null } else { json!(command.join(" ")) }})))
+            }
+        },
+        Some(Cmd::Stop { name }) => verb("ui:identity_stop", Some(json!({"name": name}))),
+        Some(Cmd::Forget { name }) => verb("ui:identity_forget", Some(json!({"name": name}))),
+        Some(Cmd::New { name, folder, charter, host, model, autostart }) => {
+            let f = std::fs::canonicalize(&folder).map(|p| p.to_string_lossy().trim_start_matches(r"\\?\").to_string()).unwrap_or(folder);
+            verb("ui:identity_create", Some(json!({"name": name, "folder": f, "charter": charter, "host": host, "model": model, "autostart": autostart})))
+        }
+        Some(Cmd::List) => verb("ui:identity_list", None),
+        Some(Cmd::Adoptable) => verb("ui:adoptable", None),
+        Some(Cmd::Adopt { session_id, name }) => verb("ui:adopt", Some(json!({"session_id": session_id, "name": name}))),
+        Some(Cmd::Attach { name }) => attach::client(&name),
         Some(Cmd::Governor { action }) => governor_cmd(action.as_deref()),
         Some(Cmd::Concierge { action, folder }) => concierge_cmd(action.as_deref(), folder),
-        Some(Cmd::Backup) => {
-            println!("{}", backup::run(&open()?)?);
+        Some(Cmd::Backup { json, prune_dry_run, skip_vault }) => {
+            if prune_dry_run {
+                println!("{}", backup::prune_dry_run());
+                return Ok(());
+            }
+            let out = backup::run_with(&open()?, skip_vault)?;
+            println!("{}", if json { serde_json::json!({"result": out}).to_string() } else { out });
             Ok(())
         }
+        Some(Cmd::Restore { archive, yes, force_newer, json }) => match backup::restore(&open()?, &archive, yes, force_newer, json) {
+            Ok(m) => {
+                println!("{m}");
+                Ok(())
+            }
+            Err(e) => {
+                println!("{}", db::anyhow_msg(&e));
+                std::process::exit(1);
+            }
+        },
         Some(Cmd::CheckPrs) => {
             println!("{} settled", prs::check(&open()?));
             Ok(())
@@ -281,7 +395,7 @@ fn real_main() -> Result<()> {
         Some(Cmd::UsageFeed) => {
             let mut input = String::new();
             let _ = std::io::stdin().read_to_string(&mut input);
-            println!("{}", usage::feed(&input));
+            print!("{}", usage::feed(&input));
             Ok(())
         }
         Some(Cmd::Update { apply }) => {
@@ -297,9 +411,26 @@ fn real_main() -> Result<()> {
             Ok(())
         }
         Some(Cmd::Migrate { apply }) => {
-            let home = dirs::home_dir().unwrap_or_default();
+            let home = paths::home_dir();
             println!("{}", migrate::run(apply, &home.join(".claude.json"), &paths::claude_settings())?);
             Ok(())
+        }
+        Some(Cmd::Ui { request, args }) => std::process::exit(ui_api::run(&request, args.as_deref())),
+        Some(Cmd::UiSnapshot { size, keys, json }) => {
+            println!("{}", tui::snapshot(&size, &keys, json)?);
+            Ok(())
+        }
+        Some(Cmd::UsageProbe) => {
+            if usage::probe() {
+                println!("usage feed updated");
+                Ok(())
+            } else {
+                anyhow::bail!("the probe named no usage window (is `claude` on the PATH and signed in?)")
+            }
+        }
+        Some(Cmd::Python { args }) => {
+            let status = pyhost::command()?.args(&args).status()?;
+            std::process::exit(status.code().unwrap_or(1));
         }
         Some(Cmd::Setup) => {
             setup();
@@ -420,11 +551,27 @@ fn governor_cmd(action: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+/// Runs one of the original's requests through `ui_api` and prints its document (the original CLI's verbs are thin wrappers).
+fn verb(request: &str, args: Option<Value>) -> Result<()> {
+    let code = ui_api::run(request, args.map(|a| a.to_string()).as_deref());
+    if code != 0 {
+        std::process::exit(code);
+    }
+    Ok(())
+}
+
 fn goal(cmd: GoalCmd) -> Result<()> {
     let d = open()?;
     let me = identity::Caller::from_env();
     let out = match cmd {
-        GoalCmd::New { name, folder, objective } => goals::create(&d, &name, &objective, &folder)?,
+        GoalCmd::New { name, folder, objective, words } => {
+            let objective = objective.unwrap_or_else(|| words.join(" "));
+            if objective.trim().is_empty() {
+                anyhow::bail!("say what the goal should achieve: goal new <name> <folder> <objective...>");
+            }
+            let folder = std::fs::canonicalize(&folder).map(|p| p.to_string_lossy().trim_start_matches(r"\\?\").to_string()).unwrap_or(folder);
+            goals::create(&d, &goals::slug(&name), &objective, &folder)?
+        }
         GoalCmd::Approve { name, members, hours, cadence } => goals::approve(&d, &me, &name, members, hours, cadence)?,
         GoalCmd::Budget { name, members, hours, cadence } => goals::set_budget(&d, &me, &name, members, hours, cadence)?,
         GoalCmd::Stop { name } => goals::stop(&d, &me, &name)?,

@@ -11,15 +11,18 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// Settled questions older than this are filed (written to the vault, status `archived`).
-const SWEEP_AFTER_MINUTES: i64 = 10;
+const SWEEP_AFTER_MINUTES: i64 = 24 * 60;
 
 pub fn run(stop: Arc<AtomicBool>) {
+    // the ops console lives as long as this loop
+    let _console = if std::env::var_os("AGENTDESK_NO_WEB").is_none() { crate::web::start() } else { None };
     let Ok(db) = Db::open(&paths::db_path()) else { return };
     if db.init().is_err() {
         return;
     }
     let mut known: HashSet<i64> = db.open_questions(false).unwrap_or_default().iter().filter_map(|q| q["thread_id"].as_i64()).collect();
     let mut last_msg = db.max_message_id();
+    let mut last_human = db.scalar_i64("SELECT COALESCE(MAX(id),0) FROM messages WHERE author_kind='human'", &[]).ok().flatten().unwrap_or(0);
     let start = Instant::now();
     let mut t_update = None::<Instant>;
     let mut t_super = None::<Instant>;
@@ -39,6 +42,7 @@ pub fn run(stop: Arc<AtomicBool>) {
     while !stop.load(Ordering::Relaxed) {
         if due(&mut t_toast, Duration::from_secs(2), Duration::ZERO) {
             toasts(&db, &mut known, &mut last_msg);
+            ack_watch(&db, &mut last_human);
         }
         if due(&mut t_super, Duration::from_secs(2), Duration::ZERO) {
             if let Err(e) = supervisor.tick(&db) {
@@ -104,5 +108,29 @@ pub fn sweep(db: &Db) {
         if vault::write_thread_note(db, id).is_ok() {
             let _ = db.archive(id);
         }
+    }
+}
+
+/// John's replies made by another process (the Slack bridge writes to the board directly): the opener's acknowledgement is queued here,
+/// as the original's board watcher did for every human message, so it is delivered on the agent's next write.
+fn ack_watch(db: &Db, last_human: &mut i64) {
+    let rows = db
+        .rows(
+            "SELECT m.id, m.thread_id, t.opened_by FROM messages m JOIN threads t ON t.id = m.thread_id \
+             WHERE m.author_kind='human' AND m.id > :last AND t.channel='question' \
+               AND (SELECT author_kind FROM messages WHERE thread_id = t.id ORDER BY id LIMIT 1) = 'agent' ORDER BY m.id",
+            &[(":last", &*last_human)],
+        )
+        .unwrap_or_default();
+    for r in rows {
+        let (mid, tid, who) = (r["id"].as_i64().unwrap_or(0), r["thread_id"].as_i64().unwrap_or(0), r["opened_by"].as_str().unwrap_or("").to_string());
+        let _ = db.exec(
+            "INSERT OR IGNORE INTO acks (message_id, thread_id, agent, state, created_ts) VALUES (:m,:t,:a,'pending',:ts)",
+            &[(":m", &mid), (":t", &tid), (":a", &who), (":ts", &crate::db::now_iso())],
+        );
+        *last_human = (*last_human).max(mid);
+    }
+    if let Ok(Some(max)) = db.scalar_i64("SELECT MAX(id) FROM messages WHERE author_kind='human'", &[]).map(|m| m.filter(|m| *m > *last_human)) {
+        *last_human = max;
     }
 }

@@ -9,7 +9,7 @@ use anyhow::Result;
 use chrono::{DateTime, Datelike, Duration, Local, NaiveTime, TimeZone, Utc, Weekday};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::sync::{Mutex, OnceLock};
 
 const SUFFIX: &str =
@@ -247,7 +247,7 @@ fn spawn(job: &Value) -> Result<Child> {
     let dir = crate::paths::data_dir().join("jobs");
     std::fs::create_dir_all(&dir)?;
     let log = std::fs::OpenOptions::new().create(true).append(true).open(dir.join(format!("{name}.log")))?;
-    let mut cmd = Command::new(std::env::var("AGENTDESK_CLAUDE").unwrap_or_else(|_| "claude".into()));
+    let mut cmd = crate::paths::command(&std::env::var("AGENTDESK_CLAUDE").unwrap_or_else(|_| "claude".into()));
     cmd.arg("-p").arg(&prompt).arg("--model").arg(job["model"].as_str().unwrap_or("sonnet"));
     cmd.current_dir(job["folder"].as_str().unwrap_or("."));
     for (k, _) in std::env::vars() {
