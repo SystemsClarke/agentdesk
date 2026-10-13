@@ -89,8 +89,8 @@ impl Supervisor {
                     Err(e) => paths::log("WARN", &format!("attach endpoint did not start: {e}")),
                 }
                 let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-                let flag = stop.clone();
-                self.bridge = Some((stop, std::thread::spawn(move || crate::bridge::run(flag))));
+                let (flag, registry) = (stop.clone(), self.host.registry());
+                self.bridge = Some((stop, std::thread::spawn(move || crate::bridge::run(flag, registry))));
                 true
             }
             _ => false,

@@ -2,11 +2,11 @@
 //! console, Who's on, options, recurring jobs, permission rules, agents) with the same letter keys and wording.
 //! `screens.rs` builds each screen as lines of tagged segments; this file is state, keys and drawing.
 
-mod charts;
+pub(crate) mod charts; // the Slack bridge draws charts and diagrams with it
 mod editor;
 mod md;
 mod screens;
-mod seg;
+pub(crate) mod seg;
 mod state;
 
 use crate::db::{anyhow_msg, Db};

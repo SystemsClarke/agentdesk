@@ -34,8 +34,12 @@ mod prs;
 mod pyhost;
 mod service;
 mod sessions;
+mod slack;
+mod slack_cmd;
+mod slackfmt;
 mod slots;
 mod supervisor;
+mod swarm;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
@@ -46,6 +50,12 @@ mod tests_goals;
 mod tests_governor;
 #[cfg(test)]
 mod tests_identities;
+#[cfg(test)]
+mod tests_slack;
+#[cfg(test)]
+mod tests_slack_http;
+#[cfg(test)]
+mod tests_swarm;
 mod tools;
 mod tools_gen;
 mod tui;
@@ -177,6 +187,12 @@ enum Cmd {
     Python {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
+    },
+    /// The native Slack bridge in the foreground (the core runs it itself when `slack_native` is on): `--once` does one outbound pass and exits.
+    /// Tokens come from `SLACK_BOT_TOKEN` (and `SLACK_APP_TOKEN`), else `~/.claude/slack-notify`; `SLACK_API_URL` replaces https://slack.com/api.
+    SlackBridge {
+        #[arg(long)]
+        once: bool,
     },
     /// Print where things live and the Claude Code configuration to add.
     Setup,
@@ -390,6 +406,7 @@ fn real_main() -> Result<()> {
                 std::process::exit(1);
             }
         },
+        Some(Cmd::SlackBridge { once }) => slack::run_cli(once),
         Some(Cmd::CheckPrs) => {
             println!("{} settled", prs::check(&open()?));
             Ok(())
