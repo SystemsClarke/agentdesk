@@ -103,6 +103,7 @@ def _phoenix(b):
     r = b.run("hook", "stop", input=json.dumps({"session_id": sid}), env=env)
     assert r.returncode == 0
     wait_for(lambda: b.sql("SELECT generation FROM identities")[0]["generation"] == 2, 15, what="generation 2")
+    wait_for(lambda: len(launches(log)) >= 2, 15, what="the successor's session")  # the row changes before the new process is up
     second = launches(log)[-1]["argv"]
     assert "You are builder, generation 2" in " ".join(second) and "Owns X. Next: Y." in " ".join(second)
     c = b.sql("SELECT generation, handoff_msg FROM phoenix_chain")[0]

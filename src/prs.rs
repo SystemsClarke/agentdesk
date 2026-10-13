@@ -3,7 +3,6 @@
 
 use crate::db::{now_iso, Db, AGENT};
 use serde_json::{json, Value};
-use std::process::Command;
 
 /// Checks every open PR once. Returns how many settled.
 pub fn check(db: &Db) -> usize {
@@ -11,7 +10,7 @@ pub fn check(db: &Db) -> usize {
     let mut settled = 0;
     for pr in open {
         let (id, url) = (pr["id"].as_i64().unwrap_or(0), pr["url"].as_str().unwrap_or("").to_string());
-        let out = Command::new("gh").args(["pr", "view", &url, "--json", "state,title"]).output();
+        let out = crate::paths::command("gh").args(["pr", "view", &url, "--json", "state,title"]).output();
         let ts = now_iso();
         let parsed = match out {
             Ok(o) if o.status.success() => serde_json::from_slice::<Value>(&o.stdout).map_err(|e| e.to_string()),

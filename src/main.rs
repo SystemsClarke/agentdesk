@@ -411,7 +411,7 @@ fn real_main() -> Result<()> {
             Ok(())
         }
         Some(Cmd::Migrate { apply }) => {
-            let home = dirs::home_dir().unwrap_or_default();
+            let home = paths::home_dir();
             println!("{}", migrate::run(apply, &home.join(".claude.json"), &paths::claude_settings())?);
             Ok(())
         }

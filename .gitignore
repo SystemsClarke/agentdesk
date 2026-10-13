@@ -1,1 +1,5 @@
 /target
+parity/stubhost/target/
+parity/stubhost/Cargo.lock
+__pycache__/
+*.pyc

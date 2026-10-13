@@ -133,7 +133,9 @@ impl Host {
             return Err(anyhow!("{name} is already running"));
         }
         let pair = native_pty_system().openpty(PtySize { rows: 40, cols: 160, pixel_width: 0, pixel_height: 0 }).map_err(|e| anyhow!("no pty: {e}"))?;
-        let mut cmd = CommandBuilder::new(program);
+        let (exe, pre) = crate::paths::resolve(program);
+        let mut cmd = CommandBuilder::new(exe);
+        cmd.args(pre);
         cmd.args(args);
         cmd.cwd(cwd);
         for k in remove {

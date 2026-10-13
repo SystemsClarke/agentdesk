@@ -39,7 +39,7 @@ def run_one(f):
     except lib.Waived as e:
         return "waived", str(e)
     except AssertionError as e:
-        return "fail", str(e)
+        return "fail", "%s\n%s" % (e, "".join(traceback.format_exc(limit=-2).splitlines(True)[-4:]))
     except Exception as e:  # a crashing check is a failing feature, with the traceback to fix it
         return "fail", "%s: %s\n%s" % (type(e).__name__, e, traceback.format_exc(limit=4))
     finally:
@@ -48,6 +48,9 @@ def run_one(f):
 
 
 def main():
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")  # the window draws block characters; a cp1252 console cannot
     ap = argparse.ArgumentParser()
     ap.add_argument("-k", help="only features whose id contains this")
     ap.add_argument("--strict", action="store_true")
