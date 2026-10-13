@@ -78,6 +78,62 @@ pub fn resolve(program: &str) -> (String, Vec<String>) {
     (program.to_string(), vec![])
 }
 
+/// The `claude` to run: `AGENTDESK_CLAUDE`, else one on PATH, else the usual install spots, else the copy the Claude desktop app keeps
+/// (`<config>/Claude/claude-code/<version>/<id>/claude`, newest version), which is on nobody's PATH. Falls back to the bare name.
+pub fn claude_program() -> String {
+    if let Some(c) = std::env::var("AGENTDESK_CLAUDE").ok().filter(|c| !c.is_empty()) {
+        return c;
+    }
+    find_claude(&std::env::var_os("PATH").unwrap_or_default(), &home_dir(), dirs::config_dir())
+}
+
+fn find_claude(path: &std::ffi::OsStr, home: &std::path::Path, config: Option<PathBuf>) -> String {
+    let exe = if cfg!(windows) { "claude.exe" } else { "claude" };
+    let is_exe = |p: &std::path::Path| p.is_file();
+    for d in std::env::split_paths(path) {
+        for n in if cfg!(windows) { vec!["claude.exe", "claude.cmd"] } else { vec!["claude"] } {
+            if is_exe(&d.join(n)) {
+                return "claude".into();
+            }
+        }
+    }
+    let mut spots = vec![
+        home.join(".local").join("bin").join(exe),
+        home.join(".claude").join("local").join(exe),
+        home.join(".claude").join("bin").join(exe),
+        PathBuf::from("/usr/local/bin/claude"),
+        PathBuf::from("/opt/homebrew/bin/claude"),
+    ];
+    if cfg!(windows) {
+        if let Some(a) = std::env::var_os("APPDATA") {
+            spots.push(PathBuf::from(a).join("npm").join("claude.cmd"));
+        }
+    }
+    if let Some(p) = spots.into_iter().find(|p| is_exe(p)) {
+        return p.display().to_string();
+    }
+    let mut bases: Vec<PathBuf> = vec![];
+    if let Some(c) = config {
+        bases.push(c.join("Claude").join("claude-code"));
+    }
+    bases.push(home.join(".config").join("Claude").join("claude-code"));
+    bases.push(home.join("Library").join("Application Support").join("Claude").join("claude-code"));
+    let mut found: Vec<(Vec<u64>, PathBuf)> = vec![];
+    for b in bases {
+        for v in std::fs::read_dir(&b).into_iter().flatten().flatten() {
+            let key: Vec<u64> = v.file_name().to_string_lossy().split('.').map(|n| n.parse().unwrap_or(0)).collect();
+            for id in std::fs::read_dir(v.path()).into_iter().flatten().flatten() {
+                let c = id.path().join(exe);
+                if is_exe(&c) {
+                    found.push((key.clone(), c));
+                }
+            }
+        }
+    }
+    found.sort();
+    found.pop().map(|(_, p)| p.display().to_string()).unwrap_or_else(|| "claude".into())
+}
+
 /// A `std::process::Command` for `program` resolved by `resolve`.
 pub fn command(program: &str) -> std::process::Command {
     let (p, pre) = resolve(program);
@@ -90,4 +146,20 @@ pub fn command(program: &str) -> std::process::Command {
 pub fn home_dir() -> PathBuf {
     let var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
     std::env::var_os(var).filter(|v| !v.is_empty()).map(PathBuf::from).or_else(dirs::home_dir).unwrap_or_default()
+}
+
+#[cfg(all(test, unix))]
+mod claude_tests {
+    #[test]
+    fn finds_the_desktop_apps_copy_when_it_is_not_on_path() {
+        let home = std::env::temp_dir().join(format!("ad-claude-{}", std::process::id()));
+        let new = home.join(".config/Claude/claude-code/2.1.295/abc");
+        let old = home.join(".config/Claude/claude-code/2.1.9/def");
+        for d in [&new, &old] {
+            std::fs::create_dir_all(d).unwrap();
+            std::fs::write(d.join("claude"), "").unwrap();
+        }
+        assert_eq!(super::find_claude(std::ffi::OsStr::new("/nonexistent"), &home, Some(home.join(".config"))), new.join("claude").display().to_string());
+        std::fs::remove_dir_all(&home).ok();
+    }
 }

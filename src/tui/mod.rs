@@ -575,7 +575,9 @@ impl App {
             (Screen::Agents, 'n') => self.new_agent(),
             (Screen::Agents, 'g') => self.new_goal(),
             (Screen::Agents, 'f') => self.forget_selected(),
-            (Screen::Agents, 'a') if self.sel_goal().is_none() => self.goto(Screen::Adopt, None),
+            (Screen::Agents, 'a') if !self.sel_goal().is_some_and(|g| !g.standing && !matches!(g.state.as_str(), "running" | "succeeded" | "stopped")) => {
+                self.goto(Screen::Adopt, None)
+            }
             (Screen::Agents | Screen::Goal, 'a') => self.approve_selected(),
             (Screen::Agents | Screen::Goal, 'x') => self.stop_goal_selected(),
             (Screen::Agents | Screen::Goal, 's') => self.start_stop_selected(),

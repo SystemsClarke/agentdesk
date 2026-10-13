@@ -97,8 +97,9 @@ pub fn tick(db: &Db, host: &mut Host) -> Result<()> {
             "queued" => {
                 let parts = split(r["command"].as_str().unwrap_or("claude"));
                 let (program, args) = match parts.split_first() {
+                    Some((p, a)) if p == "claude" => (crate::paths::claude_program(), a.to_vec()),
                     Some((p, a)) => (p.clone(), a.to_vec()),
-                    None => ("claude".to_string(), vec![]),
+                    None => (crate::paths::claude_program(), vec![]),
                 };
                 let env = vec![("AGENTDESK_HEADLESS".to_string(), name.clone())];
                 match host.launch_with(&key, r["folder"].as_str().unwrap_or("."), &program, &args, &env, &scrub()) {
