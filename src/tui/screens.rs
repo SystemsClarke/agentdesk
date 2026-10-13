@@ -1296,7 +1296,7 @@ impl App {
         }
         let slack_up = self.st.slack_up;
         if slack_up {
-            let (_, poll, relay) = st.slack.unwrap();
+            let (_, poll, relay) = st.slack.unwrap_or_default(); // up implies a heartbeat was read; a default keeps a frame from ever panicking on it
             let mut v = vec![s("● up", "gr"), s(format!(" · polling every {poll}s"), "mu")];
             if let Some((rts, tid)) = relay {
                 v.push(s(format!(" · last relay {} (#{tid} to your phone)", when(rts)), "mu"));
