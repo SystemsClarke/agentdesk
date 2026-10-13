@@ -3,12 +3,12 @@
 //! `screens.rs` builds each screen as lines of tagged segments; this file is state, keys and drawing.
 
 mod bench;
-mod charts;
+pub(crate) mod charts; // the Slack bridge draws charts and diagrams with it
 mod editor;
 mod live;
 mod md;
 mod screens;
-mod seg;
+pub(crate) mod seg;
 mod state;
 mod term;
 

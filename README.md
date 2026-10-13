@@ -83,6 +83,30 @@ offered). The tables they use are left alone, so an existing board still opens.
 and `jobs/*.log`. `AGENTDESK_VAULT` moves the vault (default `<data>/vault`). Keep the data folder out of any
 file-sync client: copying a WAL from under a writer corrupts SQLite databases.
 
+## The Slack bridge: Python or native
+
+The core (`agentdesk daemon`) keeps a Slack bridge going in one of two forms, with the same features, credential files
+(`~/.claude/slack-notify`: `bot-token.txt`, `app-token.txt`, `bots.json`, `bridge_state.json`), heartbeat
+(`slack_bridge.state`) and `ui:status` bridge section (`state` external / stale-orphan / supervised / starting,
+`enabled`, `pid`, `restarts`; `native` says which form):
+
+- **Python** (`python/scripts/slack_bridge.py`, the default while a Python interpreter is found): a child process the
+  core restarts when it exits.
+- **Native** (`src/slack.rs`, `slack_cmd.rs`, `swarm.rs`, `slackfmt.rs`; no Python): threads of the core itself. It
+  talks to Slack's Web API and Socket Mode directly and types into a swarm lead's terminal through the core's own
+  session registry.
+
+`slack_native` in `settings.json` (in the data folder) chooses: `true` or `false` is taken as written; absent, native is
+used when no Python interpreter is found and Python otherwise, so the proven bridge stays the default until the
+native one has run against real Slack. To flip a machine: set `"slack_native": true` and `agentdesk core restart`
+(`false` flips back). `"slack_bridge": false` still switches the bridge off altogether.
+
+`agentdesk slack-bridge [--once]` runs the native bridge in the foreground (it refuses while another bridge beats).
+`SLACK_BOT_TOKEN` / `SLACK_APP_TOKEN` stand in for the credential files, `SLACK_API_URL` replaces
+`https://slack.com/api` (a fake Slack for tests), `AGENTDESK_SLACK_DM` / `AGENTDESK_SLACK_USER` name John's DM and user,
+`AGENTDESK_SLACK_POLL` changes the 15 s outbound pass. One difference: a ```chart is drawn as ASCII art in the
+message (the Python bridge uploads a PNG), and a ```mermaid too wide for a phone is sent as its source.
+
 ## Build
 
 ```
