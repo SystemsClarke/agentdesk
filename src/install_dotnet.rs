@@ -8,7 +8,7 @@
 use crate::install::{self, schtasks_change_args, Ctx, Host, Os, TaskAction};
 use anyhow::{anyhow, bail, Result};
 use serde_json::{json, Value};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Duration;
 
 const OLD_APP: &str = "AgentDesk.App.exe";
@@ -89,8 +89,10 @@ pub fn from_dotnet(h: &dyn Host, ctx: &Ctx, tray: bool, dry_run: bool) -> Result
     if ctx.os != Os::Windows {
         bail!("--from-dotnet moves a Windows machine off the .NET app; it only runs on Windows");
     }
-    let (exe, old_app) = (ctx.exe.to_string_lossy().into_owned(), ctx.local.join("AgentDeskApp").to_string_lossy().into_owned());
-    let dir = ctx.exe.parent().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default();
+    // Windows paths, built by hand: `Path` follows the OS this is compiled for, and the tests run on every OS
+    let exe = ctx.exe.to_string_lossy().into_owned();
+    let old_app = format!("{}\\AgentDeskApp", ctx.local.to_string_lossy().trim_end_matches(['\\', '/']));
+    let dir = exe.rsplit_once(['\\', '/']).map(|(d, _)| d.to_string()).unwrap_or_default();
     if dry_run {
         let steps = [
             format!("save how to go back to {}", record_path(ctx).display()),
