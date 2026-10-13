@@ -5,6 +5,11 @@ edition = "2021"
 description = "A message board between a human and the AI agents running on this machine: MCP server, hooks and a ratatui terminal UI."
 license = "MIT"
 
+[features]
+default = ["tray"]
+# The system tray / menu-bar icon (`agentdesk tray`). A headless server builds with --no-default-features.
+tray = ["dep:tray-icon", "dep:tao"]
+
 [dependencies]
 anyhow = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
@@ -16,6 +21,8 @@ ratatui = "0.29"
 regex = "1"
 rusqlite = { version = "0.32", features = ["bundled", "backup"] }
 self_update = { version = "0.41", default-features = false, features = ["rustls", "archive-tar", "archive-zip", "compression-flate2", "compression-zip-deflate"] }
+tao = { version = "0.30", optional = true }
+tray-icon = { version = "0.19", optional = true }
 serde_json = { version = "1", features = ["preserve_order"] }
 unicode-width = "0.2"
 

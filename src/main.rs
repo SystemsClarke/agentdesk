@@ -48,6 +48,7 @@ mod tests_governor;
 mod tests_identities;
 mod tools;
 mod tools_gen;
+mod tray;
 mod tui;
 mod ui_api;
 mod update;
@@ -74,6 +75,11 @@ enum Cmd {
     Mcp,
     /// The terminal window.
     Tui,
+    /// The system tray / menu-bar icon: core status, open questions, open the window. `--self-test` prints the menu and icons and exits.
+    Tray {
+        #[arg(long)]
+        self_test: bool,
+    },
     /// The core: the one background process that owns sessions, jobs, the governor, the Concierge, Slack and toasts. Exits if one already runs.
     Daemon,
     /// The core: `core status` (default), `core start`, `core stop`, `core restart`.
@@ -331,6 +337,7 @@ fn real_main() -> Result<()> {
         }
         Some(Cmd::Mcp) => mcp::serve(),
         Some(Cmd::Tui) => tui::run(),
+        Some(Cmd::Tray { self_test }) => tray::run(self_test),
         Some(Cmd::Daemon) => daemon::run_daemon(),
         Some(Cmd::Core { action }) => core_cmd(action.as_deref()),
         Some(Cmd::Hook { event }) => {
