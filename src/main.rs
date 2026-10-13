@@ -50,6 +50,7 @@ mod tests_governor;
 mod tests_identities;
 mod tools;
 mod tools_gen;
+mod tray;
 mod tui;
 mod ui_api;
 mod update;
@@ -76,6 +77,11 @@ enum Cmd {
     Mcp,
     /// The terminal window.
     Tui,
+    /// The system tray / menu-bar icon: core status, open questions, open the window. `--self-test` prints the menu and icons and exits.
+    Tray {
+        #[arg(long)]
+        self_test: bool,
+    },
     /// The core: the one background process that owns sessions, jobs, the governor, the Concierge, Slack and toasts. Exits if one already runs.
     Daemon,
     /// The core: `core status` (default), `core start`, `core stop`, `core restart`.
@@ -192,6 +198,16 @@ enum Cmd {
         keys: String,
         #[arg(long)]
         json: bool,
+    },
+    /// Time the window on a board and print JSON (reload, draw, markdown, keys, console bytes). Needs AGENTDESK_DATA to point at a COPY of a board.
+    #[command(hide = true)]
+    UiBench {
+        /// How many times each measurement is repeated (the median is reported).
+        #[arg(long, default_value_t = 15)]
+        runs: usize,
+        /// A short run (a few seconds): fewer repeats and shorter loop measurements.
+        #[arg(long)]
+        quick: bool,
     },
     /// Check GitHub for a newer release; with --apply, download it and swap it in.
     Update {
@@ -356,6 +372,7 @@ fn real_main() -> Result<()> {
         }
         Some(Cmd::Mcp) => mcp::serve(),
         Some(Cmd::Tui) => tui::run(),
+        Some(Cmd::Tray { self_test }) => tray::run(self_test),
         Some(Cmd::Daemon) => daemon::run_daemon(),
         Some(Cmd::Core { action }) => core_cmd(action.as_deref()),
         Some(Cmd::Hook { event }) => {
@@ -447,6 +464,10 @@ fn real_main() -> Result<()> {
         Some(Cmd::Ui { request, args }) => std::process::exit(ui_api::run(&request, args.as_deref())),
         Some(Cmd::UiSnapshot { size, keys, json }) => {
             println!("{}", tui::snapshot(&size, &keys, json)?);
+            Ok(())
+        }
+        Some(Cmd::UiBench { runs, quick }) => {
+            println!("{}", tui::bench(runs.max(1), quick)?);
             Ok(())
         }
         Some(Cmd::UsageProbe) => {

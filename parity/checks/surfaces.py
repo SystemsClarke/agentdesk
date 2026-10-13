@@ -7,7 +7,7 @@ import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-from lib import Board, Missing, Waived, feature, wait_for
+from lib import Board, Missing, feature, wait_for
 
 README = "README.md"
 
@@ -311,11 +311,6 @@ def _rollout(b):
 def _install(b):
     root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     assert os.path.exists(os.path.join(root, "scripts", "install.sh")) and os.path.exists(os.path.join(root, "scripts", "install.ps1"))
-
-
-@feature("tray.surface", "tray", "The tray icon (open ops console, restart to update) and its click-to-open toasts", "Tray.cs")
-def _tray(b):
-    raise Waived("a terminal program has no tray: toasts and the window's own Options/Update rows replace it")
 
 
 @feature("dictation.engine", "dictation", "Ctrl+D local speech-to-text (sherpa-onnx) with a 2 s pre-roll microphone: the original's own pre-roll check passes against the embedded Python, and a missing microphone or model comes back as state done with an error", "docs/ui-api.md ui:dictate, dictate.py, scripts/check_dictate.py")

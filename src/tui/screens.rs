@@ -5,6 +5,7 @@ use super::seg::*;
 use super::state::*;
 use super::{App, Screen};
 use chrono::{DateTime, Local};
+use std::rc::Rc;
 
 pub const GRACE_HOURS: i64 = 24;
 
@@ -531,7 +532,7 @@ impl App {
         } else {
             vec![s("○ Concierge off", "or"), s(" · Ctrl+W starts it", "fa")]
         };
-        let slack_up = crate::bridge::running();
+        let slack_up = self.st.slack_up;
         let mut right: L = vec![
             if self.st.open_qs.is_empty() { s("nobody's calling", "mu") } else { s(format!("{} ringing for you", self.st.open_qs.len()), "pk b") },
             s(" · ", "fa"),
@@ -687,7 +688,7 @@ impl App {
         match self.screen {
             Screen::Main => self.main_screen(w),
             Screen::List => self.channel_list(w, h),
-            Screen::Read => self.reader(w),
+            Screen::Read => self.reader(w, h),
             Screen::Prs => self.prs_screen(w, h),
             Screen::Jobs => self.jobs_screen(w, h),
             Screen::Rules => self.rules_screen(w, h),
@@ -992,7 +993,7 @@ impl App {
         lines
     }
 
-    fn reader(&mut self, w: usize) -> Vec<L> {
+    fn reader(&mut self, w: usize, h: usize) -> Vec<L> {
         let Some(d) = &self.detail else {
             return vec![vec![s(" That thread is no longer on the board.", "mu")]];
         };
@@ -1048,32 +1049,66 @@ impl App {
         }
         l.push(date);
         l.push(vec![s(format!("╚{}╝", rep('═', w.saturating_sub(2))), "rule")]);
-        for (i, m) in msgs.iter().enumerate() {
-            let receipt = m.kind == "read-receipt";
-            let verb = if receipt {
-                "picked it up"
-            } else if i == 0 {
-                "wrote"
-            } else if m.author == "john" && ch == "question" {
-                "answered"
-            } else {
-                "replied"
-            };
-            let via = if m.via == "slack" { " from the phone, via SlackNet" } else { "" };
-            let text = format!(" ─── {} {verb} {}{via} ", m.author, when(m.ts));
-            l.push(vec![
-                s(" ───", if receipt { "rule rcpt" } else { "rule" }),
-                s(format!(" {}", m.author), &format!("{} b{}", hue(&m.author), if receipt { " rcpt" } else { "" })),
-                s(format!(" {verb} {}", when(m.ts)), if receipt { "rcpt" } else { "mu" }),
-                s(via, "pu"),
-                s(format!(" {}", rep('─', w.saturating_sub(text.chars().count() + 1))), "rule"),
-            ]);
-            for line in md::render(&m.body, w.saturating_sub(2)) {
-                let mut segs = vec![plain(" ")];
-                segs.extend(line.into_iter().map(|x| if receipt { Seg { tags: format!("{} rcpt", x.tags).trim().to_string(), ..x } } else { x }));
-                l.push(segs);
+        // Each message's Markdown is rendered once (per width) and kept: rendering a long thread is the slow part, and a frame
+        // (every key typed in the reply box) must not redo it. Only the lines in view are filled in; the rest stay empty
+        // placeholders so the line count, and so the scroll range, is the same.
+        let bodies: Vec<Rc<Vec<L>>> = {
+            let mut cache = self.md_cache.borrow_mut();
+            if cache.thread != t.id {
+                cache.thread = t.id;
+                cache.lines.clear();
             }
-            l.push(vec![]);
+            msgs.iter()
+                .enumerate()
+                .map(|(i, m)| match cache.lines.get(&i) {
+                    Some((cw, rev, lines)) if *cw == w && *rev == m.rev => lines.clone(),
+                    _ => {
+                        let receipt = m.kind == "read-receipt";
+                        let lines: Vec<L> = md::render(&m.body, w.saturating_sub(2))
+                            .into_iter()
+                            .map(|line| {
+                                let mut segs = vec![plain(" ")];
+                                segs.extend(line.into_iter().map(|x| if receipt { Seg { tags: format!("{} rcpt", x.tags).trim().to_string(), ..x } } else { x }));
+                                segs
+                            })
+                            .collect();
+                        let lines = Rc::new(lines);
+                        cache.lines.insert(i, (w, m.rev, lines.clone()));
+                        lines
+                    }
+                })
+                .collect()
+        };
+        let total = l.len() + bodies.iter().map(|b| b.len() + 2).sum::<usize>();
+        let lo = self.scroll.min(total.saturating_sub(h));
+        let hi = lo + h;
+        for (i, (m, body)) in msgs.iter().zip(&bodies).enumerate() {
+            let at = l.len();
+            if at < hi && at + body.len() + 2 > lo {
+                let receipt = m.kind == "read-receipt";
+                let verb = if receipt {
+                    "picked it up"
+                } else if i == 0 {
+                    "wrote"
+                } else if m.author == "john" && ch == "question" {
+                    "answered"
+                } else {
+                    "replied"
+                };
+                let via = if m.via == "slack" { " from the phone, via SlackNet" } else { "" };
+                let text = format!(" ─── {} {verb} {}{via} ", m.author, when(m.ts));
+                l.push(vec![
+                    s(" ───", if receipt { "rule rcpt" } else { "rule" }),
+                    s(format!(" {}", m.author), &format!("{} b{}", hue(&m.author), if receipt { " rcpt" } else { "" })),
+                    s(format!(" {verb} {}", when(m.ts)), if receipt { "rcpt" } else { "mu" }),
+                    s(via, "pu"),
+                    s(format!(" {}", rep('─', w.saturating_sub(text.chars().count() + 1))), "rule"),
+                ]);
+                l.extend(body.iter().enumerate().map(|(j, line)| if at + 1 + j >= lo && at + 1 + j < hi { line.clone() } else { vec![] }));
+                l.push(vec![]);
+            } else {
+                l.resize(at + body.len() + 2, vec![]);
+            }
         }
         l
     }
@@ -1259,9 +1294,9 @@ impl App {
         } else {
             stat("Concierge", vec![s("○ off", "or"), s("  Ctrl+W starts it", "fa")]);
         }
-        let slack_up = crate::bridge::running();
+        let slack_up = self.st.slack_up;
         if slack_up {
-            let (_, poll, relay) = st.slack.unwrap();
+            let (_, poll, relay) = st.slack.unwrap_or_default(); // up implies a heartbeat was read; a default keeps a frame from ever panicking on it
             let mut v = vec![s("● up", "gr"), s(format!(" · polling every {poll}s"), "mu")];
             if let Some((rts, tid)) = relay {
                 v.push(s(format!(" · last relay {} (#{tid} to your phone)", when(rts)), "mu"));
@@ -1364,8 +1399,14 @@ impl App {
         l.push(vec![]);
         if !callers.is_empty() {
             let c = &callers[self.sel_of().min(callers.len() - 1)];
-            let bio =
-                self.st.bios.get(&c.author.to_lowercase()).and_then(|id| crate::tui::state::Detail::load(&self.db, *id)).and_then(|d| d.messages.first().map(|m| m.body.clone()));
+            // read from the board once per refresh, not on every frame
+            let bio = self.st.bios.get(&c.author.to_lowercase()).and_then(|id| {
+                self.bio_cache
+                    .borrow_mut()
+                    .entry(*id)
+                    .or_insert_with(|| crate::tui::state::Detail::load(&self.db, *id).and_then(|d| d.messages.first().map(|m| m.body.clone())))
+                    .clone()
+            });
             let body: Vec<L> = match bio {
                 Some(b) => b.trim().lines().take(6).map(|x| vec![plain(x.to_string())]).collect(),
                 None => vec![vec![s(format!("{} hasn't posted a bio yet.", c.author), "mu")]],
