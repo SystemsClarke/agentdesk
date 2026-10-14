@@ -18,6 +18,13 @@ const OLD_RUN: &str = "AgentDesk";
 const SCRIPT_RUN: &str = "AgentDeskRust";
 const TASK: &str = "AgentDesk-Backup";
 const PYTHON_ENV: &str = "AGENTDESK_PYTHON_BIN";
+/// How long the new core gets to bring back the identities that were running (it starts them as fast as the session limit allows).
+const RESUME_WAIT: Duration = Duration::from_secs(120);
+/// What the move sets aside instead of deleting (under the data folder), so `--rollback` can put it back.
+const ASIDE: &str = "dotnet-old";
+/// The .NET install's parts, relative to the AgentDeskApp folder.
+const OLD_PARTS: [&str; 4] = ["current", "packages", "AgentDesk.exe", "Update.exe"];
+const OLD_TASK: &str = "AgentDesk-Daemon";
 /// How long to wait for something that relaunches the old app (a watchdog, a scheduled task) before looking again.
 const SETTLE: Duration = Duration::from_secs(20);
 
@@ -113,6 +120,8 @@ pub fn from_dotnet(h: &dyn Host, ctx: &Ctx, tray: bool, dry_run: bool) -> Result
             format!("point {PYTHON_ENV} at the old backup task's python, if it ran one"),
             format!("register the core{} to start at logon", if tray { " and the tray" } else { "" }),
             "end any leftover agentdesk daemon or tray, then start the core now".to_string(),
+            "check: the core holds the lock, no row of the board is missing, and every identity that was running is running again (else undo it all)".to_string(),
+            format!("clean up: set the .NET program files aside in {ASIDE} (nothing is deleted) and drop the first script's logon entries"),
         ];
         return Ok(std::iter::once("dry run: nothing is changed. It would:".to_string()).chain(steps.iter().enumerate().map(|(i, s)| format!("  {}. {s}", i + 1))).collect());
     }
@@ -129,6 +138,21 @@ pub fn from_dotnet(h: &dyn Host, ctx: &Ctx, tray: bool, dry_run: bool) -> Result
         say.push(format!("saved how to go back: {}", rec_file.display()));
     }
     let rec = Record::from_json(&serde_json::from_str(&h.file_read(&rec_file).unwrap_or_default()).unwrap_or(Value::Null));
+
+    // 1b. what the board holds now, and a snapshot of it
+    let before = h.board_summary()?;
+    if !before.integrity_ok {
+        bail!("sqlite does not find the board sound: not moving anything. Run `agentdesk backup` and look at the board first.");
+    }
+    say.push(format!(
+        "the board: {} messages in {} threads, {} identities ({} running), {} goals",
+        before.messages,
+        before.threads,
+        before.identities,
+        before.running.len(),
+        before.goals
+    ));
+    say.push(format!("snapshot of the board: {}", h.backup_board()?));
 
     // 2. quit the old window and core
     quit_old(h)?;
@@ -189,15 +213,94 @@ pub fn from_dotnet(h: &dyn Host, ctx: &Ctx, tray: bool, dry_run: bool) -> Result
     let r = install::install(h, ctx, tray, false)?;
     say.push(format!("registered at logon: {} change(s)", r["changes"].as_array().map(|a| a.len()).unwrap_or(0)));
     h.kill_stray();
-    h.start_core()?;
-    say.push("the core is running".into());
+    let started = h.start_core();
+    match started.and_then(|_| verify(h, ctx, &before, &mut say)) {
+        Ok(()) => {}
+        Err(e) => {
+            // do not leave a half-moved machine: put the .NET app back
+            let undone = rollback(h, ctx, false);
+            bail!(
+                "{e:#}\nThe move was undone ({}). Nothing on the board was changed.",
+                if undone.is_ok() { "the .NET logon entry, PATH and backup task are back" } else { "UNDO ALSO FAILED: run `agentdesk install --rollback`" }
+            );
+        }
+    }
 
-    // 7. the binary must still be there
+    // 7. clean up: the .NET program files are set aside, not deleted
+    h.reg_delete(SCRIPT_RUN)?;
+    h.task_delete(OLD_TASK);
+    let aside = ctx.data.join(ASIDE);
+    let mut moved = Vec::new();
+    for part in OLD_PARTS {
+        if h.move_aside(&PathBuf::from(format!("{old_app}\\{part}")), &aside.join(part)) {
+            moved.push(part);
+        }
+    }
+    if moved.is_empty() {
+        say.push("the .NET program files were already gone".into());
+    } else {
+        say.push(format!("set the .NET program files aside in {} ({}): `--rollback` puts them back, delete the folder when you are happy", aside.display(), moved.join(", ")));
+    }
+
+    // 8. the binary must still be there
     if !h.exists(&ctx.exe) {
         bail!("{exe} is gone again at the end of the run");
     }
     say.push("Done. Restart your Claude Code sessions so they reconnect to the new MCP server; `agentdesk tui` is the window.".into());
     Ok(say)
+}
+
+/// The move worked: the core holds its lock from the binary in its place, the board lost nothing, and every identity that was running
+/// has been resumed (the new core queues what the board says was running and starts it as slots allow).
+fn verify(h: &dyn Host, ctx: &Ctx, before: &install::Summary, say: &mut Vec<String>) -> Result<()> {
+    let (pid, core_exe) = h.core_info().ok_or_else(|| anyhow!("the core is not holding its lock"))?;
+    let norm = |s: &str| s.replace('/', "\\").to_lowercase();
+    if norm(&core_exe) != norm(&ctx.exe.to_string_lossy()) {
+        bail!("the core that is running (pid {pid}) is {core_exe}, not {}", ctx.exe.display());
+    }
+    say.push(format!("the core is running (pid {pid})"));
+    let mut after = h.board_summary()?;
+    let mut waited = Duration::ZERO;
+    while before.running.iter().any(|n| !after.running.contains(n)) && waited < RESUME_WAIT && h.core_info().is_some() {
+        h.sleep(Duration::from_secs(5));
+        waited += Duration::from_secs(5);
+        after = h.board_summary()?;
+    }
+    if !after.integrity_ok {
+        bail!("sqlite does not find the board sound after the move");
+    }
+    for (what, b, a) in [
+        ("messages", before.messages, after.messages),
+        ("threads", before.threads, after.threads),
+        ("identities", before.identities, after.identities),
+        ("goals", before.goals, after.goals),
+    ] {
+        if a < b {
+            bail!("the board has fewer {what} than before ({a} < {b})");
+        }
+    }
+    if h.core_info().is_none() {
+        bail!("the core stopped while the identities were coming back");
+    }
+    say.push(format!("the board is whole: {} messages, {} threads, {} identities, {} goals", after.messages, after.threads, after.identities, after.goals));
+    // Slack: the same token files, now read by the core's bridge (a warning, not a failure: Slack may never have been set up)
+    let mut slack = h.slack_state();
+    let mut tries = 0;
+    while !slack.0 && tries < 6 && slack.1.contains("NOT up") {
+        h.sleep(Duration::from_secs(5));
+        slack = h.slack_state();
+        tries += 1;
+    }
+    say.push(slack.1);
+    let missing: Vec<&String> = before.running.iter().filter(|n| !after.running.contains(*n)).collect();
+    say.push(format!("identities running again: {} of {}", before.running.len() - missing.len(), before.running.len()));
+    if !missing.is_empty() {
+        say.push(format!(
+            "  still queued (the session limit or the usage governor holds them; the core starts them as slots free up): {}",
+            missing.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
+        ));
+    }
+    Ok(())
 }
 
 pub fn rollback(h: &dyn Host, ctx: &Ctx, dry_run: bool) -> Result<Vec<String>> {
@@ -233,6 +336,12 @@ pub fn rollback(h: &dyn Host, ctx: &Ctx, dry_run: bool) -> Result<Vec<String>> {
         say.push(format!("pointed {TASK} back at {}", t.execute));
     }
     h.user_env_set(PYTHON_ENV, rec.python.as_deref())?;
+    let old_app = format!("{}\\AgentDeskApp", ctx.local.to_string_lossy().trim_end_matches(['\\', '/']));
+    let aside = ctx.data.join(ASIDE);
+    let back: Vec<&str> = OLD_PARTS.into_iter().filter(|part| h.move_aside(&aside.join(part), &PathBuf::from(format!("{old_app}\\{part}")))).collect();
+    if !back.is_empty() {
+        say.push(format!("put the .NET program files back ({})", back.join(", ")));
+    }
     h.file_remove(&file)?;
     let old = ctx.local.join("AgentDeskApp").join("current").join("AgentDesk.App.exe");
     say.push(format!(
@@ -269,6 +378,11 @@ mod tests {
         h.env.borrow_mut().insert("Path".into(), r"C:\Windows;C:\Users\jo\AppData\Local\AgentDeskApp\current;C:\tools".into());
         *h.task.borrow_mut() = Some(TaskAction { execute: r"C:\old\checkout\.venv\Scripts\python.exe".into(), arguments: "backup.py".into(), dir: r"C:\old\checkout".into() });
         h.present.borrow_mut().insert(c.exe.clone());
+        *h.summary.borrow_mut() = install::Summary { messages: 10, threads: 3, identities: 4, goals: 1, running: vec!["a".into(), "b".into()], integrity_ok: true };
+        *h.core_exe.borrow_mut() = c.exe.to_string_lossy().into_owned();
+        for part in OLD_PARTS {
+            h.present.borrow_mut().insert(PathBuf::from(format!(r"C:\Users\jo\AppData\Local\AgentDeskApp\{part}")));
+        }
         h.present.borrow_mut().insert(PathBuf::from(r"C:\old\checkout\.venv\Scripts\python.exe"));
         h
     }
@@ -381,7 +495,7 @@ mod tests {
         let c = ctx();
         let h = dotnet_machine(&c);
         let say = from_dotnet(&h, &c, true, true).unwrap();
-        assert!(say[0].starts_with("dry run") && say.len() == 11);
+        assert!(say[0].starts_with("dry run") && say.len() == 13);
         assert!(h.log.borrow().is_empty());
     }
 

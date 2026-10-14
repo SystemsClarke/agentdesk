@@ -284,6 +284,18 @@ pub struct TaskAction {
     pub dir: String,
 }
 
+/// What is on the board, counted: compared before and after a move so that nothing is lost on the way.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Summary {
+    pub messages: i64,
+    pub threads: i64,
+    pub identities: i64,
+    pub goals: i64,
+    /// Identities whose state is `running` (the new core resumes exactly these).
+    pub running: Vec<String>,
+    pub integrity_ok: bool,
+}
+
 /// Everything that touches the machine. `SysHost` is the real one; the tests use `fake::Fake`.
 pub trait Host {
     fn file_read(&self, p: &Path) -> Option<String>;
@@ -311,6 +323,18 @@ pub trait Host {
     fn kill_stray(&self);
     /// Runs `exe args` with this terminal and waits; true when it succeeded.
     fn relaunch(&self, exe: &Path, args: &[String]) -> Result<bool>;
+    /// The board, counted, and whether sqlite finds it sound.
+    fn board_summary(&self) -> Result<Summary>;
+    /// A snapshot archive of the board (what `agentdesk backup` makes); its path.
+    fn backup_board(&self) -> Result<String>;
+    /// The core that holds the lock: (pid, exe).
+    fn core_info(&self) -> Option<(u32, String)>;
+    /// Renames a file or folder out of the way (best effort): false when it is not there or cannot be moved.
+    fn move_aside(&self, from: &Path, to: &Path) -> bool;
+    /// Deletes a scheduled task (not there is fine).
+    fn task_delete(&self, name: &str);
+    /// The Slack bridge (supervised by the core, reading the same token files as before) is up: (up, one line saying how).
+    fn slack_state(&self) -> (bool, String);
 }
 
 fn read_place(h: &dyn Host, p: &Place) -> Option<String> {
@@ -637,6 +661,58 @@ impl Host for SysHost {
     fn relaunch(&self, exe: &Path, args: &[String]) -> Result<bool> {
         Ok(std::process::Command::new(exe).args(args).status()?.success())
     }
+    fn board_summary(&self) -> Result<Summary> {
+        let db = crate::db::Db::open(&paths::db_path())?;
+        let n = |sql: &str| db.scalar_i64(sql, &[]).map(|v| v.unwrap_or(0));
+        let running = db.rows("SELECT name FROM identities WHERE state='running' ORDER BY name", &[])?.iter().filter_map(|r| r["name"].as_str().map(String::from)).collect();
+        let integrity = db.rows("PRAGMA quick_check", &[])?.first().map(|r| r.to_string().contains("ok")).unwrap_or(false);
+        Ok(Summary {
+            messages: n("SELECT COUNT(*) FROM messages")?,
+            threads: n("SELECT COUNT(*) FROM threads")?,
+            identities: n("SELECT COUNT(*) FROM identities")?,
+            goals: n("SELECT COUNT(*) FROM goals")?,
+            running,
+            integrity_ok: integrity,
+        })
+    }
+    fn backup_board(&self) -> Result<String> {
+        crate::backup::run_with(&crate::db::Db::open(&paths::db_path())?, true)
+    }
+    fn core_info(&self) -> Option<(u32, String)> {
+        daemon::status().map(|i| (i.pid, i.exe))
+    }
+    fn move_aside(&self, from: &Path, to: &Path) -> bool {
+        if !from.exists() {
+            return false;
+        }
+        if let Some(d) = to.parent() {
+            let _ = std::fs::create_dir_all(d);
+        }
+        std::fs::rename(from, to).is_ok()
+    }
+    fn slack_state(&self) -> (bool, String) {
+        let tokens = paths::home_dir().join(".claude").join("slack-notify");
+        if !tokens.join("bot-token.txt").exists() {
+            return (false, format!("no Slack tokens in {} (Slack was not set up on this machine)", tokens.display()));
+        }
+        let up = crate::bridge::running();
+        (
+            up,
+            format!(
+                "Slack bridge {} (tokens from {}, {})",
+                if up { "is up" } else { "is NOT up yet" },
+                tokens.display(),
+                if crate::bridge::use_native() { "native" } else { "embedded Python" }
+            ),
+        )
+    }
+    fn task_delete(&self, name: &str) {
+        let _ = command_out({
+            let mut c = std::process::Command::new("schtasks");
+            c.args(["/Delete", "/TN", name, "/F"]);
+            c
+        });
+    }
 }
 
 /// The `agentdesk install` / `uninstall` entry points.
@@ -678,6 +754,13 @@ pub mod fake {
         /// Every sleep brings the old window back, like a watchdog would.
         pub respawn: Cell<bool>,
         pub systemd: Cell<bool>,
+        pub summary: RefCell<Summary>,
+        /// The board comes back one message short after the core starts.
+        pub lose_rows: Cell<bool>,
+        /// The core never holds its lock.
+        pub core_dead: Cell<bool>,
+        pub slack_down: Cell<bool>,
+        pub core_exe: RefCell<String>,
         pub log: RefCell<Vec<String>>,
     }
 
@@ -804,6 +887,41 @@ pub mod fake {
         fn relaunch(&self, exe: &Path, args: &[String]) -> Result<bool> {
             self.note(format!("relaunch {} {}", exe.display(), args.join(" ")));
             Ok(true)
+        }
+        fn board_summary(&self) -> Result<Summary> {
+            self.note("summary".into());
+            let mut s = self.summary.borrow().clone();
+            if self.lose_rows.get() && self.log.borrow().iter().any(|l| l == "start-core") {
+                s.messages -= 1;
+            }
+            Ok(s)
+        }
+        fn backup_board(&self) -> Result<String> {
+            self.note("backup-board".into());
+            Ok("board.zip".into())
+        }
+        fn core_info(&self) -> Option<(u32, String)> {
+            if self.log.borrow().iter().any(|l| l == "start-core") && !self.core_dead.get() {
+                Some((4242, self.core_exe.borrow().clone()))
+            } else {
+                None
+            }
+        }
+        fn move_aside(&self, from: &Path, to: &Path) -> bool {
+            let there = self.present.borrow().contains(from);
+            if there {
+                self.note(format!("move {} -> {}", from.display(), to.display()));
+                let mut p = self.present.borrow_mut();
+                p.remove(from);
+                p.insert(to.to_path_buf());
+            }
+            there
+        }
+        fn task_delete(&self, name: &str) {
+            self.note(format!("task-delete {name}"));
+        }
+        fn slack_state(&self) -> (bool, String) {
+            (!self.slack_down.get(), "Slack bridge is up".into())
         }
     }
 }
