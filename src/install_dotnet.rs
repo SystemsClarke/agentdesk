@@ -70,6 +70,9 @@ fn old_python(h: &dyn Host, t: &TaskAction) -> Option<PathBuf> {
 
 /// Quits the old window, then the old core, and refuses to go on if either comes back.
 fn quit_old(h: &dyn Host) -> Result<()> {
+    if ![OLD_APP, OLD_CORE].into_iter().any(|i| h.process_running(i)) {
+        return Ok(()); // already gone (the run that copied the binary here quit them)
+    }
     h.kill_process(OLD_APP);
     h.sleep(Duration::from_secs(2));
     h.kill_process(OLD_CORE);
@@ -93,9 +96,15 @@ pub fn from_dotnet(h: &dyn Host, ctx: &Ctx, tray: bool, dry_run: bool) -> Result
     let exe = ctx.exe.to_string_lossy().into_owned();
     let old_app = format!("{}\\AgentDeskApp", ctx.local.to_string_lossy().trim_end_matches(['\\', '/']));
     let dir = exe.rsplit_once(['\\', '/']).map(|(d, _)| d.to_string()).unwrap_or_default();
+    // the binary lives beside the .NET app (its folder is the one a security product already knows), unless told otherwise
+    let home_dir = std::env::var("AGENTDESK_INSTALL_DIR").ok().filter(|d| !d.is_empty()).unwrap_or_else(|| format!("{old_app}\\bin"));
+    let target = PathBuf::from(format!("{home_dir}\\agentdesk.exe"));
+    let norm = |s: &str| s.replace('/', "\\").to_lowercase();
+    let relocate = norm(&exe) != norm(&target.to_string_lossy());
     if dry_run {
         let steps = [
             format!("save how to go back to {}", record_path(ctx).display()),
+            if relocate { format!("copy this binary to {} and carry on from there", target.display()) } else { "(this binary is already in its folder)".to_string() },
             "quit AgentDesk.App, then AgentDesk.Core, wait, and quit them again if they came back (stop here if they stay)".to_string(),
             format!("remove the .NET core from logon (HKCU Run value {OLD_RUN})"),
             "agentdesk migrate --apply: back up the board, point Claude Code at this binary".to_string(),
@@ -103,7 +112,7 @@ pub fn from_dotnet(h: &dyn Host, ctx: &Ctx, tray: bool, dry_run: bool) -> Result
             format!("put {dir} first on the user PATH, drop {old_app}"),
             format!("point {PYTHON_ENV} at the old backup task's python, if it ran one"),
             format!("register the core{} to start at logon", if tray { " and the tray" } else { "" }),
-            "start the core now".to_string(),
+            "end any leftover agentdesk daemon or tray, then start the core now".to_string(),
         ];
         return Ok(std::iter::once("dry run: nothing is changed. It would:".to_string()).chain(steps.iter().enumerate().map(|(i, s)| format!("  {}. {s}", i + 1))).collect());
     }
@@ -124,6 +133,26 @@ pub fn from_dotnet(h: &dyn Host, ctx: &Ctx, tray: bool, dry_run: bool) -> Result
     // 2. quit the old window and core
     quit_old(h)?;
     say.push("quit the .NET window and core".into());
+    h.kill_stray();
+    if relocate {
+        h.copy_file(&ctx.exe, &target)?;
+        if !h.exists(&target) {
+            bail!("{} is not there after the copy", target.display());
+        }
+        say.push(format!("copied this binary to {}", target.display()));
+        let mut args = vec!["install".to_string(), "--from-dotnet".to_string()];
+        if !tray {
+            args.push("--no-tray".into());
+        }
+        say.push(format!("carrying on from {}", target.display()));
+        for l in &say {
+            println!("{l}");
+        }
+        if !h.relaunch(&target, &args)? {
+            bail!("the copy at {} failed; see above. Nothing is lost: --rollback undoes what was changed.", target.display());
+        }
+        return Ok(vec![]);
+    }
     h.reg_delete(OLD_RUN)?;
     say.push("took the .NET core off logon".into());
 
@@ -159,6 +188,7 @@ pub fn from_dotnet(h: &dyn Host, ctx: &Ctx, tray: bool, dry_run: bool) -> Result
     // 6. logon registration, then the core now
     let r = install::install(h, ctx, tray, false)?;
     say.push(format!("registered at logon: {} change(s)", r["changes"].as_array().map(|a| a.len()).unwrap_or(0)));
+    h.kill_stray();
     h.start_core()?;
     say.push("the core is running".into());
 
@@ -221,7 +251,7 @@ mod tests {
     fn ctx() -> Ctx {
         Ctx {
             os: Os::Windows,
-            exe: PathBuf::from(r"C:\Users\jo\AppData\Local\Programs\agentdesk\agentdesk.exe"),
+            exe: PathBuf::from(r"C:\Users\jo\AppData\Local\AgentDeskApp\bin\agentdesk.exe"),
             home: PathBuf::from(r"C:\Users\jo"),
             data: PathBuf::from(r"C:\Users\jo\AppData\Local\AgentDesk"),
             config: PathBuf::new(),
@@ -267,7 +297,7 @@ mod tests {
         assert!(h.count("kill AgentDesk.App.exe") == 2 && h.count("kill AgentDesk.Core.exe") == 2, "both are killed again after the wait");
         assert!(say.last().unwrap().starts_with("Done"));
         // the result
-        assert_eq!(h.env.borrow()["Path"], r"C:\Users\jo\AppData\Local\Programs\agentdesk;C:\Windows;C:\tools");
+        assert_eq!(h.env.borrow()["Path"], r"C:\Users\jo\AppData\Local\AgentDeskApp\bin;C:\Windows;C:\tools");
         assert_eq!(h.env.borrow()["AGENTDESK_PYTHON_BIN"], r"C:\old\checkout\.venv\Scripts\python.exe");
         let reg = h.reg.borrow();
         assert!(!reg.contains_key("AgentDesk") && reg.contains_key("OtherApp") && reg["AgentDeskCore"].starts_with("conhost.exe --headless"));
@@ -317,6 +347,33 @@ mod tests {
     }
 
     #[test]
+    fn a_binary_run_from_elsewhere_copies_itself_beside_the_old_app_and_carries_on_from_there() {
+        let mut c = ctx();
+        c.exe = PathBuf::from(r"C:\Users\jo\Downloads\agentdesk.exe");
+        let h = dotnet_machine(&c);
+        from_dotnet(&h, &c, true, false).unwrap();
+        let bin = r"C:\Users\jo\AppData\Local\AgentDeskApp\bin\agentdesk.exe";
+        let copy = format!(r"copy C:\Users\jo\Downloads\agentdesk.exe -> {bin}");
+        let relaunch = format!("relaunch {bin} install --from-dotnet");
+        let order = ["kill AgentDesk.App.exe", "kill AgentDesk.Core.exe", "kill-stray", copy.as_str(), relaunch.as_str()];
+        let at: Vec<usize> = order.iter().map(|p| h.pos(p)).collect();
+        assert!(at.windows(2).all(|w| w[0] < w[1]), "wrong order: {at:?} in {:#?}", h.log.borrow());
+        for later in ["reg-delete", "migrate", "run schtasks", "reg-set", "start-core"] {
+            assert_eq!(h.count(later), 0, "{later} is the copy's job, not the first process's");
+        }
+    }
+
+    #[test]
+    fn leftover_daemons_are_ended_before_the_core_starts() {
+        let c = ctx();
+        let h = dotnet_machine(&c);
+        from_dotnet(&h, &c, true, false).unwrap();
+        let log = h.log.borrow();
+        let last_stray = log.iter().rposition(|l| l == "kill-stray").unwrap();
+        assert!(last_stray < log.iter().position(|l| l == "start-core").unwrap());
+    }
+
+    #[test]
     fn off_windows_it_is_a_clean_error_and_a_dry_run_changes_nothing() {
         let mut c = ctx();
         c.os = Os::Linux;
@@ -324,7 +381,7 @@ mod tests {
         let c = ctx();
         let h = dotnet_machine(&c);
         let say = from_dotnet(&h, &c, true, true).unwrap();
-        assert!(say[0].starts_with("dry run") && say.len() == 10);
+        assert!(say[0].starts_with("dry run") && say.len() == 11);
         assert!(h.log.borrow().is_empty());
     }
 

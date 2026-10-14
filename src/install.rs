@@ -305,6 +305,12 @@ pub trait Host {
     fn migrate(&self) -> Result<String>;
     fn start_core(&self) -> Result<()>;
     fn stop_core(&self) -> Result<()>;
+    /// Copies a file, making its folder.
+    fn copy_file(&self, from: &Path, to: &Path) -> Result<()>;
+    /// Ends every `agentdesk daemon` / `agentdesk tray` process but this one (a leftover from an older build holds no lock).
+    fn kill_stray(&self);
+    /// Runs `exe args` with this terminal and waits; true when it succeeded.
+    fn relaunch(&self, exe: &Path, args: &[String]) -> Result<bool>;
 }
 
 fn read_place(h: &dyn Host, p: &Place) -> Option<String> {
@@ -617,6 +623,20 @@ impl Host for SysHost {
     fn stop_core(&self) -> Result<()> {
         daemon::stop(Duration::from_secs(10)).map(|_| ())
     }
+    fn copy_file(&self, from: &Path, to: &Path) -> Result<()> {
+        if let Some(d) = to.parent() {
+            std::fs::create_dir_all(d)?;
+        }
+        std::fs::copy(from, to)?;
+        Ok(())
+    }
+    fn kill_stray(&self) {
+        let script = r#"Get-CimInstance Win32_Process -Filter "Name='agentdesk.exe'" | Where-Object { $_.ProcessId -ne [int]$env:AD_SELF -and $_.CommandLine -match '(daemon|tray)"?\s*$' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"#;
+        let _ = powershell(script, &[("AD_SELF", &std::process::id().to_string())]);
+    }
+    fn relaunch(&self, exe: &Path, args: &[String]) -> Result<bool> {
+        Ok(std::process::Command::new(exe).args(args).status()?.success())
+    }
 }
 
 /// The `agentdesk install` / `uninstall` entry points.
@@ -772,6 +792,18 @@ pub mod fake {
         fn stop_core(&self) -> Result<()> {
             self.note("stop-core".into());
             Ok(())
+        }
+        fn copy_file(&self, from: &Path, to: &Path) -> Result<()> {
+            self.note(format!("copy {} -> {}", from.display(), to.display()));
+            self.present.borrow_mut().insert(to.to_path_buf());
+            Ok(())
+        }
+        fn kill_stray(&self) {
+            self.note("kill-stray".into());
+        }
+        fn relaunch(&self, exe: &Path, args: &[String]) -> Result<bool> {
+            self.note(format!("relaunch {} {}", exe.display(), args.join(" ")));
+            Ok(true)
         }
     }
 }
