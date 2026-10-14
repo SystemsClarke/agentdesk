@@ -16,7 +16,7 @@ use crate::sessions::Registry;
 use crate::{paths, pyhost, slack};
 use chrono::{DateTime, Utc};
 use serde_json::{json, Value};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -59,7 +59,7 @@ pub fn pid_alive(pid: i64) -> bool {
     }
     #[cfg(not(windows))]
     {
-        Command::new("kill").args(["-0", &pid.to_string()]).stderr(Stdio::null()).status().map(|s| s.success()).unwrap_or(false)
+        crate::paths::new_command("kill").args(["-0", &pid.to_string()]).stderr(Stdio::null()).status().map(|s| s.success()).unwrap_or(false)
     }
 }
 
@@ -248,7 +248,7 @@ pub fn run(stop: Arc<std::sync::atomic::AtomicBool>, registry: Registry) {
     }
     while !stop.load(std::sync::atomic::Ordering::Relaxed) {
         let began = Instant::now();
-        let child = Command::new(&cmd[0])
+        let child = crate::paths::new_command(&cmd[0])
             .args(&cmd[1..])
             .current_dir(pyhost::dir().unwrap_or_else(|_| paths::data_dir()))
             .env("PYTHONIOENCODING", "utf-8")

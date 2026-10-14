@@ -651,17 +651,17 @@ fn end(db: &Db, g: &Value, state: &str, note: &str) -> Result<()> {
 /// and anything else as 0.
 pub fn run_once(cmd: &str, folder: &str, pass: bool, timeout: Duration) -> (Option<f64>, Option<String>) {
     use std::io::Read;
-    use std::process::{Command, Stdio};
+    use std::process::Stdio;
     #[cfg(windows)]
     let mut c = {
         use std::os::windows::process::CommandExt;
-        let mut c = Command::new("cmd.exe");
+        let mut c = crate::paths::new_command("cmd.exe");
         c.raw_arg(format!("/d /s /c \"{cmd}\""));
         c
     };
     #[cfg(not(windows))]
     let mut c = {
-        let mut c = Command::new("sh");
+        let mut c = crate::paths::new_command("sh");
         c.args(["-c", cmd]);
         c
     };
