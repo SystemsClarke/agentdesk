@@ -658,8 +658,49 @@ impl Host for SysHost {
         let script = r#"Get-CimInstance Win32_Process -Filter "Name='agentdesk.exe'" | Where-Object { $_.ProcessId -ne [int]$env:AD_SELF -and $_.CommandLine -match '(daemon|tray)"?\s*$' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"#;
         let _ = powershell(script, &[("AD_SELF", &std::process::id().to_string())]);
     }
+    /// Runs `exe args` as a one-shot scheduled task (so it is not a child of whoever typed this) with its output in cutover.log, and follows
+    /// the log until it says how it ended.
     fn relaunch(&self, exe: &Path, args: &[String]) -> Result<bool> {
-        Ok(std::process::Command::new(exe).args(args).status()?.success())
+        let log = paths::data_dir().join("cutover.log");
+        std::fs::create_dir_all(paths::data_dir())?;
+        let _ = std::fs::write(&log, "");
+        // no script file: a security product may remove one a program wrote, so the whole command rides in the task's arguments
+        let args_line = format!(
+            r#"/c "set AGENTDESK_CUTOVER_CHILD=1&& "{}" {} >> "{}" 2>&1 && echo EXIT 0 >> "{}" || echo EXIT 1 >> "{}"""#,
+            exe.display(),
+            args.join(" "),
+            log.display(),
+            log.display(),
+            log.display()
+        );
+        const TASK: &str = "AgentDesk-Cutover";
+        // a trigger hours ahead (a far-off one is created disabled; the task is only ever started by hand, below, and deletes itself when the script ends)
+        let script_ps = "$a = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument $env:AD_CMD; $t = New-ScheduledTaskTrigger -Once -At (Get-Date).AddHours(12); $s = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable; Register-ScheduledTask -TaskName $env:AD_TASK -Action $a -Trigger $t -Settings $s -Force | Out-Null; Start-ScheduledTask -TaskName $env:AD_TASK";
+        let made = powershell(script_ps, &[("AD_CMD", &args_line), ("AD_TASK", TASK)])?;
+        if !made.ok {
+            bail!("could not start the one-shot task {TASK}: {}", made.stdout.trim());
+        }
+        let (mut shown, start) = (0usize, std::time::Instant::now());
+        let code = loop {
+            std::thread::sleep(Duration::from_secs(2));
+            let text = std::fs::read_to_string(&log).unwrap_or_default();
+            for l in text.lines().skip(shown) {
+                println!("{l}");
+            }
+            shown = text.lines().count();
+            if let Some(l) = text.lines().rev().find(|l| l.starts_with("EXIT ")) {
+                break l.trim_start_matches("EXIT ").trim() == "0";
+            }
+            if start.elapsed() > Duration::from_secs(20 * 60) {
+                break false;
+            }
+        };
+        let _ = command_out({
+            let mut c = std::process::Command::new("schtasks");
+            c.args(["/Delete", "/TN", TASK, "/F"]);
+            c
+        });
+        Ok(code)
     }
     fn board_summary(&self) -> Result<Summary> {
         let db = crate::db::Db::open(&paths::db_path())?;
@@ -723,7 +764,7 @@ pub fn cmd_install(no_tray: bool, from_dotnet: bool, dry_run: bool, status_only:
     } else if rollback {
         crate::install_dotnet::rollback(&h, &ctx, dry_run)?.iter().for_each(|l| println!("{l}"));
     } else if from_dotnet {
-        crate::install_dotnet::from_dotnet(&h, &ctx, !no_tray, dry_run)?.iter().for_each(|l| println!("{l}"));
+        crate::install_dotnet::from_dotnet(&h, &ctx, !no_tray, dry_run, std::env::var("AGENTDESK_CUTOVER_CHILD").is_ok_and(|v| v == "1"))?.iter().for_each(|l| println!("{l}"));
     } else {
         println!("{}", serde_json::to_string_pretty(&install(&h, &ctx, !no_tray, dry_run)?)?);
     }
@@ -1082,5 +1123,24 @@ mod tests {
         uninstall(&h, &c, false).unwrap();
         assert!(std::fs::read_dir(&agents).unwrap().next().is_none());
         assert!(h.count("run launchctl bootout") >= 4);
+    }
+}
+
+#[cfg(all(test, windows))]
+mod relaunch_live {
+    use super::*;
+
+    /// Needs a real Windows session (creates and removes a one-shot scheduled task): `cargo test relaunch_live -- --ignored`.
+    #[test]
+    #[ignore]
+    fn the_detached_run_reports_its_exit_code_through_the_log() {
+        let dir = std::env::temp_dir().join("agentdesk-relaunch-live");
+        let _ = std::fs::create_dir_all(&dir);
+        std::env::set_var("AGENTDESK_DATA", &dir);
+        let exe = std::env::current_exe().unwrap();
+        assert!(SysHost.relaunch(&exe, &["--list".to_string()]).unwrap(), "exit 0 comes back as true");
+        let log = std::fs::read_to_string(paths::data_dir().join("cutover.log")).unwrap();
+        assert!(log.contains("EXIT 0"), "{log}");
+        assert!(!SysHost.relaunch(&exe, &["--no-such-flag-xyz".to_string()]).unwrap(), "a failing run comes back as false");
     }
 }
