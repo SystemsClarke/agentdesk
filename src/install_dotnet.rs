@@ -95,7 +95,8 @@ fn quit_old(h: &dyn Host) -> Result<()> {
     }
 }
 
-pub fn from_dotnet(h: &dyn Host, ctx: &Ctx, tray: bool, dry_run: bool) -> Result<Vec<String>> {
+/// `child`: this is the detached run (see below), so it does the work; otherwise it only hands over to one.
+pub fn from_dotnet(h: &dyn Host, ctx: &Ctx, tray: bool, dry_run: bool, child: bool) -> Result<Vec<String>> {
     if ctx.os != Os::Windows {
         bail!("--from-dotnet moves a Windows machine off the .NET app; it only runs on Windows");
     }
@@ -154,29 +155,34 @@ pub fn from_dotnet(h: &dyn Host, ctx: &Ctx, tray: bool, dry_run: bool) -> Result
     ));
     say.push(format!("snapshot of the board: {}", h.backup_board()?));
 
-    // 2. quit the old window and core
-    quit_old(h)?;
-    say.push("quit the .NET window and core".into());
-    h.kill_stray();
-    if relocate {
-        h.copy_file(&ctx.exe, &target)?;
-        if !h.exists(&target) {
-            bail!("{} is not there after the copy", target.display());
+    // 2. hand over to a run that is not a descendant of the .NET core: quitting the core ends everything it hosts (the shell this
+    //    was typed in, when that is an agent's), so the quitting is done by a scheduled task, which Windows starts outside that tree.
+    if !child {
+        if relocate {
+            h.copy_file(&ctx.exe, &target)?;
+            if !h.exists(&target) {
+                bail!("{} is not there after the copy", target.display());
+            }
+            say.push(format!("copied this binary to {}", target.display()));
         }
-        say.push(format!("copied this binary to {}", target.display()));
         let mut args = vec!["install".to_string(), "--from-dotnet".to_string()];
         if !tray {
             args.push("--no-tray".into());
         }
-        say.push(format!("carrying on from {}", target.display()));
+        say.push(format!("carrying on from {} in a detached run (log: {}); this window may be ended by the move", target.display(), ctx.data.join("cutover.log").display()));
         for l in &say {
             println!("{l}");
         }
         if !h.relaunch(&target, &args)? {
-            bail!("the copy at {} failed; see above. Nothing is lost: --rollback undoes what was changed.", target.display());
+            bail!("the detached run failed; see {}. Nothing is lost: --rollback undoes what was changed.", ctx.data.join("cutover.log").display());
         }
         return Ok(vec![]);
     }
+
+    // 3. quit the old window and core
+    quit_old(h)?;
+    say.push("quit the .NET window and core".into());
+    h.kill_stray();
     h.reg_delete(OLD_RUN)?;
     say.push("took the .NET core off logon".into());
 
@@ -391,7 +397,7 @@ mod tests {
     fn the_steps_run_in_order_window_before_core() {
         let c = ctx();
         let h = dotnet_machine(&c);
-        let say = from_dotnet(&h, &c, true, false).unwrap();
+        let say = from_dotnet(&h, &c, true, false, true).unwrap();
         let order = [
             "write C:\\Users\\jo\\AppData\\Local\\AgentDesk\\cutover-rollback.json",
             "kill AgentDesk.App.exe",
@@ -422,7 +428,7 @@ mod tests {
         let c = ctx();
         let h = dotnet_machine(&c);
         h.respawn.set(true);
-        let e = from_dotnet(&h, &c, true, false).unwrap_err().to_string();
+        let e = from_dotnet(&h, &c, true, false, true).unwrap_err().to_string();
         assert!(e.contains("still running") && e.contains(OLD_APP), "{e}");
         for later in ["reg-delete", "migrate", "run schtasks", "env-set", "reg-set", "start-core"] {
             assert_eq!(h.count(later), 0, "{later} must not run");
@@ -435,10 +441,10 @@ mod tests {
     fn a_second_run_keeps_the_first_runs_record() {
         let c = ctx();
         let h = dotnet_machine(&c);
-        from_dotnet(&h, &c, true, false).unwrap();
+        from_dotnet(&h, &c, true, false, true).unwrap();
         let first = h.files.borrow()[&record_path(&c)].clone();
         h.running.borrow_mut().insert(OLD_APP.into());
-        from_dotnet(&h, &c, true, false).unwrap();
+        from_dotnet(&h, &c, true, false, true).unwrap();
         assert_eq!(h.files.borrow()[&record_path(&c)], first, "the record still describes the .NET machine");
         assert_eq!(h.count("reg-set AgentDeskCore"), 1, "registration is idempotent");
     }
@@ -448,7 +454,7 @@ mod tests {
         let c = ctx();
         let h = dotnet_machine(&c);
         let (path, run, task) = (h.env.borrow()["Path"].clone(), h.reg.borrow()["AgentDesk"].clone(), h.task.borrow().clone().unwrap());
-        from_dotnet(&h, &c, true, false).unwrap();
+        from_dotnet(&h, &c, true, false, true).unwrap();
         rollback(&h, &c, false).unwrap();
         assert_eq!(h.env.borrow()["Path"], path);
         assert!(!h.env.borrow().contains_key("AGENTDESK_PYTHON_BIN"));
@@ -465,15 +471,15 @@ mod tests {
         let mut c = ctx();
         c.exe = PathBuf::from(r"C:\Users\jo\Downloads\agentdesk.exe");
         let h = dotnet_machine(&c);
-        from_dotnet(&h, &c, true, false).unwrap();
+        from_dotnet(&h, &c, true, false, false).unwrap();
         let bin = r"C:\Users\jo\AppData\Local\AgentDeskApp\bin\agentdesk.exe";
         let copy = format!(r"copy C:\Users\jo\Downloads\agentdesk.exe -> {bin}");
         let relaunch = format!("relaunch {bin} install --from-dotnet");
-        let order = ["kill AgentDesk.App.exe", "kill AgentDesk.Core.exe", "kill-stray", copy.as_str(), relaunch.as_str()];
+        let order = ["summary", "backup-board", copy.as_str(), relaunch.as_str()];
         let at: Vec<usize> = order.iter().map(|p| h.pos(p)).collect();
         assert!(at.windows(2).all(|w| w[0] < w[1]), "wrong order: {at:?} in {:#?}", h.log.borrow());
-        for later in ["reg-delete", "migrate", "run schtasks", "reg-set", "start-core"] {
-            assert_eq!(h.count(later), 0, "{later} is the copy's job, not the first process's");
+        for later in ["kill ", "reg-delete", "migrate", "run schtasks", "reg-set", "start-core"] {
+            assert_eq!(h.count(later), 0, "{later} is the detached run's job, not the first process's");
         }
     }
 
@@ -481,7 +487,7 @@ mod tests {
     fn leftover_daemons_are_ended_before_the_core_starts() {
         let c = ctx();
         let h = dotnet_machine(&c);
-        from_dotnet(&h, &c, true, false).unwrap();
+        from_dotnet(&h, &c, true, false, true).unwrap();
         let log = h.log.borrow();
         let last_stray = log.iter().rposition(|l| l == "kill-stray").unwrap();
         assert!(last_stray < log.iter().position(|l| l == "start-core").unwrap());
@@ -491,10 +497,10 @@ mod tests {
     fn off_windows_it_is_a_clean_error_and_a_dry_run_changes_nothing() {
         let mut c = ctx();
         c.os = Os::Linux;
-        assert!(from_dotnet(&Fake::default(), &c, true, false).unwrap_err().to_string().contains("only runs on Windows"));
+        assert!(from_dotnet(&Fake::default(), &c, true, false, true).unwrap_err().to_string().contains("only runs on Windows"));
         let c = ctx();
         let h = dotnet_machine(&c);
-        let say = from_dotnet(&h, &c, true, true).unwrap();
+        let say = from_dotnet(&h, &c, true, true, true).unwrap();
         assert!(say[0].starts_with("dry run") && say.len() == 13);
         assert!(h.log.borrow().is_empty());
     }
