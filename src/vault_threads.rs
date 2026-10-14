@@ -12,7 +12,6 @@ use regex::Regex;
 use serde_json::{json, Value};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 fn agentdesk_dir() -> PathBuf {
     paths::vault_dir().join("agentdesk")
@@ -237,7 +236,7 @@ pub fn write_day(db: &Db, date: NaiveDate) -> Result<PathBuf> {
 const PATHS: [&str; 3] = ["agentdesk", "log", "maps/AgentDesk MOC.md"];
 
 fn git(vault: &Path, args: &[&str], env: &[(&str, String)]) -> Option<std::process::Output> {
-    Command::new("git").args(args).current_dir(vault).envs(env.iter().map(|(k, v)| (*k, v.as_str()))).output().ok()
+    crate::paths::new_command("git").args(args).current_dir(vault).envs(env.iter().map(|(k, v)| (*k, v.as_str()))).output().ok()
 }
 
 fn text(o: &std::process::Output) -> String {

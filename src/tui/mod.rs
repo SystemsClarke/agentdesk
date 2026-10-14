@@ -189,7 +189,7 @@ pub fn open_url(url: &str) {
     } else {
         ("xdg-open", vec![url])
     };
-    let _ = std::process::Command::new(prog).args(args).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn();
+    let _ = crate::paths::new_command(prog).args(args).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn();
 }
 
 /// `08:00`, `08:00 weekdays`, `08:00 mon,thu`, `every 120`.

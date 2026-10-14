@@ -48,7 +48,7 @@ pub fn interpreter() -> Option<String> {
         }
     }
     for c in ["python3", "python", "py"] {
-        if Command::new(c).arg("--version").stdout(Stdio::null()).stderr(Stdio::null()).status().map(|s| s.success()).unwrap_or(false) {
+        if crate::paths::new_command(c).arg("--version").stdout(Stdio::null()).stderr(Stdio::null()).status().map(|s| s.success()).unwrap_or(false) {
             return Some(c.to_string());
         }
     }
@@ -59,7 +59,7 @@ pub fn interpreter() -> Option<String> {
 pub fn command() -> Result<Command> {
     let py = interpreter().ok_or_else(|| anyhow!("no Python 3 interpreter found (set AGENTDESK_PYTHON_BIN)"))?;
     let root = dir()?;
-    let mut c = Command::new(py);
+    let mut c = crate::paths::new_command(py);
     let path = match std::env::var_os("PYTHONPATH") {
         Some(p) if !p.is_empty() => std::env::join_paths(std::iter::once(root.clone()).chain(std::env::split_paths(&p)))?,
         _ => root.clone().into_os_string(),

@@ -70,7 +70,7 @@ impl Ctx {
         let home = paths::home_dir();
         let config = std::env::var_os("XDG_CONFIG_HOME").filter(|v| !v.is_empty()).map(PathBuf::from).unwrap_or_else(|| home.join(".config"));
         let uid = if cfg!(unix) {
-            std::process::Command::new("id").arg("-u").output().ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default()
+            crate::paths::new_command("id").arg("-u").output().ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default()
         } else {
             String::new()
         };
@@ -539,7 +539,7 @@ fn command_out(mut c: std::process::Command) -> Result<Out> {
 
 /// PowerShell with the values passed as environment variables, so no quoting of a path or a PATH can go wrong.
 fn powershell(script: &str, env: &[(&str, &str)]) -> Result<Out> {
-    let mut c = std::process::Command::new("powershell.exe");
+    let mut c = crate::paths::new_command("powershell.exe");
     c.args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script]);
     for (k, v) in env {
         c.env(k, v);
@@ -567,12 +567,12 @@ impl Host for SysHost {
         p.exists()
     }
     fn reg_get(&self, name: &str) -> Option<String> {
-        let mut c = std::process::Command::new("reg");
+        let mut c = crate::paths::new_command("reg");
         c.args(["query", &run_key(), "/v", name]);
         command_out(c).ok().filter(|o| o.ok).and_then(|o| parse_reg_query(&o.stdout, name))
     }
     fn reg_set(&self, name: &str, value: &str) -> Result<()> {
-        let mut c = std::process::Command::new("reg");
+        let mut c = crate::paths::new_command("reg");
         c.args(["add", &run_key(), "/v", name, "/t", "REG_SZ", "/d", value, "/f"]);
         if command_out(c)?.ok {
             Ok(())
@@ -584,7 +584,7 @@ impl Host for SysHost {
         if self.reg_get(name).is_none() {
             return Ok(());
         }
-        let mut c = std::process::Command::new("reg");
+        let mut c = crate::paths::new_command("reg");
         c.args(["delete", &run_key(), "/v", name, "/f"]);
         if command_out(c)?.ok {
             Ok(())
@@ -593,17 +593,17 @@ impl Host for SysHost {
         }
     }
     fn run(&self, prog: &str, args: &[String]) -> Result<Out> {
-        let mut c = std::process::Command::new(prog);
+        let mut c = crate::paths::new_command(prog);
         c.args(args);
         command_out(c)
     }
     fn process_running(&self, image: &str) -> bool {
-        let mut c = std::process::Command::new("tasklist");
+        let mut c = crate::paths::new_command("tasklist");
         c.args(["/FI", &format!("IMAGENAME eq {image}"), "/NH"]);
         command_out(c).map(|o| o.stdout.to_lowercase().contains(&image.to_lowercase())).unwrap_or(false)
     }
     fn kill_process(&self, image: &str) {
-        let mut c = std::process::Command::new("taskkill");
+        let mut c = crate::paths::new_command("taskkill");
         c.args(["/F", "/T", "/IM", image]);
         let _ = command_out(c);
     }
@@ -696,7 +696,7 @@ impl Host for SysHost {
             }
         };
         let _ = command_out({
-            let mut c = std::process::Command::new("schtasks");
+            let mut c = crate::paths::new_command("schtasks");
             c.args(["/Delete", "/TN", TASK, "/F"]);
             c
         });
@@ -749,7 +749,7 @@ impl Host for SysHost {
     }
     fn task_delete(&self, name: &str) {
         let _ = command_out({
-            let mut c = std::process::Command::new("schtasks");
+            let mut c = crate::paths::new_command("schtasks");
             c.args(["/Delete", "/TN", name, "/F"]);
             c
         });

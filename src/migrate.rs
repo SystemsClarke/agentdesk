@@ -119,9 +119,9 @@ fn edit_json(path: &Path, apply: bool, tag: &str, patch: impl Fn(&mut Value) -> 
 
 fn old_core_running() -> bool {
     let out = if cfg!(windows) {
-        std::process::Command::new("tasklist").args(["/FI", "IMAGENAME eq AgentDesk.Core.exe", "/NH"]).output()
+        crate::paths::new_command("tasklist").args(["/FI", "IMAGENAME eq AgentDesk.Core.exe", "/NH"]).output()
     } else {
-        std::process::Command::new("pgrep").args(["-f", "AgentDesk.Core"]).output()
+        crate::paths::new_command("pgrep").args(["-f", "AgentDesk.Core"]).output()
     };
     out.map(|o| String::from_utf8_lossy(&o.stdout).to_lowercase().contains("agentdesk.core") || (!cfg!(windows) && o.status.success())).unwrap_or(false)
 }

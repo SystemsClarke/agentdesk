@@ -104,7 +104,7 @@ fn spawn_detached() -> Result<()> {
     #[cfg(not(windows))]
     {
         use std::os::unix::process::CommandExt;
-        let mut cmd = std::process::Command::new(exe);
+        let mut cmd = crate::paths::new_command(exe);
         cmd.arg("daemon").stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
         cmd.process_group(0); // its own group: closing the terminal does not take it down
         cmd.spawn().map_err(|e| anyhow!("could not start the core: {e}"))?;
@@ -179,9 +179,9 @@ pub fn stop(wait: Duration) -> Result<bool> {
 
 fn kill(pid: u32) {
     let _ = if cfg!(windows) {
-        std::process::Command::new("taskkill").args(["/PID", &pid.to_string(), "/T", "/F"]).output()
+        crate::paths::new_command("taskkill").args(["/PID", &pid.to_string(), "/T", "/F"]).output()
     } else {
-        std::process::Command::new("kill").args(["-9", &pid.to_string()]).output()
+        crate::paths::new_command("kill").args(["-9", &pid.to_string()]).output()
     };
 }
 
