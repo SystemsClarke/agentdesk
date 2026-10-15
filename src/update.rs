@@ -99,6 +99,30 @@ fn restore(keep: &std::path::Path, exe: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
+fn state_file() -> std::path::PathBuf {
+    paths::data_dir().join("update.json")
+}
+
+/// Records what the last check found, for the window's header. Failures are logged, never raised.
+pub fn check_and_record() {
+    let doc = match check() {
+        Ok((latest, newer)) => json!({"latest": latest, "newer": newer, "current": CURRENT, "checked_ts": crate::db::now_iso()}),
+        Err(e) => {
+            paths::log("WARN", &format!("update check failed: {e}"));
+            return;
+        }
+    };
+    let _ = std::fs::create_dir_all(paths::data_dir());
+    let _ = std::fs::write(state_file(), doc.to_string());
+}
+
+/// The version waiting to be installed, if the last check found one newer than the running build.
+pub fn pending() -> Option<String> {
+    let v: Value = serde_json::from_str(&std::fs::read_to_string(state_file()).ok()?).ok()?;
+    let latest = v["latest"].as_str()?;
+    self_update::version::bump_is_greater(CURRENT, latest).ok()?.then(|| latest.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -125,28 +149,4 @@ mod tests {
         restore(&keep, &exe).unwrap();
         assert_eq!(std::fs::read(&exe).unwrap(), b"old build");
     }
-}
-
-fn state_file() -> std::path::PathBuf {
-    paths::data_dir().join("update.json")
-}
-
-/// Records what the last check found, for the window's header. Failures are logged, never raised.
-pub fn check_and_record() {
-    let doc = match check() {
-        Ok((latest, newer)) => json!({"latest": latest, "newer": newer, "current": CURRENT, "checked_ts": crate::db::now_iso()}),
-        Err(e) => {
-            paths::log("WARN", &format!("update check failed: {e}"));
-            return;
-        }
-    };
-    let _ = std::fs::create_dir_all(paths::data_dir());
-    let _ = std::fs::write(state_file(), doc.to_string());
-}
-
-/// The version waiting to be installed, if the last check found one newer than the running build.
-pub fn pending() -> Option<String> {
-    let v: Value = serde_json::from_str(&std::fs::read_to_string(state_file()).ok()?).ok()?;
-    let latest = v["latest"].as_str()?;
-    self_update::version::bump_is_greater(CURRENT, latest).ok()?.then(|| latest.to_string())
 }
