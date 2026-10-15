@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// Settled questions older than this are filed (written to the vault, status `archived`).
-const SWEEP_AFTER_MINUTES: i64 = 10;
+const SWEEP_AFTER_MINUTES: i64 = 24 * 60;
 
 pub fn run(stop: Arc<AtomicBool>) {
     let Ok(db) = Db::open(&paths::db_path()) else { return };

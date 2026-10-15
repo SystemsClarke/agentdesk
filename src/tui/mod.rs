@@ -2,6 +2,7 @@
 //! console, Who's on, options, recurring jobs, permission rules, agents) with the same letter keys and wording.
 //! `screens.rs` builds each screen as lines of tagged segments; this file is state, keys and drawing.
 
+mod charts;
 mod editor;
 mod md;
 mod screens;
@@ -1032,6 +1033,7 @@ pub fn run() -> Result<()> {
     };
     let mut terminal = ratatui::init();
     let _ = execute!(std::io::stdout(), EnableBracketedPaste);
+    let mut last_save = Instant::now();
     let result = (|| -> Result<()> {
         while !app.quit {
             terminal.draw(|f| app.draw(f))?;
@@ -1050,6 +1052,10 @@ pub fn run() -> Result<()> {
             if app.quit_at.map(|t| Instant::now() >= t).unwrap_or(false) {
                 app.quit = true;
             }
+            if last_save.elapsed() > Duration::from_secs(5) {
+                app.save_drafts();
+                last_save = Instant::now();
+            }
             let editing = matches!(app.screen, Screen::Compose | Screen::Ask);
             if !editing && (app.db.data_version() != app.data_version || app.last_load.elapsed() > Duration::from_secs(5)) {
                 app.reload();
@@ -1067,3 +1073,68 @@ pub fn run() -> Result<()> {
 
 #[cfg(test)]
 mod tests;
+
+fn parse_key(tok: &str) -> Vec<KeyEvent> {
+    let named = |c: KeyCode| vec![KeyEvent::new(c, KeyModifiers::NONE)];
+    match tok.to_lowercase().as_str() {
+        "enter" | "ret" => return named(KeyCode::Enter),
+        "esc" => return named(KeyCode::Esc),
+        "tab" => return named(KeyCode::Tab),
+        "backtab" => return named(KeyCode::BackTab),
+        "up" => return named(KeyCode::Up),
+        "down" => return named(KeyCode::Down),
+        "left" => return named(KeyCode::Left),
+        "right" => return named(KeyCode::Right),
+        "pgup" => return named(KeyCode::PageUp),
+        "pgdn" => return named(KeyCode::PageDown),
+        "home" => return named(KeyCode::Home),
+        "end" => return named(KeyCode::End),
+        "backspace" => return named(KeyCode::Backspace),
+        "space" => return named(KeyCode::Char(' ')),
+        _ => {}
+    }
+    if let Some(text) = tok.strip_prefix("t:") {
+        return text.replace('~', " ").chars().map(|c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)).collect();
+    }
+    for (prefix, m) in [("ctrl+", KeyModifiers::CONTROL), ("alt+", KeyModifiers::ALT), ("shift+", KeyModifiers::SHIFT)] {
+        if let Some(rest) = tok.to_lowercase().strip_prefix(prefix) {
+            let mut inner = parse_key(rest);
+            for k in inner.iter_mut() {
+                k.modifiers |= m;
+            }
+            return inner;
+        }
+    }
+    tok.chars().next().map(|c| vec![KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)]).unwrap_or_default()
+}
+
+/// Renders the window headlessly: opens the board, presses `keys` (space-separated: `q`, `enter`, `esc`, `ctrl+s`,
+/// `alt+c`, `t:text~with~spaces`), and returns the screen as text (or JSON with the mode and the flash line).
+pub fn snapshot(size: &str, keys: &str, as_json: bool) -> Result<String> {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    let (w, h) = size.split_once('x').and_then(|(w, h)| Some((w.parse::<u16>().ok()?, h.parse::<u16>().ok()?))).unwrap_or((110, 36));
+    let db = Db::open(&paths::db_path())?;
+    db.init()?;
+    let mut app = App::with_db(db);
+    let mut t = Terminal::new(TestBackend::new(w, h))?;
+    for tok in keys.split_whitespace() {
+        for k in parse_key(tok) {
+            t.draw(|f| app.draw(f))?; // a key acts on the screen it was pressed on, as in a real session
+            app.on_key(k);
+        }
+    }
+    t.draw(|f| app.draw(f))?;
+    let buf = t.backend().buffer().clone();
+    let lines: Vec<String> = (0..h).map(|y| (0..w).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>().trim_end().to_string()).collect();
+    if !as_json {
+        return Ok(lines.join("\n"));
+    }
+    Ok(serde_json::to_string_pretty(&json!({
+        "screen": format!("{:?}", app.screen).to_lowercase(),
+        "lines": lines,
+        "flash": app.flash.as_ref().map(|f| f.0.clone()),
+        "confirm": app.confirm.as_ref().map(|c| c.0.clone()),
+        "quitting": app.quit || app.quit_at.is_some(),
+    }))?)
+}

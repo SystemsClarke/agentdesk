@@ -185,13 +185,14 @@ fn phoenix(sid: &str, transcript: &str) -> String {
         return String::new();
     }
     // once a minute per session at most, and once ever when it fires
-    let marker = std::env::temp_dir().join(format!("agentdesk-phoenix-{}", sid.chars().filter(|c| c.is_alphanumeric() || *c == '-').collect::<String>()));
+    let marker = crate::paths::data_dir().join("state").join(format!("phoenix-{}", sid.chars().filter(|c| c.is_alphanumeric() || *c == '-').collect::<String>()));
     if let Ok(md) = std::fs::metadata(&marker) {
         let age = md.modified().ok().and_then(|m| m.elapsed().ok()).unwrap_or_default();
         if age < std::time::Duration::from_secs(60) || md.len() > 0 {
             return String::new();
         }
     }
+    let _ = std::fs::create_dir_all(marker.parent().unwrap());
     let _ = std::fs::write(&marker, "");
     let Some((tokens, window)) = context_use(transcript) else { return String::new() };
     let pct = 100 * tokens / window;

@@ -1,0 +1,15 @@
+agentdesk.exe: everything a Claude Code session runs, relayed to AgentDesk.Core over the pipe.
+  agentdesk                    MCP server on stdio (how every session reaches the board)
+  agentdesk hook <event>       Claude Code hook: stdin JSON in, hook JSON out (never fails the session)
+  agentdesk wait <thread-id>   block until John replies on the thread, then print his reply
+  agentdesk sessions           list the Claude Code sessions the core hosts headless
+  agentdesk start <name> <folder> [command...]   start one (command defaults to claude); stop <name> ends it
+  agentdesk attach <name>      use one from this console, like tmux attach; Ctrl+] detaches
+  agentdesk new <name> <folder> [--charter text] [--host wsl:<distro>] [--autostart]   an identity: a session that outlives the core
+  agentdesk start|stop|forget <name>, agentdesk list   run, stop, delete and list identities
+  agentdesk adoptable, agentdesk adopt <session-id> <name>   make a recent Claude Code conversation an identity
+  agentdesk update [--apply]   check for (and download) a newer release; --apply restarts the core into it and waits for it
+  agentdesk job new <name> <folder> --prompt <text> (--at HH:mm [--days daily|weekdays|mon,thu] | --every <minutes>) [--model m] [--catch-up <minutes>]
+  agentdesk job list, job run|enable|disable|delete <name>   recurring jobs: a prompt the core runs itself on a schedule
+  agentdesk goal new <name> <folder> <objective...>   a goal: its lead proposes a hypothesis, a measure and a success line
+  agentdesk goal approve <name> [--members N] [--hours H] [--cadence M], goal stop|status <name>, goal list

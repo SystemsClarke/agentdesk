@@ -83,7 +83,9 @@ CREATE TABLE IF NOT EXISTS recurring_jobs (name TEXT PRIMARY KEY COLLATE NOCASE,
 CREATE TABLE IF NOT EXISTS permission_proposals (id INTEGER PRIMARY KEY AUTOINCREMENT, rule TEXT NOT NULL, scope TEXT NOT NULL, project_dir TEXT,
     reason TEXT NOT NULL, blocked TEXT, requested_by TEXT NOT NULL, thread_id INTEGER, status TEXT NOT NULL DEFAULT 'pending',
     created_ts TEXT NOT NULL, decided_ts TEXT, reverted_ts TEXT, settings_path TEXT, backup TEXT);
-CREATE TABLE IF NOT EXISTS usage_samples (ts TEXT PRIMARY KEY, week_pct REAL, five_hour_pct REAL);
+CREATE TABLE IF NOT EXISTS usage_samples (id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL UNIQUE, weekly_pct REAL NOT NULL,
+    weekly_reset_ts TEXT, five_hour_pct REAL, five_hour_reset_ts TEXT, swarm_sessions INTEGER NOT NULL DEFAULT 0,
+    haiku_sessions INTEGER NOT NULL DEFAULT 0, sonnet_sessions INTEGER NOT NULL DEFAULT 0, opus_sessions INTEGER NOT NULL DEFAULT 0);
 "#;
 
 pub type Named<'a> = &'a [(&'a str, &'a dyn ToSql)];
@@ -153,21 +155,24 @@ impl Db {
     /// Creates the schema and rebuilds the `open_questions` view from this file's rule.
     pub fn init(&self) -> Result<()> {
         let _: String = self.conn.query_row("PRAGMA journal_mode=WAL", [], |r| r.get(0))?;
-        self.conn.execute_batch(SCHEMA)?;
-        self.conn.execute_batch("DROP VIEW IF EXISTS open_questions;")?;
-        self.conn.execute_batch(&format!(
-            "CREATE VIEW open_questions AS SELECT t.id AS thread_id, t.subject, t.opened_by, t.created_ts, t.updated_ts FROM threads t WHERE {WAITING_SQL};"
-        ))?;
-        let cols: Vec<String> = self.rows("PRAGMA table_info(pull_requests)", &[])?.iter().filter_map(|r| r["name"].as_str().map(String::from)).collect();
-        if !cols.iter().any(|c| c == "source") {
-            self.conn.execute_batch("ALTER TABLE pull_requests ADD COLUMN source TEXT NOT NULL DEFAULT 'agent-registered'")?;
-        }
-        for col in ["triage", "triage_ts"] {
-            if !cols.iter().any(|c| c == col) {
-                self.conn.execute_batch(&format!("ALTER TABLE pull_requests ADD COLUMN {col} TEXT"))?;
+        // one process at a time rebuilds the schema: twelve first-opens at once raced on DROP/CREATE VIEW
+        self.tx(|| {
+            self.conn.execute_batch(SCHEMA)?;
+            self.conn.execute_batch("DROP VIEW IF EXISTS open_questions;")?;
+            self.conn.execute_batch(&format!(
+                "CREATE VIEW open_questions AS SELECT t.id AS thread_id, t.subject, t.opened_by, t.created_ts, t.updated_ts FROM threads t WHERE {WAITING_SQL};"
+            ))?;
+            let cols: Vec<String> = self.rows("PRAGMA table_info(pull_requests)", &[])?.iter().filter_map(|r| r["name"].as_str().map(String::from)).collect();
+            if !cols.iter().any(|c| c == "source") {
+                self.conn.execute_batch("ALTER TABLE pull_requests ADD COLUMN source TEXT NOT NULL DEFAULT 'agent-registered'")?;
             }
-        }
-        Ok(())
+            for col in ["triage", "triage_ts"] {
+                if !cols.iter().any(|c| c == col) {
+                    self.conn.execute_batch(&format!("ALTER TABLE pull_requests ADD COLUMN {col} TEXT"))?;
+                }
+            }
+            Ok(())
+        })
     }
 
     // ---- helpers
