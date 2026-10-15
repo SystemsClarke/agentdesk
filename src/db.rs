@@ -198,7 +198,19 @@ impl Db {
 
     /// Creates the schema and rebuilds the `open_questions` view from this file's rule.
     pub fn init(&self) -> Result<()> {
-        let _: String = self.conn.query_row("PRAGMA journal_mode=WAL", [], |r| r.get(0))?;
+        // Switching a fresh board to WAL needs a moment with no other connection on it, and SQLite does not run the busy handler for that
+        // switch: two processes opening a new board at once (the core and a client) made one fail with "database is locked". Try again.
+        let mut tries = 0;
+        loop {
+            match self.conn.query_row("PRAGMA journal_mode=WAL", [], |r| r.get::<_, String>(0)) {
+                Ok(_) => break,
+                Err(e) if tries < 200 && e.to_string().contains("locked") => {
+                    tries += 1;
+                    std::thread::sleep(std::time::Duration::from_millis(25));
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
         let version = Self::schema_version();
         if self.conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))? == version {
             return Ok(());

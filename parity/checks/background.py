@@ -286,15 +286,21 @@ def _prune(b):
     keep, drop = [], []
     for h in (1, 5, 30):
         keep.append(h)
-    for hrs in (1, 5, 30, 50, 52, 80, 82, 14 * 24 + 5):
-        n = "agentdesk-%s.db" % (now - datetime.timedelta(hours=hrs)).strftime("%Y%m%dT%H%M%S")
-        open(os.path.join(d, n), "w").write("x")
+    # three snapshots on one calendar day, three days back (always past the 2 days, whatever the hour the suite runs): one is kept.
+    # (A fixed "50 and 52 hours ago" straddled midnight when the suite ran in the first two hours of the day.)
+    day = (now - datetime.timedelta(days=3)).replace(hour=0, minute=0, second=0, microsecond=0)
+    for hrs in (1, 5, 30):
+        open(os.path.join(d, "agentdesk-%s.db" % (now - datetime.timedelta(hours=hrs)).strftime("%Y%m%dT%H%M%S")), "w").write("x")
+    for hour in (10, 12, 14):
+        open(os.path.join(d, "agentdesk-%s.db" % (day + datetime.timedelta(hours=hour)).strftime("%Y%m%dT%H%M%S")), "w").write("x")
+    open(os.path.join(d, "agentdesk-%s.db" % (now - datetime.timedelta(hours=14 * 24 + 5)).strftime("%Y%m%dT%H%M%S")), "w").write("x")
     b.tool("post_message", {"channel": "discussion", "subject": "s", "body": "x", "author": "a"})
     b.run("backup")
     left = sorted(os.listdir(d))
-    assert not any(str(14 * 24 + 5) in n for n in left)
-    old = [n for n in left if n[10:18] == (now - datetime.timedelta(hours=50)).strftime("%Y%m%d")]
-    assert len(old) <= 1, "one a day past 2 days: %s" % left
+    assert not any(n[10:18] == (now - datetime.timedelta(hours=14 * 24 + 5)).strftime("%Y%m%d") for n in left), "past 14 days goes: %s" % left
+    old = [n for n in left if n[10:18] == day.strftime("%Y%m%d")]
+    assert len(old) == 1, "one a day past 2 days: %s" % left
+    assert len([n for n in left if n[10:18] != day.strftime("%Y%m%d")]) >= 3, "everything under 2 days stays: %s" % left
 
 
 @feature("backup.vault-transcript", "backup", "The day's messages are written to the vault as markdown; a linked note per thread (agentdesk/threads/thread-N.md) and maps/AgentDesk MOC.md", "backup.py write_vault, vault_threads.py")
