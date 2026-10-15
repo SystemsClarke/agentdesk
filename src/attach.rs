@@ -229,11 +229,84 @@ pub fn list_sessions() -> Vec<String> {
     BufReader::new(conn).lines().map_while(|l| l.ok()).take_while(|l| l != "END").filter(|l| !l.starts_with("ERR")).collect()
 }
 
+/// Mouse reporting modes a session may switch on. While one is on, the terminal hands every click and drag to the session instead of
+/// selecting text, which is why copying from an attached session fails; the attach client drops these so the terminal keeps selecting.
+const MOUSE_MODES: [&[u8]; 6] = [b"1000", b"1002", b"1003", b"1005", b"1006", b"1015"];
+
+/// Removes "turn mouse reporting on" from terminal output (`ESC [ ? 1000 h` and the like, alone or in a list). `carry` holds the start of
+/// a sequence that was cut by the end of the last chunk. Everything else passes through untouched.
+pub fn strip_mouse_on(carry: &mut Vec<u8>, chunk: &[u8]) -> Vec<u8> {
+    let mut data = std::mem::take(carry);
+    data.extend_from_slice(chunk);
+    let mut out = Vec::with_capacity(data.len());
+    let mut i = 0;
+    while i < data.len() {
+        if data[i] != 0x1b {
+            out.push(data[i]);
+            i += 1;
+            continue;
+        }
+        // a private-mode sequence: ESC [ ? <params> (h|l)
+        let rest = &data[i..];
+        if rest.len() < 3 {
+            *carry = rest.to_vec();
+            return out;
+        }
+        if rest[1] != b'[' || rest[2] != b'?' {
+            out.push(data[i]);
+            i += 1;
+            continue;
+        }
+        let end = rest[3..].iter().position(|b| !(b.is_ascii_digit() || *b == b';'));
+        let Some(end) = end else {
+            if rest.len() < 24 {
+                *carry = rest.to_vec(); // may still be growing
+                return out;
+            }
+            out.push(data[i]);
+            i += 1;
+            continue;
+        };
+        let (params, fin) = (&rest[3..3 + end], rest[3 + end]);
+        let total = 3 + end + 1;
+        if fin == b'h' {
+            let keep: Vec<&[u8]> = params.split(|b| *b == b';').filter(|p| !MOUSE_MODES.contains(p)).collect();
+            if keep.len() == params.split(|b| *b == b';').count() {
+                out.extend_from_slice(&rest[..total]);
+            } else if !keep.is_empty() {
+                out.extend_from_slice(b"\x1b[?");
+                out.extend_from_slice(&keep.join(&b';'));
+                out.push(b'h');
+            }
+        } else {
+            out.extend_from_slice(&rest[..total]);
+        }
+        i += total;
+    }
+    out
+}
+
+/// What to type into a session for pasted text: wrapped in bracketed-paste markers when the session turned that mode on (so a pasted
+/// newline is text, not Enter), otherwise plain text with newlines as Enter.
+pub fn paste_bytes(text: &str, bracketed: bool) -> Vec<u8> {
+    let text = text.replace("\r\n", "\n");
+    if bracketed {
+        let mut v = b"\x1b[200~".to_vec();
+        v.extend_from_slice(text.as_bytes());
+        v.extend_from_slice(b"\x1b[201~");
+        v
+    } else {
+        text.replace('\n', "\r").into_bytes()
+    }
+}
+
 /// One attached session: the socket, and the thread copying its output to this console.
 struct Link {
     name: String,
     conn: TcpStream,
     done: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// The session turned bracketed paste on (see `paste_bytes`).
+    bracketed: std::sync::Arc<std::sync::atomic::AtomicBool>,
     out: Option<std::thread::JoinHandle<()>>,
 }
 
@@ -252,19 +325,28 @@ impl Link {
             }
             let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
             let d2 = done.clone();
+            let bracketed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let b2 = bracketed.clone();
+            let keep_mouse = std::env::var("AGENTDESK_ATTACH_MOUSE").is_ok_and(|v| v == "1");
             let out = std::thread::spawn(move || {
                 let mut stdout = std::io::stdout();
                 let mut buf = [0u8; 8192];
+                let mut carry = Vec::new();
                 while let Ok(n) = std::io::Read::read(&mut reader, &mut buf) {
                     if n == 0 {
                         break;
                     }
-                    let _ = stdout.write_all(&buf[..n]);
+                    let chunk = &buf[..n];
+                    if let Some(at) = chunk.windows(8).rposition(|w| w == b"\x1b[?2004h" || w == b"\x1b[?2004l") {
+                        b2.store(chunk[at + 7] == b'h', std::sync::atomic::Ordering::Relaxed);
+                    }
+                    let shown = if keep_mouse { chunk.to_vec() } else { strip_mouse_on(&mut carry, chunk) };
+                    let _ = stdout.write_all(&shown);
                     let _ = stdout.flush();
                 }
                 d2.store(true, std::sync::atomic::Ordering::Relaxed);
             });
-            return Some(Link { name: name.to_string(), conn, done, out: Some(out) });
+            return Some(Link { name: name.to_string(), conn, done, bracketed, out: Some(out) });
         }
         None
     }
@@ -343,6 +425,7 @@ pub fn client(name: &str) -> Result<()> {
     let Some(first) = Link::open(port, &key, name, cols, rows) else { anyhow::bail!("no such session: {name} (is it running? `agentdesk list`)") };
     let mut link = first;
     terminal::enable_raw_mode()?;
+    let _ = ratatui::crossterm::execute!(std::io::stdout(), ratatui::crossterm::event::EnableBracketedPaste);
     let title = |n: &str| {
         let mut o = std::io::stdout();
         let _ = write!(o, "\x1b]0;agentdesk: {n}\x07");
@@ -402,6 +485,10 @@ pub fn client(name: &str) -> Result<()> {
                         writeln!(link.conn, "INPUT {}", b64(&b))?;
                     }
                 }
+                Event::Paste(text) => {
+                    let b = paste_bytes(&text, link.bracketed.load(std::sync::atomic::Ordering::Relaxed));
+                    writeln!(link.conn, "INPUT {}", b64(&b))?;
+                }
                 Event::Resize(c, r) => {
                     (cols, rows) = (c, r);
                     writeln!(link.conn, "RESIZE {c} {r}")?;
@@ -411,6 +498,7 @@ pub fn client(name: &str) -> Result<()> {
         }
         Ok(())
     })();
+    let _ = ratatui::crossterm::execute!(std::io::stdout(), ratatui::crossterm::event::DisableBracketedPaste);
     let _ = terminal::disable_raw_mode();
     println!();
     let name = link.name.clone();
@@ -427,6 +515,25 @@ pub fn client(name: &str) -> Result<()> {
 mod client_tests {
     use super::*;
     use ratatui::crossterm::event::KeyCode;
+
+    #[test]
+    fn mouse_reporting_is_dropped_and_everything_else_kept() {
+        let mut c = Vec::new();
+        assert_eq!(strip_mouse_on(&mut c, b"a\x1b[?1000hb\x1b[?1006hc"), b"abc");
+        assert_eq!(strip_mouse_on(&mut c, b"\x1b[?1049h\x1b[?25l\x1b[?2004h\x1b[31mred"), b"\x1b[?1049h\x1b[?25l\x1b[?2004h\x1b[31mred");
+        assert_eq!(strip_mouse_on(&mut c, b"\x1b[?1049;1002;1006h"), b"\x1b[?1049h", "a list keeps the other modes");
+        assert_eq!(strip_mouse_on(&mut c, b"\x1b[?1000l"), b"\x1b[?1000l", "turning it off passes");
+        // a sequence cut between chunks
+        let a = strip_mouse_on(&mut c, b"x\x1b[?10");
+        let b = strip_mouse_on(&mut c, b"00hy");
+        assert_eq!([a, b].concat(), b"xy");
+    }
+
+    #[test]
+    fn pasted_text_is_text_not_enter() {
+        assert_eq!(paste_bytes("a\r\nb", true), b"\x1b[200~a\nb\x1b[201~");
+        assert_eq!(paste_bytes("a\nb", false), b"a\rb");
+    }
 
     #[test]
     fn the_key_after_the_prefix_switches_or_leaves() {
