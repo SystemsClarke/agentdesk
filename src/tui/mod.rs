@@ -7,6 +7,7 @@ pub(crate) mod charts; // the Slack bridge draws charts and diagrams with it
 mod editor;
 mod live;
 mod md;
+mod runner;
 mod screens;
 pub(crate) mod seg;
 mod state;
@@ -115,6 +116,8 @@ pub struct App {
     pub adoptables: Vec<crate::adopt::Convo>,
     pub adopt_note: Option<String>,
     pub attach_request: Option<String>,
+    /// The script runner pane under the reader (see `runner`).
+    pub runner: Option<runner::Runner>,
     data_version: i64,
     last_load: Instant,
     reader_key: Option<(i64, usize)>,
@@ -249,6 +252,7 @@ impl App {
             adoptables: vec![],
             adopt_note: None,
             attach_request: None,
+            runner: None,
             data_version: -1,
             last_load: Instant::now(),
             reader_key: None,
@@ -489,6 +493,9 @@ impl App {
         }
         if self.quit_at.map(|t| Instant::now() >= t).unwrap_or(false) {
             self.quit = true;
+        }
+        if self.runner.as_mut().is_some_and(|r| r.pump()) {
+            self.dirty = true;
         }
         if self.last_save.elapsed() > Duration::from_secs(5) {
             self.save_drafts();
@@ -1100,6 +1107,16 @@ impl App {
             KeyCode::Down if k.modifiers.contains(KeyModifiers::CONTROL) => self.scroll += 1,
             KeyCode::Char('n') | KeyCode::Char('p') if alt => self.reader_step(if k.code == KeyCode::Char('n') { 1 } else { -1 }),
             KeyCode::Char('c') if alt => self.reader_close(),
+            KeyCode::Char('r') if alt => self.runner_key_r(),
+            KeyCode::Char('k') if alt => self.runner_kill(),
+            KeyCode::Char('y') if alt => self.runner_yank(),
+            KeyCode::Char('x') if alt => self.runner_close(),
+            KeyCode::Char(d @ '1'..='9') if alt && self.runner.is_some() => {
+                let ok = self.runner.as_mut().is_some_and(|r| r.pick(d as usize - '1' as usize));
+                if !ok {
+                    self.say("No such script in this thread (or one is running).", "mu");
+                }
+            }
             KeyCode::Char('u') if alt => {
                 if let (Some(t), "question") = (self.read_tid, self.channel) {
                     self.unarchive(t);
@@ -1111,6 +1128,44 @@ impl App {
             _ if alt => {}
             _ => self.reply.key(k),
         }
+    }
+
+    /// Alt+R: the first press opens the runner pane on the thread's scripts and shows the picked one; the next runs it.
+    fn runner_key_r(&mut self) {
+        if self.runner.is_none() {
+            let msgs: Vec<(String, String)> = self.detail.as_ref().map(|d| d.messages.iter().map(|m| (m.author.clone(), m.body.clone())).collect()).unwrap_or_default();
+            let blocks = runner::extract_blocks(&msgs);
+            if blocks.is_empty() {
+                return self.say("No script in this thread: it needs a fenced ```powershell, ```bash, ```sh or ```cmd block.", "mu");
+            }
+            self.runner = Some(runner::Runner::new(blocks));
+            return self.say("The script is shown, not run. Alt+R again runs it; Alt+1..9 picks another; Alt+X closes.", "cy");
+        }
+        let started = self.runner.as_mut().is_some_and(|r| r.run());
+        if !started {
+            self.say("Already running (Alt+K stops it).", "mu");
+        }
+        self.dirty = true;
+    }
+
+    fn runner_kill(&mut self) {
+        if self.runner.as_mut().is_some_and(|r| r.kill()) {
+            self.say("Stopped.", "ye");
+        }
+    }
+
+    fn runner_yank(&mut self) {
+        let Some(r) = &self.runner else { return };
+        let text = r.summary(30);
+        self.reply.insert_str(&text);
+        self.say("The output is in your reply: edit it, then Ctrl+S sends.", "gr");
+    }
+
+    fn runner_close(&mut self) {
+        if let Some(mut r) = self.runner.take() {
+            r.kill();
+        }
+        self.dirty = true;
     }
 
     fn reader_step(&mut self, delta: i64) {
@@ -1527,6 +1582,9 @@ impl App {
     pub fn draw(&mut self, f: &mut Frame) {
         let pal = self.palette();
         let area = f.area();
+        if self.screen != Screen::Read && self.runner.is_some() {
+            self.runner_close(); // the pane belongs to the reader
+        }
         f.render_widget(Block::default().style(Style::default().bg(pal.color("bg")).fg(pal.color("fg"))), area);
         let input_h: u16 = match self.screen {
             Screen::Read => 5,
@@ -1539,7 +1597,15 @@ impl App {
             .direction(Direction::Vertical)
             .constraints([Constraint::Length(1), Constraint::Min(1), Constraint::Length(input_h), Constraint::Length(1)])
             .split(area);
-        let (w, h) = (parts[1].width as usize, parts[1].height as usize);
+        // the runner pane takes the lower part of the body while it is open
+        let (body, pane) = if self.screen == Screen::Read && self.runner.is_some() && parts[1].height >= 14 {
+            let ph = (parts[1].height * 45 / 100).max(8);
+            let split = Layout::default().direction(Direction::Vertical).constraints([Constraint::Min(4), Constraint::Length(ph)]).split(parts[1]);
+            (split[0], Some(split[1]))
+        } else {
+            (parts[1], None)
+        };
+        let (w, h) = (body.width as usize, body.height as usize);
         self.body_h = h;
         f.render_widget(Paragraph::new(pal.line(&self.top_line(parts[0].width as usize))), parts[0]);
         let mut lines = self.build(w, h);
@@ -1550,7 +1616,10 @@ impl App {
             self.scroll = 0;
         }
         let shown: Vec<Line> = lines.drain(..).skip(self.scroll).take(h).map(|l| pal.line(&l)).collect();
-        f.render_widget(Paragraph::new(shown), parts[1]);
+        f.render_widget(Paragraph::new(shown), body);
+        if let Some(pane) = pane {
+            self.draw_runner(f, pane, &pal);
+        }
         f.render_widget(Paragraph::new(pal.line(&self.bar_line(parts[3].width as usize))), parts[3]);
         self.draw_inputs(f, parts[2], &pal);
         if let Some((_, _, t)) = &self.flash {
@@ -1558,6 +1627,33 @@ impl App {
                 self.flash = None;
             }
         }
+    }
+
+    /// The runner pane: the picked script on top, its output (the newest lines) below, the state in the title.
+    fn draw_runner(&self, f: &mut Frame, area: Rect, pal: &Palette) {
+        let Some(r) = &self.runner else { return };
+        let inner_h = area.height.saturating_sub(2) as usize;
+        let (n, from, lang) = (r.picked + 1, r.block().map(|b| b.from.clone()).unwrap_or_default(), r.block().map(|b| b.lang.clone()).unwrap_or_default());
+        let title = format!(" Script {n}/{} ({lang}, from {from}): {} ", r.blocks.len(), r.status());
+        let script_h = r.block().map(|b| b.script.lines().count()).unwrap_or(0).min(inner_h / 2).max(1);
+        let mut lines: Vec<Line> =
+            r.block().map(|b| b.script.lines().take(script_h).map(|l| Line::styled(format!("> {l}"), Style::default().fg(pal.color("mu")))).collect()).unwrap_or_default();
+        let out_h = inner_h.saturating_sub(lines.len());
+        let skip = r.out.len().saturating_sub(out_h);
+        lines.extend(r.out.iter().skip(skip).map(|l| Line::raw(l.chars().take(area.width.saturating_sub(2) as usize).collect::<String>())));
+        let border = match r.state {
+            runner::State::Running => pal.color("cy"),
+            runner::State::Done(0) => pal.color("gr"),
+            runner::State::Done(_) | runner::State::Failed(_) => pal.color("pk"),
+            runner::State::Ready => pal.color("ye"),
+        };
+        f.render_widget(Clear, area);
+        f.render_widget(
+            Paragraph::new(lines).block(
+                Block::default().borders(Borders::ALL).border_style(Style::default().fg(border)).title(title).style(Style::default().bg(pal.color("bg")).fg(pal.color("fg"))),
+            ),
+            area,
+        );
     }
 
     fn boxed(&self, f: &mut Frame, area: Rect, title: &str, text: &str, pal: &Palette, focus: bool) {
