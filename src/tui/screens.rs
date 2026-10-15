@@ -599,7 +599,7 @@ impl App {
                 cat(v)
             }
             Screen::Read => {
-                let mut v = vec![k("type", "to reply"), k("Ctrl+S", "send"), k("Ctrl+D", "dictate"), k("PgUp/PgDn", "scroll"), k("Alt+N/P", "next/prev")];
+                let mut v = vec![k("type", "to reply"), k("Ctrl+S", "send"), k("Ctrl+D", "dictate"), k("PgUp/PgDn", "scroll"), k("Alt+N/P", "next/prev"), k("Alt+R", "run script")];
                 if q {
                     v.push(k("Alt+C", "close"));
                     if self.detail.as_ref().map(|d| d.thread.status == "archived").unwrap_or(false) {

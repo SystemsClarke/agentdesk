@@ -167,3 +167,34 @@ fn jobs_rules_prs_and_options_screens_work() {
     a.on_key(key(KeyCode::Right));
     assert_ne!(a.theme, t0);
 }
+
+#[test]
+fn a_script_in_a_question_is_shown_then_run_from_the_reader() {
+    let (_d, mut a) = app();
+    let (lang, script, want) = if cfg!(windows) { ("cmd", "echo from-the-pane", "from-the-pane") } else { ("sh", "echo from-the-pane", "from-the-pane") };
+    let body = format!("Please run this and tell me what you see?\n```{lang}\n{script}\n```");
+    a.db.start_thread("question", "A script for you", "builder", "agent", &body, None, None).unwrap();
+    a.reload();
+    press(&mut a, 'q');
+    a.on_key(key(KeyCode::Enter));
+    assert_eq!(a.screen, Screen::Read);
+    let alt = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::ALT);
+    a.on_key(alt('r'));
+    let s = screen(&mut a, 120, 40);
+    assert!(s.contains("Script 1/1") && s.contains(&format!("> {script}")) && s.contains("Alt+R runs it"), "shown, not run: {s}");
+    a.on_key(alt('r'));
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while a.runner.as_ref().is_some_and(|r| r.state == runner::State::Running) && std::time::Instant::now() < end {
+        a.tick();
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    a.tick();
+    let s = screen(&mut a, 120, 40);
+    assert!(s.contains(want) && s.contains("done (exit 0)"), "{s}");
+    a.on_key(alt('y'));
+    assert!(a.reply.lines.join("\n").contains("I ran the script: it finished (exit 0)."), "the output goes into the reply to edit");
+    a.on_key(alt('x'));
+    assert!(a.runner.is_none());
+    // a thread with no script says so
+    a.on_key(key(KeyCode::Esc));
+}
