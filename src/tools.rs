@@ -52,6 +52,9 @@ impl Args<'_> {
     fn opt_int(&self, k: &str) -> Option<i64> {
         self.0.get(k).and_then(|v| v.as_i64())
     }
+    fn opt_f64(&self, k: &str) -> Option<f64> {
+        self.0.get(k).and_then(|v| v.as_f64())
+    }
     fn bool_or(&self, k: &str, d: bool) -> bool {
         self.0.get(k).and_then(|v| v.as_bool()).unwrap_or(d)
     }
@@ -205,6 +208,10 @@ fn dispatch(db: &Db, c: &Caller, tool: &str, a: &Args) -> Result<Value> {
         }
         "request_merge" => request_merge(db, c, a),
         "propose_permission_rule" => crate::permissions::propose(db, c, a.0),
+        "goal_create" => crate::goals::create(db, &a.str("name")?, &a.str("objective")?, &a.str("folder")?),
+        "goal_approve" => crate::goals::approve(db, c, &a.str("name")?, a.opt_int("max_members"), a.opt_f64("max_hours"), a.opt_f64("cadence_minutes")),
+        "goal_list" => crate::goals::list(db),
+        "goal_status" => crate::goals::status(db, &a.str("name")?),
         "goal_propose" => crate::goals::propose(db, c, &a.str("name")?, &a.str("hypothesis")?, &a.str("measure_cmd")?, &a.str("success")?, a.int_or("samples", 1)),
         "experiment_start" => crate::goals::experiment_start(db, c, &a.str("goal")?, &a.str("change")?),
         "experiment_done" => crate::goals::experiment_done(db, c, &a.str("goal")?, a.int("n")?),

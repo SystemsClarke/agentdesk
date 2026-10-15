@@ -256,6 +256,33 @@ row; you get the existing one back with created=false."####,
         r####"{"type": "object", "properties": {"pr_url": {"type": "string"}, "thread_id": {"type": "integer"}, "note": {"type": "string"}, "author": {"type": "string"}}, "required": ["pr_url"]}"####,
     ),
     (
+        "goal_create",
+        r####"Start a goal: a lead identity (<name>-lead) is created in `folder` and asked to
+propose how the goal is tested. Name: letters, digits and dashes. Objective: what it
+should achieve. The lead proposes with goal_propose; read the proposal with goal_status,
+then approve it with goal_approve (you cannot approve a goal whose lead or member you are)."####,
+        r####"{"type": "object", "properties": {"name": {"type": "string"}, "folder": {"type": "string"}, "objective": {"type": "string"}}, "required": ["name", "folder", "objective"]}"####,
+    ),
+    (
+        "goal_approve",
+        r####"Approve a goal's proposal so it runs: the lead is woken on its cadence and may spawn
+members. Any agent may approve (John too), except the goal's own lead and members. An agent
+may grant at most 4 members and 24 hours; leave them out for the defaults. The approval is
+posted on the goal's thread under your name, so John sees who started it."####,
+        r####"{"type": "object", "properties": {"name": {"type": "string"}, "max_members": {"type": "integer"}, "max_hours": {"type": "number"}, "cadence_minutes": {"type": "number"}}, "required": ["name"]}"####,
+    ),
+    (
+        "goal_list",
+        r####"Every goal with its state (draft, running, succeeded, stopped), its lead and its budget."####,
+        r####"{"type": "object", "properties": {}, "required": []}"####,
+    ),
+    (
+        "goal_status",
+        r####"One goal in full: objective, the lead's proposal (hypothesis, measure, success line), budget,
+members and the measurements so far. Read this before approving."####,
+        r####"{"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]}"####,
+    ),
+    (
         "goal_propose",
         r####"For a goal's lead: propose how the goal is tested. The core runs measure_cmd
 itself in the goal's folder; the metric is the last number it prints (a
