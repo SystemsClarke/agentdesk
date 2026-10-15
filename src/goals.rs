@@ -201,7 +201,7 @@ pub fn create(db: &Db, name: &str, objective: &str, folder: &str) -> Result<Valu
         AUTHOR,
         AGENT,
         &format!(
-            "**Goal {name}** (draft): {objective}\n\nLead: {lead}, in `{folder}`. It proposes a hypothesis, a measure and a success line here; John approves with `agentdesk goal approve {name}`."
+            "**Goal {name}** (draft): {objective}\n\nLead: {lead}, in `{folder}`. It proposes a hypothesis, a measure and a success line here; John (or another agent, with `goal_approve`) approves with `agentdesk goal approve {name}`."
         ),
         None,
         None,
@@ -217,7 +217,7 @@ pub fn create(db: &Db, name: &str, objective: &str, folder: &str) -> Result<Valu
         &format!(
             "You lead goal {name}. Objective: {objective}\n\nPropose how to test it: call goal_propose with name={name}, a hypothesis, a measure_cmd (the core runs it in {folder}; \
              the metric is the last number it prints, or exit code 0 means pass) and a success line (value < N, value <= N, value > N, value >= N, or pass). \
-             Then stop: John approves it, and the core wakes you when the goal runs."
+             Then stop: John or another agent approves it, and the core wakes you when the goal runs."
         ),
     )?;
     status(db, &name)
@@ -247,16 +247,35 @@ pub fn set_budget(db: &Db, c: &Caller, name: &str, max_members: Option<i64>, max
     Ok(g)
 }
 
-pub fn approve(db: &Db, c: &Caller, name: &str, max_members: Option<i64>, max_hours: Option<f64>, cadence: Option<f64>) -> Result<Value> {
-    if !is_john(c) {
-        return err("only John approves a goal");
+/// What an agent may grant when it approves a goal (John may grant anything): a goal an agent starts is a bounded one.
+pub const AGENT_MAX_MEMBERS: i64 = 4;
+pub const AGENT_MAX_HOURS: f64 = 24.0;
+
+/// John, or a named agent other than the goal's own lead and members (a goal does not approve itself). Returns who is approving.
+fn approver(db: &Db, c: &Caller, g: &Value, max_members: Option<i64>, max_hours: Option<f64>) -> Result<String> {
+    if is_john(c) {
+        return Ok("John".to_string());
     }
+    let Some(me) = identity_of(c) else { return err("only John or an agent running as an identity approves a goal") };
+    if me.eq_ignore_ascii_case(st(g, "lead"))
+        || db.scalar_i64("SELECT COUNT(*) FROM goal_members WHERE identity=:i AND goal=:g", &[(":i", &me), (":g", &st(g, "name"))])?.unwrap_or(0) > 0
+    {
+        return err("a goal's own lead and members cannot approve it: another agent, or John, does");
+    }
+    if max_members.is_some_and(|m| m > AGENT_MAX_MEMBERS) || max_hours.is_some_and(|h| h > AGENT_MAX_HOURS) {
+        return err(format!("an agent approves at most {AGENT_MAX_MEMBERS} members and {AGENT_MAX_HOURS} h; John grants more"));
+    }
+    Ok(me)
+}
+
+pub fn approve(db: &Db, c: &Caller, name: &str, max_members: Option<i64>, max_hours: Option<f64>, cadence: Option<f64>) -> Result<Value> {
     let g = need(db, name)?;
+    let by = approver(db, c, &g, max_members, max_hours)?;
     if g["measure_cmd"].is_null() {
         return err(format!("goal {name} has no proposal yet (goal_propose)"));
     }
     if st(&g, "state") == "running" && (max_members.is_some() || max_hours.is_some() || cadence.is_some()) {
-        return set_budget(db, c, name, max_members, max_hours, cadence);
+        return set_budget(db, c, name, max_members, max_hours, cadence); // John only
     }
     if matches!(st(&g, "state"), "running" | "succeeded") {
         return err(format!("goal {name} is already {}", st(&g, "state")));
@@ -272,7 +291,7 @@ pub fn approve(db: &Db, c: &Caller, name: &str, max_members: Option<i64>, max_ho
         thread_of(&g),
         AUTHOR,
         AGENT,
-        &format!("**Approved by John.** Budget: {} members, {} h; the lead wakes every {} min.", num(&g["max_members"]), num(&g["max_hours"]), num(&g["cadence_minutes"])),
+        &format!("**Approved by {by}.** Budget: {} members, {} h; the lead wakes every {} min.", num(&g["max_members"]), num(&g["max_hours"]), num(&g["cadence_minutes"])),
         None,
         None,
     )?;
@@ -651,17 +670,17 @@ fn end(db: &Db, g: &Value, state: &str, note: &str) -> Result<()> {
 /// and anything else as 0.
 pub fn run_once(cmd: &str, folder: &str, pass: bool, timeout: Duration) -> (Option<f64>, Option<String>) {
     use std::io::Read;
-    use std::process::{Command, Stdio};
+    use std::process::Stdio;
     #[cfg(windows)]
     let mut c = {
         use std::os::windows::process::CommandExt;
-        let mut c = Command::new("cmd.exe");
+        let mut c = crate::paths::new_command("cmd.exe");
         c.raw_arg(format!("/d /s /c \"{cmd}\""));
         c
     };
     #[cfg(not(windows))]
     let mut c = {
-        let mut c = Command::new("sh");
+        let mut c = crate::paths::new_command("sh");
         c.args(["-c", cmd]);
         c
     };

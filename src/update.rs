@@ -52,10 +52,51 @@ pub fn check() -> Result<(String, bool)> {
 }
 
 /// Downloads the newest release for this OS and CPU and swaps it in. Returns the version now installed.
+///
+/// A failed swap must never leave the install without a working binary: Claude Code's MCP config and hooks name
+/// this exact path, so a missing file takes the board off every session. The running build is copied aside first,
+/// and if the swap errors or the file at this path does not run and report the new version, the copy goes back.
 pub fn apply() -> Result<String> {
+    let exe = std::env::current_exe()?;
+    let keep = rollback_copy(&exe);
+    std::fs::copy(&exe, &keep)?;
     let (tag, _) = newest()?;
-    let status = updater(&tag)?.update()?;
-    Ok(status.version().trim_start_matches('v').to_string())
+    let swapped = updater(&tag)?.update();
+    let want = swapped.as_ref().ok().map(|s| s.version().trim_start_matches('v').to_string());
+    if let Some(v) = want.as_deref().filter(|v| works(&exe, v)) {
+        return Ok(v.to_string());
+    }
+    if !works(&exe, CURRENT) {
+        restore(&keep, &exe)?;
+        paths::log("WARN", &format!("update to {tag} failed; put {CURRENT} back at {}", exe.display()));
+    }
+    match swapped {
+        Err(e) => anyhow::bail!("update failed ({e}); kept {CURRENT}"),
+        Ok(_) => anyhow::bail!("the new binary did not run as {tag}; kept {CURRENT}"),
+    }
+}
+
+/// Where the running build is parked during a swap: next to it, so the copy is on the same volume.
+fn rollback_copy(exe: &std::path::Path) -> std::path::PathBuf {
+    exe.with_extension("rollback")
+}
+
+/// True when the file at `exe` exists and answers `--version` with `agentdesk <version>`.
+fn works(exe: &std::path::Path, version: &str) -> bool {
+    std::process::Command::new(exe)
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success() && String::from_utf8_lossy(&o.stdout).trim() == format!("agentdesk {version}"))
+        .unwrap_or(false)
+}
+
+/// Puts the parked copy back at `exe`, replacing whatever is there (a half-written file, or nothing).
+fn restore(keep: &std::path::Path, exe: &std::path::Path) -> Result<()> {
+    if exe.exists() {
+        let _ = std::fs::remove_file(exe);
+    }
+    std::fs::copy(keep, exe)?;
+    Ok(())
 }
 
 fn state_file() -> std::path::PathBuf {
@@ -80,4 +121,32 @@ pub fn pending() -> Option<String> {
     let v: Value = serde_json::from_str(&std::fs::read_to_string(state_file()).ok()?).ok()?;
     let latest = v["latest"].as_str()?;
     self_update::version::bump_is_greater(CURRENT, latest).ok()?.then(|| latest.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn restore_brings_back_a_missing_binary() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("agentdesk.exe");
+        let keep = rollback_copy(&exe);
+        std::fs::write(&keep, b"old build").unwrap();
+        assert!(!works(&exe, CURRENT));
+        restore(&keep, &exe).unwrap();
+        assert_eq!(std::fs::read(&exe).unwrap(), b"old build");
+    }
+
+    #[test]
+    fn restore_replaces_a_broken_binary() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("agentdesk.exe");
+        let keep = rollback_copy(&exe);
+        std::fs::write(&keep, b"old build").unwrap();
+        std::fs::write(&exe, b"half written").unwrap();
+        assert!(!works(&exe, CURRENT));
+        restore(&keep, &exe).unwrap();
+        assert_eq!(std::fs::read(&exe).unwrap(), b"old build");
+    }
 }

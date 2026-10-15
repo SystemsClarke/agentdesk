@@ -13,6 +13,7 @@ mod attach;
 mod backup;
 mod bridge;
 mod concierge;
+mod daemon;
 mod db;
 mod dispatcher;
 mod goals;
@@ -20,6 +21,8 @@ mod governor;
 mod hooks;
 mod identities;
 mod identity;
+mod install;
+mod install_dotnet;
 mod jobs;
 mod mcp;
 mod migrate;
@@ -33,8 +36,12 @@ mod prs;
 mod pyhost;
 mod service;
 mod sessions;
+mod slack;
+mod slack_cmd;
+mod slackfmt;
 mod slots;
 mod supervisor;
+mod swarm;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
@@ -45,8 +52,15 @@ mod tests_goals;
 mod tests_governor;
 #[cfg(test)]
 mod tests_identities;
+#[cfg(test)]
+mod tests_slack;
+#[cfg(test)]
+mod tests_slack_http;
+#[cfg(test)]
+mod tests_swarm;
 mod tools;
 mod tools_gen;
+mod tray;
 mod tui;
 mod ui_api;
 mod update;
@@ -73,8 +87,18 @@ enum Cmd {
     Mcp,
     /// The terminal window.
     Tui,
-    /// Headless background work: toasts, recurring jobs, merge-list checks, usage meter, sweep.
+    /// The system tray / menu-bar icon: core status, open questions, open the window. `--self-test` prints the menu and icons and exits.
+    Tray {
+        #[arg(long)]
+        self_test: bool,
+    },
+    /// The core: the one background process that owns sessions, jobs, the governor, the Concierge, Slack and toasts. Exits if one already runs.
     Daemon,
+    /// The core: `core status` (default), `core start`, `core stop`, `core restart`.
+    Core {
+        /// status, start, stop or restart
+        action: Option<String>,
+    },
     /// Claude Code hook: session-start | context | stop (stdin JSON in, hook JSON out).
     Hook { event: String },
     /// Block until John replies on the thread, then print his reply.
@@ -172,6 +196,12 @@ enum Cmd {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
+    /// The native Slack bridge in the foreground (the core runs it itself when `slack_native` is on): `--once` does one outbound pass and exits.
+    /// Tokens come from `SLACK_BOT_TOKEN` (and `SLACK_APP_TOKEN`), else `~/.claude/slack-notify`; `SLACK_API_URL` replaces https://slack.com/api.
+    SlackBridge {
+        #[arg(long)]
+        once: bool,
+    },
     /// Print where things live and the Claude Code configuration to add.
     Setup,
     /// Run one of the original's `ui:*` requests (or an agent tool) against the board and print its JSON: `agentdesk ui ui:thread '{"thread_id":1}'`.
@@ -185,10 +215,43 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// Time the window on a board and print JSON (reload, draw, markdown, keys, console bytes). Needs AGENTDESK_DATA to point at a COPY of a board.
+    #[command(hide = true)]
+    UiBench {
+        /// How many times each measurement is repeated (the median is reported).
+        #[arg(long, default_value_t = 15)]
+        runs: usize,
+        /// A short run (a few seconds): fewer repeats and shorter loop measurements.
+        #[arg(long)]
+        quick: bool,
+    },
     /// Check GitHub for a newer release; with --apply, download it and swap it in.
     Update {
         #[arg(long)]
         apply: bool,
+    },
+    /// Start the core (and the tray) at login: Run key (Windows), LaunchAgents (macOS), systemd user unit + autostart (Linux). Idempotent.
+    Install {
+        /// Register only the core, not the tray.
+        #[arg(long)]
+        no_tray: bool,
+        /// Windows: also move from the .NET app (quit it, migrate, repoint the backup task and PATH, start the core).
+        #[arg(long)]
+        from_dotnet: bool,
+        /// Say what would change, change nothing.
+        #[arg(long)]
+        dry_run: bool,
+        /// Print what is registered as JSON.
+        #[arg(long)]
+        status: bool,
+        /// Undo --from-dotnet from its saved record.
+        #[arg(long)]
+        rollback: bool,
+    },
+    /// Remove exactly what `install` registered.
+    Uninstall {
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Move a machine from the .NET AgentDesk: back up the board, point Claude Code at this binary. Dry run unless --apply.
     Migrate {
@@ -325,12 +388,9 @@ fn real_main() -> Result<()> {
         }
         Some(Cmd::Mcp) => mcp::serve(),
         Some(Cmd::Tui) => tui::run(),
-        Some(Cmd::Daemon) => {
-            let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-            println!("agentdesk daemon running on {}", paths::db_path().display());
-            service::run(stop);
-            Ok(())
-        }
+        Some(Cmd::Tray { self_test }) => tray::run(self_test),
+        Some(Cmd::Daemon) => daemon::run_daemon(),
+        Some(Cmd::Core { action }) => core_cmd(action.as_deref()),
         Some(Cmd::Hook { event }) => {
             // a hook must never break a session
             let mut input = String::new();
@@ -388,6 +448,7 @@ fn real_main() -> Result<()> {
                 std::process::exit(1);
             }
         },
+        Some(Cmd::SlackBridge { once }) => slack::run_cli(once),
         Some(Cmd::CheckPrs) => {
             println!("{} settled", prs::check(&open()?));
             Ok(())
@@ -410,6 +471,8 @@ fn real_main() -> Result<()> {
             }
             Ok(())
         }
+        Some(Cmd::Install { no_tray, from_dotnet, dry_run, status, rollback }) => install::cmd_install(no_tray, from_dotnet, dry_run, status, rollback),
+        Some(Cmd::Uninstall { dry_run }) => install::cmd_uninstall(dry_run),
         Some(Cmd::Migrate { apply }) => {
             let home = paths::home_dir();
             println!("{}", migrate::run(apply, &home.join(".claude.json"), &paths::claude_settings())?);
@@ -418,6 +481,10 @@ fn real_main() -> Result<()> {
         Some(Cmd::Ui { request, args }) => std::process::exit(ui_api::run(&request, args.as_deref())),
         Some(Cmd::UiSnapshot { size, keys, json }) => {
             println!("{}", tui::snapshot(&size, &keys, json)?);
+            Ok(())
+        }
+        Some(Cmd::UiBench { runs, quick }) => {
+            println!("{}", tui::bench(runs.max(1), quick)?);
             Ok(())
         }
         Some(Cmd::UsageProbe) => {
@@ -534,6 +601,29 @@ fn concierge_cmd(action: Option<&str>, folder: Option<String>) -> Result<()> {
     if on.is_some() && !supervisor::running() {
         eprintln!("note: no supervisor is running, so nothing will act on this yet. Start `agentdesk daemon` (or the window).");
     }
+    Ok(())
+}
+
+fn core_cmd(action: Option<&str>) -> Result<()> {
+    let wait = std::time::Duration::from_secs(15);
+    match action {
+        Some("start") => {
+            daemon::ensure(wait)?;
+        }
+        Some("stop") => {
+            if !daemon::stop(wait)? {
+                println!("no core is running");
+                return Ok(());
+            }
+        }
+        Some("restart") => {
+            daemon::stop(wait)?;
+            daemon::ensure(wait)?;
+        }
+        Some("status") | None => {}
+        Some(other) => anyhow::bail!("core takes status, start, stop or restart, not {other}"),
+    }
+    println!("{}", serde_json::to_string_pretty(&daemon::status_json())?);
     Ok(())
 }
 

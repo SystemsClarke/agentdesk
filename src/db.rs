@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS threads (id INTEGER PRIMARY KEY AUTOINCREMENT, create
 CREATE TABLE IF NOT EXISTS messages (id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL, thread_id INTEGER REFERENCES threads(id),
     author TEXT NOT NULL, author_kind TEXT NOT NULL, body TEXT NOT NULL, reply_to INTEGER REFERENCES messages(id), meta TEXT);
 CREATE INDEX IF NOT EXISTS idx_messages_thread  ON messages(thread_id, id);
+CREATE INDEX IF NOT EXISTS idx_messages_thread_kind ON messages(thread_id, author_kind, id); -- the list queries' latest-human-post subqueries seek instead of scanning back (list_threads 6.6 to 2.4 ms on 765 threads)
 CREATE INDEX IF NOT EXISTS idx_messages_ts      ON messages(ts);
 CREATE INDEX IF NOT EXISTS idx_threads_channel  ON threads(channel, status);
 CREATE INDEX IF NOT EXISTS idx_threads_updated  ON threads(updated_ts);
@@ -197,7 +198,19 @@ impl Db {
 
     /// Creates the schema and rebuilds the `open_questions` view from this file's rule.
     pub fn init(&self) -> Result<()> {
-        let _: String = self.conn.query_row("PRAGMA journal_mode=WAL", [], |r| r.get(0))?;
+        // Switching a fresh board to WAL needs a moment with no other connection on it, and SQLite does not run the busy handler for that
+        // switch: two processes opening a new board at once (the core and a client) made one fail with "database is locked". Try again.
+        let mut tries = 0;
+        loop {
+            match self.conn.query_row("PRAGMA journal_mode=WAL", [], |r| r.get::<_, String>(0)) {
+                Ok(_) => break,
+                Err(e) if tries < 200 && e.to_string().contains("locked") => {
+                    tries += 1;
+                    std::thread::sleep(std::time::Duration::from_millis(25));
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
         let version = Self::schema_version();
         if self.conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))? == version {
             return Ok(());

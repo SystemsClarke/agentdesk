@@ -1,23 +1,38 @@
 [package]
 name = "agentdesk"
-version = "0.2.1"
+version = "0.3.5"
 edition = "2021"
 description = "A message board between a human and the AI agents running on this machine: MCP server, hooks and a ratatui terminal UI."
 license = "MIT"
+
+[features]
+default = ["tray"]
+# The system tray / menu-bar icon (`agentdesk tray`). A headless server builds with --no-default-features.
+tray = ["dep:tray-icon", "dep:tao"]
 
 [dependencies]
 anyhow = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 clap = { version = "4", features = ["derive"] }
 dirs = "5"
+fancy-regex = "0.13"
 notify-rust = "4"
 portable-pty = "0.9"
 ratatui = "0.29"
 regex = "1"
 rusqlite = { version = "0.32", features = ["bundled", "backup"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 self_update = { version = "0.41", default-features = false, features = ["rustls", "archive-tar", "archive-zip", "compression-flate2", "compression-zip-deflate"] }
+tao = { version = "0.30", optional = true }
+tray-icon = { version = "0.19", optional = true }
 serde_json = { version = "1", features = ["preserve_order"] }
+tungstenite = { version = "0.24", default-features = false, features = ["handshake"] }
 unicode-width = "0.2"
+ureq = { version = "2", features = ["json"] }
+webpki-roots = "1"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Threading"] }
 
 [dev-dependencies]
 tempfile = "3"

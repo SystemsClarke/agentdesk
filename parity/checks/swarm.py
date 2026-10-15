@@ -174,15 +174,17 @@ def _adoptwake(b):
     assert "--resume" in run and "sess-scout" in run
 
 
-@feature("session.headless-env", "swarm", "A session starts with CLAUDE*, AGENTDESK_SESSION and AGENTDESK_AUTHOR dropped and AGENTDESK_HEADLESS=<name> set", "docs/ui-api.md ui:session_start")
+@feature("session.headless-env", "swarm", "A session starts with the inherited CLAUDE*, AGENTDESK_SESSION and AGENTDESK_AUTHOR dropped, AGENTDESK_HEADLESS=<name> set, and CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1 set (the one CLAUDE* variable the daemon adds itself)", "docs/ui-api.md ui:session_start")
 def _headless(b):
     p = b.spawn("daemon")
     time.sleep(1)
     out = os.path.join(b.work, "env.txt")
-    script = make_stub(b.stubs, "agent", "import os,time\nopen(%r,'w').write(repr(sorted(k for k in os.environ if k.startswith(('CLAUDE','AGENTDESK')))))\ntime.sleep(20)\n" % out)
+    script = make_stub(b.stubs, "agent", "import os,time\nopen(%r,'w').write(repr(sorted(k for k in os.environ if k.startswith(('CLAUDE','AGENTDESK')))) + os.environ.get('CLAUDE_CODE_FORCE_SESSION_PERSISTENCE', 'unset'))\ntime.sleep(20)\n" % out)
     b.need("ui:session_start", {"name": "s1", "folder": b.work, "command": script}, env={"CLAUDE_CODE_SESSION_ID": "x", "CLAUDECODE": "1", "AGENTDESK_AUTHOR": "leak", "AGENTDESK_SESSION": "leak"})
     seen = wait_for(lambda: os.path.exists(out) and open(out).read(), 8, what="the session's environment")
-    assert "'CLAUDE" not in seen and "AGENTDESK_AUTHOR" not in seen and "AGENTDESK_SESSION" not in seen and "AGENTDESK_HEADLESS" in seen, seen
+    names = seen.rsplit("]", 1)[0]
+    leaked = [n for n in ("CLAUDE_CODE_SESSION_ID", "CLAUDECODE", "AGENTDESK_AUTHOR", "AGENTDESK_SESSION") if "'%s'" % n in names]
+    assert not leaked and "AGENTDESK_HEADLESS" in names and seen.endswith("]1"), seen
 
 
 @feature("session.attach-replay", "swarm", "A viewer gets the last 256 KB of output first, then everything new; one that falls 256 chunks behind is dropped with session.overflow", "docs/ui-api.md ui:attach")

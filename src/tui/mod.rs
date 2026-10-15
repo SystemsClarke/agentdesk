@@ -2,15 +2,19 @@
 //! console, Who's on, options, recurring jobs, permission rules, agents) with the same letter keys and wording.
 //! `screens.rs` builds each screen as lines of tagged segments; this file is state, keys and drawing.
 
-mod charts;
+mod bench;
+pub(crate) mod charts; // the Slack bridge draws charts and diagrams with it
 mod editor;
+mod live;
 mod md;
+mod runner;
 mod screens;
-mod seg;
+pub(crate) mod seg;
 mod state;
+mod term;
 
 use crate::db::{anyhow_msg, Db};
-use crate::{jobs, paths, permissions, prs, service, update};
+use crate::{jobs, paths, permissions, prs, update};
 use anyhow::Result;
 use editor::Editor;
 use ratatui::crossterm::event::{self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -22,10 +26,11 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::Frame;
 use seg::{palettes, Palette};
 use serde_json::{json, Value};
-use state::{Detail, State};
+use state::{Detail, Fresh, State, Want};
+use std::cell::RefCell;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::rc::Rc;
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -111,11 +116,58 @@ pub struct App {
     pub adoptables: Vec<crate::adopt::Convo>,
     pub adopt_note: Option<String>,
     pub attach_request: Option<String>,
+    /// The script runner pane under the reader (see `runner`).
+    pub runner: Option<runner::Runner>,
     data_version: i64,
     last_load: Instant,
     reader_key: Option<(i64, usize)>,
     scroll_end: bool,
+    /// The screen has changed since it was last drawn. The loop draws only when this is set (see `tick`).
+    dirty: bool,
+    pal: Palette,
+    /// What the sync `reload` may reuse from the last one (the slow-moving budget).
+    memo: state::Memo,
+    /// The worker that loads refreshes off the window's thread; `None` for the headless snapshot and the tests, which reload in place.
+    refresher: Option<Refresher>,
+    /// The reader's rendered Markdown, per message (thread id, index): `(width, message rev, lines)`. Rendering is the slow part
+    /// of a long thread, and nothing about a message changes between frames.
+    md_cache: RefCell<MdCache>,
+    /// Bio text by thread id for the Who's on screen; emptied when a refresh brings new data.
+    bio_cache: RefCell<HashMap<i64, Option<String>>>,
+    /// What `tick` last saw of the clock: the minute (relative times), and on the main menu the six-second phrase.
+    time_key: (i64, i64),
+    last_save: Instant,
+    last_dictation: Instant,
+    /// Counts the reloads done in place: a worker answer asked for before one is older than what the window shows.
+    epoch: u64,
+    /// A test's stopped clock, so a minute rolling over mid-test cannot cause a frame.
+    #[cfg(test)]
+    fixed_clock: Option<(i64, i64)>,
 }
+
+#[derive(Default)]
+pub struct MdCache {
+    thread: i64,
+    lines: HashMap<usize, (usize, u64, Rc<Vec<seg::L>>)>,
+}
+
+/// The refresh worker and the bookkeeping around it. A refresh is asked for when the board changed (`PRAGMA data_version`), at most
+/// every `MIN_GAP`, and at least every `MAX_AGE`; while one is out another is not started.
+struct Refresher {
+    ask: mpsc::Sender<Want>,
+    answer: mpsc::Receiver<Fresh>,
+    out: Option<u64>,
+    started: Instant,
+    /// The last result was for a screen the window has left: ask again at once.
+    stale: bool,
+    /// Hash of the last result applied; an identical one changes nothing on screen.
+    sig: u64,
+}
+
+const MIN_GAP: Duration = Duration::from_millis(250);
+const MAX_AGE: Duration = Duration::from_secs(5);
+/// How long a flash message stays on the bottom line.
+const FLASH: Duration = Duration::from_millis(3200);
 
 fn john() -> crate::identity::Caller {
     crate::identity::Caller::default()
@@ -140,7 +192,7 @@ pub fn open_url(url: &str) {
     } else {
         ("xdg-open", vec![url])
     };
-    let _ = std::process::Command::new(prog).args(args).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn();
+    let _ = crate::paths::new_command(prog).args(args).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn();
 }
 
 /// `08:00`, `08:00 weekdays`, `08:00 mon,thu`, `every 120`.
@@ -200,18 +252,38 @@ impl App {
             adoptables: vec![],
             adopt_note: None,
             attach_request: None,
+            runner: None,
             data_version: -1,
             last_load: Instant::now(),
             reader_key: None,
             scroll_end: false,
+            dirty: true,
+            pal: palettes().remove(0).1,
+            memo: state::Memo::default(),
+            refresher: None,
+            md_cache: RefCell::new(MdCache::default()),
+            bio_cache: RefCell::new(HashMap::new()),
+            time_key: (0, 0),
+            last_save: Instant::now(),
+            last_dictation: Instant::now(),
+            epoch: 0,
+            #[cfg(test)]
+            fixed_clock: None,
         };
+        app.pal = app.palette_for(&app.theme);
+        app.time_key = app.clock();
         app.load_drafts();
         app.data_version = app.db.data_version();
         app
     }
 
+    fn palette_for(&self, theme: &str) -> Palette {
+        palettes().into_iter().find(|(k, _)| *k == theme).map(|(_, p)| p).unwrap_or_else(|| palettes().remove(0).1)
+    }
+
+    /// The current theme's palette, built when the theme was chosen rather than on every frame.
     pub fn palette(&self) -> Palette {
-        palettes().into_iter().find(|(k, _)| *k == self.theme).map(|(_, p)| p).unwrap_or_else(|| palettes().remove(0).1)
+        self.pal.clone()
     }
 
     pub fn theme_index(&self) -> usize {
@@ -251,6 +323,7 @@ impl App {
 
     pub fn say(&mut self, text: impl Into<String>, tags: &str) {
         self.flash = Some((text.into(), tags.to_string(), Instant::now()));
+        self.dirty = true;
     }
 
     fn fail(&mut self, prefix: &str, e: anyhow::Error) {
@@ -264,30 +337,200 @@ impl App {
         }
     }
 
+    /// What the current screen needs from the board. The top line shows the Concierge's held item from the work list on every
+    /// screen, so that list is always loaded; the other three only where something reads them.
+    fn want(&self) -> Want {
+        let mut rows = [false, false, false, true];
+        match self.screen {
+            Screen::Main => rows = [true; 4],
+            Screen::List | Screen::Read => {
+                if let Some(i) = state::CHANNELS.iter().position(|c| *c == self.channel) {
+                    rows[i] = true;
+                }
+            }
+            _ => {}
+        }
+        Want {
+            archived: self.show_archived,
+            decided: self.show_decided,
+            rows,
+            read: self.read_tid.filter(|_| self.screen == Screen::Read),
+            goal: self.goal_name.clone().filter(|_| self.screen == Screen::Goal),
+        }
+    }
+
+    /// Reads the board again, here and now, exactly (no reused budget): for after something was written.
     pub fn reload(&mut self) {
         self.data_version = self.db.data_version();
         self.last_load = Instant::now();
-        self.st = State::load(&self.db, self.show_archived, self.show_decided);
-        self.update = update::pending();
-        if let Some(id) = self.read_tid {
-            if self.screen == Screen::Read {
-                self.detail = Detail::load(&self.db, id);
-                let count = self.detail.as_ref().map(|d| d.messages.len()).unwrap_or(0);
-                if self.reader_key.map(|(t, c)| t != id || c < count).unwrap_or(true) {
-                    self.scroll_end = true;
+        self.epoch += 1;
+        let fresh = Fresh::load(&self.db, self.want(), None, None);
+        self.apply(fresh);
+    }
+
+    /// The same for moving to another screen: the slow-moving budget may be up to ten seconds old. `known` is the open thread when
+    /// the caller has just loaded it.
+    fn reload_nav(&mut self, known: Option<Detail>) {
+        self.data_version = self.db.data_version();
+        self.last_load = Instant::now();
+        self.epoch += 1;
+        let fresh = Fresh::load(&self.db, self.want(), Some(&mut self.memo), known);
+        self.apply(fresh);
+    }
+
+    fn apply(&mut self, mut f: Fresh) {
+        for ch in state::CHANNELS {
+            if !f.st.rows.contains_key(ch) {
+                if let Some(old) = self.st.rows.remove(ch) {
+                    f.st.rows.insert(ch.into(), old);
                 }
-                self.reader_key = Some((id, count));
             }
         }
-        if self.screen == Screen::Goal {
-            if let Some(n) = self.goal_name.clone() {
-                self.goal_doc = crate::goals::status(&self.db, &n).ok();
+        self.st = f.st;
+        self.update = f.update;
+        self.bio_cache.borrow_mut().clear();
+        if let (Some(id), Some(detail)) = (f.want.read, f.detail) {
+            self.detail = detail;
+            let count = self.detail.as_ref().map(|d| d.messages.len()).unwrap_or(0);
+            if self.reader_key.map(|(t, c)| t != id || c < count).unwrap_or(true) {
+                self.scroll_end = true;
             }
+            self.reader_key = Some((id, count));
+        }
+        if let Some(doc) = f.goal_doc {
+            self.goal_doc = doc;
         }
         if self.scroll_end {
             self.scroll = usize::MAX / 2;
             self.scroll_end = false;
         }
+        self.dirty = true;
+    }
+
+    // ---- refreshing in the background
+
+    /// Starts the worker that loads refreshes on its own connection, so a slow query never holds up a key.
+    fn start_refresher(&mut self, db_path: std::path::PathBuf) {
+        let (ask, asked) = mpsc::channel::<Want>();
+        let (reply, answer) = mpsc::channel::<Fresh>();
+        let spawned = std::thread::Builder::new().name("window-refresh".into()).spawn(move || {
+            let Ok(db) = Db::open(&db_path) else { return };
+            let mut memo = state::Memo::default();
+            while let Ok(mut want) = asked.recv() {
+                while let Ok(newer) = asked.try_recv() {
+                    want = newer; // only the latest ask matters
+                }
+                let mut fresh = Fresh::load(&db, want, Some(&mut memo), None);
+                fresh.sig = fresh.signature();
+                if reply.send(fresh).is_err() {
+                    return;
+                }
+            }
+        });
+        if spawned.is_ok() {
+            self.refresher = Some(Refresher { ask, answer, out: None, started: Instant::now() - MIN_GAP, stale: false, sig: 0 });
+        }
+    }
+
+    /// Takes in a finished refresh and, if the board changed or it is time, asks for the next. Never waits.
+    fn pump_refresh(&mut self) {
+        let Some(mut r) = self.refresher.take() else { return };
+        match r.answer.try_recv() {
+            Ok(f) => {
+                let asked_at = r.out.take();
+                if f.want != self.want() || asked_at != Some(self.epoch) {
+                    r.stale = true; // the screen moved on, or the window reloaded in place (after a write), while it was loading
+                } else if f.sig != r.sig {
+                    r.sig = f.sig;
+                    self.apply(f);
+                }
+            }
+            Err(mpsc::TryRecvError::Empty) => {}
+            Err(mpsc::TryRecvError::Disconnected) => return, // the worker is gone: reload in place from now on
+        }
+        let editing = matches!(self.screen, Screen::Compose | Screen::Ask);
+        if r.out.is_none() && !editing && r.started.elapsed() >= MIN_GAP {
+            let version = self.db.data_version();
+            if version != self.data_version || r.stale || self.last_load.elapsed() > MAX_AGE {
+                let want = self.want();
+                self.data_version = version;
+                self.last_load = Instant::now();
+                r.started = Instant::now();
+                r.stale = false;
+                r.out = Some(self.epoch);
+                if r.ask.send(want).is_err() {
+                    return;
+                }
+            }
+        }
+        self.refresher = Some(r);
+    }
+
+    /// Without a worker (the headless snapshot, the tests) a changed board is reloaded in place, as before.
+    fn pump_refresh_inline(&mut self) {
+        let editing = matches!(self.screen, Screen::Compose | Screen::Ask);
+        if !editing && (self.db.data_version() != self.data_version || self.last_load.elapsed() > MAX_AGE) {
+            self.reload_nav(None);
+        }
+    }
+
+    fn clock(&self) -> (i64, i64) {
+        #[cfg(test)]
+        if let Some(c) = self.fixed_clock {
+            return c;
+        }
+        let now = chrono::Utc::now().timestamp();
+        (now / 60, if self.screen == Screen::Main { now / 6 } else { 0 })
+    }
+
+    /// One pass of the loop's housekeeping, after the events were handled: dictation, the quit timer, draft saving, the board,
+    /// and the things that change the screen by themselves (a flash message ending, the clock moving on a minute). Returns
+    /// whether the screen needs drawing; an unchanged screen costs no frame at all.
+    pub fn tick(&mut self) -> bool {
+        if self.dictating && self.last_dictation.elapsed() >= Duration::from_millis(250) {
+            self.last_dictation = Instant::now();
+            self.dictation_tick();
+        }
+        if self.quit_at.map(|t| Instant::now() >= t).unwrap_or(false) {
+            self.quit = true;
+        }
+        if self.runner.as_mut().is_some_and(|r| r.pump()) {
+            self.dirty = true;
+        }
+        if self.last_save.elapsed() > Duration::from_secs(5) {
+            self.save_drafts();
+            self.last_save = Instant::now();
+        }
+        if self.refresher.is_some() {
+            self.pump_refresh();
+        } else {
+            self.pump_refresh_inline();
+        }
+        if self.flash.as_ref().is_some_and(|(_, _, t)| t.elapsed() > FLASH) {
+            self.flash = None;
+            self.dirty = true;
+        }
+        let clock = self.clock();
+        if clock != self.time_key {
+            self.time_key = clock;
+            self.dirty = true;
+        }
+        std::mem::take(&mut self.dirty)
+    }
+
+    /// How long the loop may sleep before something needs its attention.
+    pub fn next_wake(&self) -> Duration {
+        let mut d = Duration::from_millis(if self.refresher.is_some() { 100 } else { 250 });
+        if self.dictating {
+            d = d.min(Duration::from_millis(250));
+        }
+        if let Some((_, _, t)) = &self.flash {
+            d = d.min(FLASH.saturating_sub(t.elapsed()) + Duration::from_millis(5));
+        }
+        if let Some(t) = self.quit_at {
+            d = d.min(t.saturating_duration_since(Instant::now()));
+        }
+        d.max(Duration::from_millis(1))
     }
 
     fn item_count(&self) -> usize {
@@ -336,7 +579,7 @@ impl App {
             }
             self.subject_focus = self.subject.is_empty();
         }
-        self.reload();
+        self.reload_nav(None);
     }
 
     fn open_thread(&mut self, tid: i64, back: Screen) {
@@ -353,9 +596,8 @@ impl App {
         self.reply = Editor::from(self.drafts.get(&tid).map(|s| s.as_str()).unwrap_or(""));
         self.reader_key = None;
         self.screen = Screen::Read;
-        self.detail = Some(d);
         self.scroll = usize::MAX / 2;
-        self.reload();
+        self.reload_nav(Some(d));
     }
 
     /// The reply being typed belongs to the thread it was typed on, and an unsent new post to its screen: put each where it
@@ -608,6 +850,8 @@ impl App {
         let all = palettes();
         let i = (self.theme_index() as i64 + step).rem_euclid(all.len() as i64) as usize;
         self.theme = all[i].0.to_string();
+        self.pal = self.palette_for(&self.theme);
+        self.dirty = true;
         let t = self.theme.clone();
         self.set_pref("theme", json!(t));
     }
@@ -865,6 +1109,16 @@ impl App {
             KeyCode::Down if k.modifiers.contains(KeyModifiers::CONTROL) => self.scroll += 1,
             KeyCode::Char('n') | KeyCode::Char('p') if alt => self.reader_step(if k.code == KeyCode::Char('n') { 1 } else { -1 }),
             KeyCode::Char('c') if alt => self.reader_close(),
+            KeyCode::Char('r') if alt => self.runner_key_r(),
+            KeyCode::Char('k') if alt => self.runner_kill(),
+            KeyCode::Char('y') if alt => self.runner_yank(),
+            KeyCode::Char('x') if alt => self.runner_close(),
+            KeyCode::Char(d @ '1'..='9') if alt && self.runner.is_some() => {
+                let ok = self.runner.as_mut().is_some_and(|r| r.pick(d as usize - '1' as usize));
+                if !ok {
+                    self.say("No such script in this thread (or one is running).", "mu");
+                }
+            }
             KeyCode::Char('u') if alt => {
                 if let (Some(t), "question") = (self.read_tid, self.channel) {
                     self.unarchive(t);
@@ -876,6 +1130,44 @@ impl App {
             _ if alt => {}
             _ => self.reply.key(k),
         }
+    }
+
+    /// Alt+R: the first press opens the runner pane on the thread's scripts and shows the picked one; the next runs it.
+    fn runner_key_r(&mut self) {
+        if self.runner.is_none() {
+            let msgs: Vec<(String, String)> = self.detail.as_ref().map(|d| d.messages.iter().map(|m| (m.author.clone(), m.body.clone())).collect()).unwrap_or_default();
+            let blocks = runner::extract_blocks(&msgs);
+            if blocks.is_empty() {
+                return self.say("No script in this thread: it needs a fenced ```powershell, ```bash, ```sh or ```cmd block.", "mu");
+            }
+            self.runner = Some(runner::Runner::new(blocks));
+            return self.say("The script is shown, not run. Alt+R again runs it; Alt+1..9 picks another; Alt+X closes.", "cy");
+        }
+        let started = self.runner.as_mut().is_some_and(|r| r.run());
+        if !started {
+            self.say("Already running (Alt+K stops it).", "mu");
+        }
+        self.dirty = true;
+    }
+
+    fn runner_kill(&mut self) {
+        if self.runner.as_mut().is_some_and(|r| r.kill()) {
+            self.say("Stopped.", "ye");
+        }
+    }
+
+    fn runner_yank(&mut self) {
+        let Some(r) = &self.runner else { return };
+        let text = r.summary(30);
+        self.reply.insert_str(&text);
+        self.say("The output is in your reply: edit it, then Ctrl+S sends.", "gr");
+    }
+
+    fn runner_close(&mut self) {
+        if let Some(mut r) = self.runner.take() {
+            r.kill();
+        }
+        self.dirty = true;
     }
 
     fn reader_step(&mut self, delta: i64) {
@@ -963,7 +1255,8 @@ impl App {
                     Some("loading") => "loading the speech model",
                     _ => "listening",
                 };
-                self.say(format!("Dictation: {what}... Ctrl+D stops, Esc cancels."), "cy");
+                let mic = v["device"].as_str().map(|d| format!(" on {d}")).unwrap_or_default();
+                self.say(format!("Dictation: {what}{mic}... Ctrl+D stops, Esc cancels."), "cy");
             }
             Ok(v) => self.say(format!("Dictation: {}", v["error"].as_str().unwrap_or("not available")), "pk b"),
             Err(e) => self.say(format!("Dictation: {e}"), "pk b"),
@@ -1292,6 +1585,9 @@ impl App {
     pub fn draw(&mut self, f: &mut Frame) {
         let pal = self.palette();
         let area = f.area();
+        if self.screen != Screen::Read && self.runner.is_some() {
+            self.runner_close(); // the pane belongs to the reader
+        }
         f.render_widget(Block::default().style(Style::default().bg(pal.color("bg")).fg(pal.color("fg"))), area);
         let input_h: u16 = match self.screen {
             Screen::Read => 5,
@@ -1304,7 +1600,15 @@ impl App {
             .direction(Direction::Vertical)
             .constraints([Constraint::Length(1), Constraint::Min(1), Constraint::Length(input_h), Constraint::Length(1)])
             .split(area);
-        let (w, h) = (parts[1].width as usize, parts[1].height as usize);
+        // the runner pane takes the lower part of the body while it is open
+        let (body, pane) = if self.screen == Screen::Read && self.runner.is_some() && parts[1].height >= 14 {
+            let ph = (parts[1].height * 45 / 100).max(8);
+            let split = Layout::default().direction(Direction::Vertical).constraints([Constraint::Min(4), Constraint::Length(ph)]).split(parts[1]);
+            (split[0], Some(split[1]))
+        } else {
+            (parts[1], None)
+        };
+        let (w, h) = (body.width as usize, body.height as usize);
         self.body_h = h;
         f.render_widget(Paragraph::new(pal.line(&self.top_line(parts[0].width as usize))), parts[0]);
         let mut lines = self.build(w, h);
@@ -1315,14 +1619,44 @@ impl App {
             self.scroll = 0;
         }
         let shown: Vec<Line> = lines.drain(..).skip(self.scroll).take(h).map(|l| pal.line(&l)).collect();
-        f.render_widget(Paragraph::new(shown), parts[1]);
+        f.render_widget(Paragraph::new(shown), body);
+        if let Some(pane) = pane {
+            self.draw_runner(f, pane, &pal);
+        }
         f.render_widget(Paragraph::new(pal.line(&self.bar_line(parts[3].width as usize))), parts[3]);
         self.draw_inputs(f, parts[2], &pal);
         if let Some((_, _, t)) = &self.flash {
-            if t.elapsed() > Duration::from_millis(3200) {
+            if t.elapsed() > FLASH {
                 self.flash = None;
             }
         }
+    }
+
+    /// The runner pane: the picked script on top, its output (the newest lines) below, the state in the title.
+    fn draw_runner(&self, f: &mut Frame, area: Rect, pal: &Palette) {
+        let Some(r) = &self.runner else { return };
+        let inner_h = area.height.saturating_sub(2) as usize;
+        let (n, from, lang) = (r.picked + 1, r.block().map(|b| b.from.clone()).unwrap_or_default(), r.block().map(|b| b.lang.clone()).unwrap_or_default());
+        let title = format!(" Script {n}/{} ({lang}, from {from}): {} ", r.blocks.len(), r.status());
+        let script_h = r.block().map(|b| b.script.lines().count()).unwrap_or(0).min(inner_h / 2).max(1);
+        let mut lines: Vec<Line> =
+            r.block().map(|b| b.script.lines().take(script_h).map(|l| Line::styled(format!("> {l}"), Style::default().fg(pal.color("mu")))).collect()).unwrap_or_default();
+        let out_h = inner_h.saturating_sub(lines.len());
+        let skip = r.out.len().saturating_sub(out_h);
+        lines.extend(r.out.iter().skip(skip).map(|l| Line::raw(l.chars().take(area.width.saturating_sub(2) as usize).collect::<String>())));
+        let border = match r.state {
+            runner::State::Running => pal.color("cy"),
+            runner::State::Done(0) => pal.color("gr"),
+            runner::State::Done(_) | runner::State::Failed(_) => pal.color("pk"),
+            runner::State::Ready => pal.color("ye"),
+        };
+        f.render_widget(Clear, area);
+        f.render_widget(
+            Paragraph::new(lines).block(
+                Block::default().borders(Borders::ALL).border_style(Style::default().fg(border)).title(title).style(Style::default().bg(pal.color("bg")).fg(pal.color("fg"))),
+            ),
+            area,
+        );
     }
 
     fn boxed(&self, f: &mut Frame, area: Rect, title: &str, text: &str, pal: &Palette, focus: bool) {
@@ -1389,69 +1723,102 @@ pub fn run() -> Result<()> {
     let db = Db::open(&paths::db_path())?;
     db.init()?;
     let mut app = App::with_db(db);
-    let stop = Arc::new(AtomicBool::new(false));
-    let worker = {
-        let stop = stop.clone();
-        std::thread::spawn(move || service::run(stop))
-    };
-    let mut terminal = ratatui::init();
-    let _ = execute!(std::io::stdout(), EnableBracketedPaste);
-    let mut last_save = Instant::now();
+    // The window is a client: the core (`agentdesk daemon`) owns the sessions, jobs and the Slack bridge. Start it if it is not running.
+    if let Err(e) = crate::daemon::ensure(Duration::from_secs(15)) {
+        eprintln!("agentdesk: {e}. The window works on the board, but nothing will run agents or send toasts until the core is up (`agentdesk core start`).");
+        std::thread::sleep(Duration::from_secs(2));
+    }
+    let prev_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        leave();
+        prev_hook(info);
+    }));
+    let mut console = enter()?;
+    app.start_refresher(paths::db_path());
     let result = (|| -> Result<()> {
+        let mut redraw = true;
         while !app.quit {
-            terminal.draw(|f| app.draw(f))?;
-            if event::poll(Duration::from_millis(250))? {
-                match event::read()? {
-                    Event::Key(k) => app.on_key(k),
-                    Event::Paste(s) => match app.screen {
-                        Screen::Read => app.reply.insert_str(&s),
-                        Screen::Compose if !app.subject_focus => app.reply.insert_str(&s),
-                        Screen::Compose | Screen::Ask => app.subject.push_str(s.lines().next().unwrap_or("")),
-                        _ => {}
-                    },
-                    _ => {}
-                }
+            // a frame only when something changed; then sleep until a key, or until something needs attention
+            if redraw {
+                console.draw(&mut app)?;
             }
-            if app.dictating {
-                app.dictation_tick();
+            if event::poll(app.next_wake())? {
+                // take every event that is waiting before drawing: a held key or a paste is one frame, not one each
+                loop {
+                    handle(&mut app, event::read()?);
+                    if !event::poll(Duration::ZERO)? {
+                        break;
+                    }
+                }
             }
             if let Some(name) = app.attach_request.take() {
                 // leave the window, hand the console to the session, and come back when it is detached
-                let _ = execute!(std::io::stdout(), DisableBracketedPaste);
-                ratatui::restore();
+                leave();
                 if let Err(e) = crate::attach::client(&name) {
                     eprintln!("{}", anyhow_msg(&e));
                     std::thread::sleep(Duration::from_secs(2));
                 }
-                terminal = ratatui::init();
-                let _ = execute!(std::io::stdout(), EnableBracketedPaste);
+                console = enter()?;
                 app.reload();
             }
-            if app.quit_at.map(|t| Instant::now() >= t).unwrap_or(false) {
-                app.quit = true;
-            }
-            if last_save.elapsed() > Duration::from_secs(5) {
-                app.save_drafts();
-                last_save = Instant::now();
-            }
-            let editing = matches!(app.screen, Screen::Compose | Screen::Ask);
-            if !editing && (app.db.data_version() != app.data_version || app.last_load.elapsed() > Duration::from_secs(5)) {
-                app.reload();
-            }
+            redraw = app.tick();
         }
         Ok(())
     })();
     app.set_draft_aside();
     crate::pyhost::shutdown();
+    leave();
+    result
+}
+
+/// The window takes the console: raw mode, the alternate screen, bracketed paste.
+fn enter() -> Result<term::Console<std::io::Stdout>> {
+    use ratatui::crossterm::terminal::{enable_raw_mode, EnterAlternateScreen};
+    enable_raw_mode()?;
+    let entered = execute!(std::io::stdout(), EnterAlternateScreen, EnableBracketedPaste).and_then(|_| term::Console::new(std::io::stdout()));
+    entered.map_err(|e| {
+        leave();
+        e.into()
+    })
+}
+
+/// Gives the console back.
+fn leave() {
     let _ = execute!(std::io::stdout(), DisableBracketedPaste);
     ratatui::restore();
-    stop.store(true, Ordering::Relaxed);
-    let _ = worker.join();
-    result
+}
+
+fn handle(app: &mut App, ev: Event) {
+    match ev {
+        Event::Key(k) => {
+            app.dirty |= k.kind != KeyEventKind::Release;
+            app.on_key(k)
+        }
+        Event::Paste(s) => {
+            match app.screen {
+                Screen::Read => app.reply.insert_str(&s),
+                Screen::Compose if !app.subject_focus => app.reply.insert_str(&s),
+                Screen::Compose | Screen::Ask => app.subject.push_str(s.lines().next().unwrap_or("")),
+                _ => {}
+            }
+            app.dirty = true;
+        }
+        Event::Resize(..) => app.dirty = true,
+        _ => {}
+    }
 }
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_perf;
+#[cfg(test)]
+mod tests_pty;
+
+/// `agentdesk ui-bench`: see `bench.rs`.
+pub fn bench(runs: usize, quick: bool) -> Result<String> {
+    bench::run(runs, quick)
+}
 
 fn parse_key(tok: &str) -> Vec<KeyEvent> {
     let named = |c: KeyCode| vec![KeyEvent::new(c, KeyModifiers::NONE)];

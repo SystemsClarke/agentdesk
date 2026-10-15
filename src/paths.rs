@@ -134,10 +134,28 @@ fn find_claude(path: &std::ffi::OsStr, home: &std::path::Path, config: Option<Pa
     found.pop().map(|(_, p)| p.display().to_string()).unwrap_or_else(|| "claude".into())
 }
 
-/// A `std::process::Command` for `program` resolved by `resolve`.
+/// Stops a child process from opening a console window of its own (Windows): `gh`, `git`, `powershell` and the rest would otherwise
+/// flash one each time the core or the tray runs them. A no-op elsewhere.
+pub fn hide(c: &mut std::process::Command) -> &mut std::process::Command {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        c.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    c
+}
+
+/// `std::process::Command::new(program)` that opens no window.
+pub fn new_command(program: impl AsRef<std::ffi::OsStr>) -> std::process::Command {
+    let mut c = std::process::Command::new(program);
+    hide(&mut c);
+    c
+}
+
+/// A `std::process::Command` for `program` resolved by `resolve`, opening no window.
 pub fn command(program: &str) -> std::process::Command {
     let (p, pre) = resolve(program);
-    let mut c = std::process::Command::new(p);
+    let mut c = new_command(p);
     c.args(pre);
     c
 }

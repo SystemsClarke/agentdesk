@@ -3,11 +3,20 @@
 //! is gone. One that is alive but has not beaten for `hung` (180 s) is a stale orphan: logged and shown in `ui:status`, and no second
 //! bridge is started (it would double-post): kill that pid and the daemon takes over. A bridge it supervises that stays alive without
 //! beating for `hung` is killed and restarted. Restarts wait 5 s, doubling to 5 min, back to 5 s once a run lasted 10 min.
+//!
+//! The native bridge (`slack.rs`, no Python) is the same thing run as threads of this process instead of a child: it writes the same
+//! heartbeat and the same `ui:status` section (state `supervised`, `pid` the core's own, `native: true`), and a run that returns an error
+//! or panics is restarted on the same delays. `settings.json` `"slack_native"` picks it: `true` or `false` is taken as written; absent, it
+//! is on when no Python interpreter is found (there is nothing else to run) and off otherwise, so the proven Python bridge stays the
+//! default until the native one has run against real Slack. To switch an installed machine over, put `"slack_native": true` in
+//! `settings.json` in the data folder and restart the core (`agentdesk core restart`); `false` switches back. A bridge started by hand
+//! (`agentdesk slack-bridge`) is "external" to the core while it beats, like any other.
 
-use crate::{paths, pyhost};
+use crate::sessions::Registry;
+use crate::{paths, pyhost, slack};
 use chrono::{DateTime, Utc};
 use serde_json::{json, Value};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -25,15 +34,32 @@ fn secs_env(name: &str, default: u64) -> Duration {
     Duration::from_secs(std::env::var(name).ok().and_then(|v| v.parse().ok()).unwrap_or(default))
 }
 
-/// Whether a process with this pid is alive.
+/// Whether a process with this pid is alive. On Windows this is a handle query, not a `tasklist` spawn: starting a process costs
+/// 300 ms or more on a managed machine, and this runs on every window refresh and every daemon pass.
 pub fn pid_alive(pid: i64) -> bool {
     if pid <= 0 {
         return false;
     }
-    if cfg!(windows) {
-        Command::new("tasklist").args(["/FI", &format!("PID eq {pid}"), "/NH"]).output().map(|o| String::from_utf8_lossy(&o.stdout).contains(&pid.to_string())).unwrap_or(false)
-    } else {
-        Command::new("kill").args(["-0", &pid.to_string()]).stderr(Stdio::null()).status().map(|s| s.success()).unwrap_or(false)
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::Threading::{GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+        const STILL_ACTIVE: u32 = 259;
+        // SAFETY: plain FFI; the handle is closed before returning.
+        unsafe {
+            let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid as u32);
+            if h.is_null() {
+                return false;
+            }
+            let mut code = 0u32;
+            let ok = GetExitCodeProcess(h, &mut code) != 0;
+            CloseHandle(h);
+            ok && code == STILL_ACTIVE
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        crate::paths::new_command("kill").args(["-0", &pid.to_string()]).stderr(Stdio::null()).status().map(|s| s.success()).unwrap_or(false)
     }
 }
 
@@ -69,12 +95,14 @@ struct Info {
     hung_restarts: i64,
     last_exit: Option<i64>,
     last_exit_ts: Option<String>,
+    /// Running inside this process (`slack.rs`) rather than as a Python child.
+    native: bool,
 }
 
 impl Info {
     fn json(&self) -> Value {
         json!({"enabled": self.enabled, "state": self.state, "supervised": self.supervised, "orphan_pid": self.orphan_pid, "pid": self.pid,
-               "restarts": self.restarts, "hung_restarts": self.hung_restarts, "last_exit": self.last_exit, "last_exit_ts": self.last_exit_ts})
+               "restarts": self.restarts, "hung_restarts": self.hung_restarts, "last_exit": self.last_exit, "last_exit_ts": self.last_exit_ts, "native": self.native})
     }
 }
 
@@ -93,7 +121,7 @@ pub fn status() -> Value {
         (Some(_), Some(_)) => "stale-orphan",
         _ => "starting",
     };
-    json!({"enabled": enabled, "state": state, "supervised": false, "orphan_pid": heartbeat().0, "pid": null, "restarts": 0, "hung_restarts": 0, "last_exit": null, "last_exit_ts": null})
+    json!({"enabled": enabled, "state": state, "supervised": false, "orphan_pid": heartbeat().0, "pid": null, "restarts": 0, "hung_restarts": 0, "last_exit": null, "last_exit_ts": null, "native": false})
 }
 
 /// `settings.json`'s `"slack_bridge": false` switches it off.
@@ -103,6 +131,15 @@ fn settings_on() -> bool {
         .and_then(|t| serde_json::from_str::<Value>(&t).ok())
         .and_then(|v| v["slack_bridge"].as_bool())
         .unwrap_or(true)
+}
+
+/// Whether the bridge runs natively (see the module comment): `slack_native` in settings.json, else when there is no Python to run.
+/// `AGENTDESK_BRIDGE_CMD` (a stand-in command) is a Python-style child, so it keeps the supervised path unless the setting says otherwise.
+pub fn use_native() -> bool {
+    match slack::setting("slack_native").as_bool() {
+        Some(b) => b,
+        None => std::env::var("AGENTDESK_BRIDGE_CMD").map_or(true, |c| c.trim().is_empty()) && pyhost::interpreter().is_none(),
+    }
 }
 
 /// The command to supervise, or None (with the reason) when this process should not start a bridge.
@@ -150,7 +187,7 @@ fn write_status(i: &Info) {
 
 /// Keeps the bridge going until `stop` is set. Meant for the daemon's (or the window's) background thread; run it only in the process that
 /// holds the supervisor lock, so there is one.
-pub fn run(stop: Arc<std::sync::atomic::AtomicBool>) {
+pub fn run(stop: Arc<std::sync::atomic::AtomicBool>, registry: Registry) {
     let (poll, hung) = (secs_env("AGENTDESK_BRIDGE_POLL", 30), secs_env("AGENTDESK_BRIDGE_HUNG", 180));
     let first = secs_env("AGENTDESK_BRIDGE_RESTART", 5);
     let mut info = Info { enabled: settings_on(), state: "starting".into(), ..Default::default() };
@@ -159,7 +196,8 @@ pub fn run(stop: Arc<std::sync::atomic::AtomicBool>) {
         write_status(&info);
         return;
     }
-    let cmd = match command() {
+    let native = use_native();
+    let cmd = match if native { slack::unconfigured().map_or(Ok(vec![]), Err) } else { command() } {
         Ok(c) => c,
         Err(why) => {
             info.state = if why.starts_with("not configured") { "not-configured".into() } else { "not-supervised".into() };
@@ -203,9 +241,14 @@ pub fn run(stop: Arc<std::sync::atomic::AtomicBool>) {
     info.orphan_pid = None;
     let mut delay = first;
     let max = secs_env("AGENTDESK_BRIDGE_RESTART_MAX", 300);
+    if native {
+        paths::log("INFO", "slack bridge: native (threads of this process)");
+        info.native = true;
+        return run_native(&stop, &mut info, registry, (first, max), poll);
+    }
     while !stop.load(std::sync::atomic::Ordering::Relaxed) {
         let began = Instant::now();
-        let child = Command::new(&cmd[0])
+        let child = crate::paths::new_command(&cmd[0])
             .args(&cmd[1..])
             .current_dir(pyhost::dir().unwrap_or_else(|_| paths::data_dir()))
             .env("PYTHONIOENCODING", "utf-8")
@@ -238,6 +281,53 @@ pub fn run(stop: Arc<std::sync::atomic::AtomicBool>) {
             break;
         }
         sleep_until(&stop, delay);
+        delay = (delay * 2).min(max);
+        info.restarts += 1;
+    }
+}
+
+/// The native bridge, kept going the way a child is: a run that ends (an error, a panic) is started again after the same delays.
+fn run_native(stop: &Arc<std::sync::atomic::AtomicBool>, info: &mut Info, registry: Registry, (first, max): (Duration, Duration), poll: Duration) {
+    use std::sync::atomic::Ordering::Relaxed;
+    let mut delay = first;
+    while !stop.load(Relaxed) {
+        let began = Instant::now();
+        info.pid = Some(std::process::id());
+        write_status(info);
+        let (s, input) = (stop.clone(), slack::registry_input(registry.clone()));
+        let run = std::thread::spawn(move || slack::run(s, input));
+        let mut last_poll = Instant::now();
+        while !run.is_finished() {
+            if last_poll.elapsed() >= poll {
+                last_poll = Instant::now();
+                write_status(info);
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        let code = match run.join() {
+            Ok(Ok(())) => 0,
+            Ok(Err(e)) => {
+                paths::log("WARN", &format!("slack bridge: {}", crate::db::anyhow_msg(&e)));
+                1
+            }
+            Err(_) => {
+                paths::log("WARN", "slack bridge: the native bridge panicked");
+                101
+            }
+        };
+        info.pid = None;
+        info.last_exit = Some(code);
+        info.last_exit_ts = Some(Utc::now().format("%Y-%m-%dT%H:%M:%S+00:00").to_string());
+        if stop.load(Relaxed) {
+            write_status(info);
+            break;
+        }
+        if began.elapsed() >= Duration::from_secs(600) {
+            delay = first;
+        }
+        paths::log("INFO", &format!("slack bridge: native run ended with code {code} after {}s; restarting in {}s", began.elapsed().as_secs(), delay.as_secs()));
+        write_status(info);
+        sleep_until(stop, delay);
         delay = (delay * 2).min(max);
         info.restarts += 1;
     }

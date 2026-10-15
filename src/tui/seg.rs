@@ -96,6 +96,7 @@ pub fn hue(author: &str) -> &'static str {
     }
 }
 
+#[derive(Clone)]
 pub struct Palette {
     pub label: &'static str,
     pub mono: bool,
