@@ -141,6 +141,9 @@ impl Host {
         for k in remove {
             cmd.env_remove(k);
         }
+        // A daemon started from inside a Claude Code session inherits `CLAUDE_CODE_CHILD_SESSION`, and claude then skips saving
+        // the transcript of every session it hosts: `--resume` finds nothing and "keeps working when closed" quietly stops.
+        cmd.env("CLAUDE_CODE_FORCE_SESSION_PERSISTENCE", "1");
         for (k, v) in env {
             cmd.env(k, v);
         }
