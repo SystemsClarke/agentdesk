@@ -255,3 +255,30 @@ fn a_phoenix_successor_is_told_where_its_goal_stands() {
     let p = ids::successor_prompt_for(&e.db, "g8-lead", 2, "Owns the benchmarks.");
     assert!(p.starts_with("You are g8-lead, generation 2.") && p.contains("Your goal's status now, from the core:\nGoal g8 (running)"), "{p}");
 }
+
+#[test]
+fn another_agent_can_start_and_approve_a_goal_within_a_budget() {
+    let e = Env::new();
+    // an agent starts a goal; its lead proposes
+    let creator = agent("planner");
+    goals::create(&e.db, "Tidy Up", "Tidy the repo", e.folder()).unwrap();
+    let lead = agent("Tidy-Up-lead");
+    goals::propose(&e.db, &lead, "Tidy-Up", "fewer files", "echo 3", "value < 5", 1).unwrap();
+    // the lead does not approve its own goal
+    let e1 = goals::approve(&e.db, &lead, "Tidy-Up", None, None, None).unwrap_err().to_string();
+    assert!(e1.contains("own lead"), "{e1}");
+    // the agent that started it approves, within what an agent may grant
+    let c2 = agent("planner");
+    let too_big = goals::approve(&e.db, &c2, "Tidy-Up", Some(goals::AGENT_MAX_MEMBERS + 1), None, None).unwrap_err().to_string();
+    assert!(too_big.contains("John grants more"), "{too_big}");
+    let running = goals::approve(&e.db, &c2, "Tidy-Up", Some(2), Some(6.0), None).unwrap();
+    assert_eq!((running["state"].as_str(), running["max_members"].as_i64()), (Some("running"), Some(2)));
+    let thread = running["thread_id"].as_i64().unwrap();
+    let said: String =
+        e.db.rows("SELECT body FROM messages WHERE thread_id=:t ORDER BY id", &[(":t", &thread)]).unwrap().iter().filter_map(|r| r["body"].as_str().map(String::from)).collect();
+    assert!(said.contains("Approved by planner."), "the thread says who approved: {said}");
+    let _ = creator;
+    // a running goal's budget is still John's to change
+    assert!(goals::approve(&e.db, &c2, "Tidy-Up", Some(3), None, None).is_err());
+    as_john();
+}
