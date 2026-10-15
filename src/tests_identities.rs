@@ -281,3 +281,25 @@ fn base64_round_trips() {
     }
     assert_eq!(crate::attach::base64_encode(b"Man"), "TWFu");
 }
+
+#[test]
+fn hosted_sessions_are_told_to_keep_their_transcripts_even_when_the_daemon_is_a_claude_child() {
+    let e = Env::new();
+    let out = e.dir.path().join("persist.txt");
+    let mut sup = Supervisor::new();
+    assert!(sup.acquire());
+    let (program, args): (&str, Vec<String>) = if cfg!(windows) {
+        ("cmd", vec!["/c".into(), format!("echo persist=%CLAUDE_CODE_FORCE_SESSION_PERSISTENCE% >{}& ping -n 30 127.0.0.1 >nul", out.display())])
+    } else {
+        ("sh", vec!["-c".into(), format!("echo persist=$CLAUDE_CODE_FORCE_SESSION_PERSISTENCE > '{}'; sleep 30", out.display())])
+    };
+    sup.host().launch("persist", e.folder(), program, &args, &[]).unwrap();
+    for _ in 0..100 {
+        if std::fs::read_to_string(&out).map(|t| t.contains("persist=")).unwrap_or(false) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    assert_eq!(std::fs::read_to_string(&out).unwrap_or_default().trim(), "persist=1");
+    sup.shutdown();
+}
