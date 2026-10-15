@@ -6,6 +6,7 @@
 //! `ATTACH <key> <name> <cols> <rows>`. The server answers `OK` or `ERR <why>` and closes on an error. After `OK` the server
 //! sends raw terminal output (the recent output first, then everything new) until the session ends or the client leaves.
 //! The client sends lines: `INPUT <base64>` (bytes for the terminal), `RESIZE <cols> <rows>`, `DETACH`.
+//! A connection may instead open with `LIST <key>`: the server answers one session name per line, then `END`, and closes.
 //! This mirrors `ui:attach` / `ui:input` / `ui:resize` of the .NET build's UI API.
 
 use crate::paths;
@@ -82,6 +83,18 @@ fn serve(conn: TcpStream, registry: &Registry, key: &str) -> Result<()> {
     input.read_line(&mut first)?;
     conn.set_read_timeout(None)?;
     let parts: Vec<&str> = first.split_whitespace().collect();
+    if let ["LIST", k] = parts.as_slice() {
+        if !constant_eq(k, key) {
+            return deny(&mut out, "bad key");
+        }
+        let mut names: Vec<String> = registry.lock().unwrap_or_else(|e| e.into_inner()).keys().cloned().collect();
+        names.sort_by_key(|n| (n.starts_with("plain:"), n.to_lowercase()));
+        for n in names {
+            writeln!(out, "{n}")?;
+        }
+        writeln!(out, "END")?;
+        return Ok(());
+    }
     let (name, cols, rows) = match parts.as_slice() {
         ["ATTACH", k, name, cols, rows] if constant_eq(k, key) => (name.to_string(), cols.parse().unwrap_or(160u16), rows.parse().unwrap_or(40u16)),
         ["ATTACH", ..] => return deny(&mut out, "bad key or arguments (ATTACH <key> <name> <cols> <rows>)"),
@@ -205,68 +218,204 @@ fn key_bytes(k: &ratatui::crossterm::event::KeyEvent) -> Vec<u8> {
     }
 }
 
-/// `agentdesk attach <name>`: uses a session the supervisor hosts from this console. Ctrl+] detaches; the session keeps running.
+/// The running sessions the supervisor hosts, in the order the switcher walks them (identities first, then plain sessions).
+pub fn list_sessions() -> Vec<String> {
+    let Some((port, key)) = read_addr() else { return vec![] };
+    let Ok(mut conn) = TcpStream::connect(("127.0.0.1", port)) else { return vec![] };
+    let _ = conn.set_read_timeout(Some(std::time::Duration::from_secs(3)));
+    if writeln!(conn, "LIST {key}").is_err() {
+        return vec![];
+    }
+    BufReader::new(conn).lines().map_while(|l| l.ok()).take_while(|l| l != "END").filter(|l| !l.starts_with("ERR")).collect()
+}
+
+/// One attached session: the socket, and the thread copying its output to this console.
+struct Link {
+    name: String,
+    conn: TcpStream,
+    done: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    out: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Link {
+    fn open(port: u16, key: &str, name: &str, cols: u16, rows: u16) -> Option<Link> {
+        for target in [name.to_string(), format!("plain:{name}")] {
+            let Ok(mut conn) = TcpStream::connect(("127.0.0.1", port)) else { continue };
+            if writeln!(conn, "ATTACH {key} {target} {cols} {rows}").is_err() {
+                continue;
+            }
+            let Ok(clone) = conn.try_clone() else { continue };
+            let mut reader = BufReader::new(clone);
+            let mut line = String::new();
+            if reader.read_line(&mut line).is_err() || line.trim() != "OK" {
+                continue;
+            }
+            let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let d2 = done.clone();
+            let out = std::thread::spawn(move || {
+                let mut stdout = std::io::stdout();
+                let mut buf = [0u8; 8192];
+                while let Ok(n) = std::io::Read::read(&mut reader, &mut buf) {
+                    if n == 0 {
+                        break;
+                    }
+                    let _ = stdout.write_all(&buf[..n]);
+                    let _ = stdout.flush();
+                }
+                d2.store(true, std::sync::atomic::Ordering::Relaxed);
+            });
+            return Some(Link { name: name.to_string(), conn, done, out: Some(out) });
+        }
+        None
+    }
+    fn ended(&self) -> bool {
+        self.done.load(std::sync::atomic::Ordering::Relaxed)
+    }
+    fn close(mut self) {
+        let _ = writeln!(self.conn, "DETACH");
+        let _ = self.conn.shutdown(std::net::Shutdown::Both);
+        if let Some(h) = self.out.take() {
+            let _ = h.join();
+        }
+    }
+}
+
+/// What the switcher does with the key pressed after the prefix (Ctrl+]).
+#[derive(Debug, PartialEq)]
+pub enum Switch {
+    Next,
+    Prev,
+    Jump(usize),
+    Window,
+    Cancel,
+}
+
+pub fn switch_key(code: ratatui::crossterm::event::KeyCode, ctrl: bool) -> Switch {
+    use ratatui::crossterm::event::KeyCode::*;
+    match code {
+        Char('n') | Char('N') | Right | Down | Tab => Switch::Next,
+        Char('p') | Char('P') | Left | Up | BackTab => Switch::Prev,
+        Char(d) if d.is_ascii_digit() && d != '0' => Switch::Jump(d as usize - '1' as usize),
+        Char(']') if ctrl => Switch::Window,
+        Char('d') | Char('D') | Char('w') | Char('W') | Char(']') | Char('l') | Char('L') | Enter | Esc => Switch::Window,
+        _ => Switch::Cancel,
+    }
+}
+
+/// The session `step` places away from `current` in `names` (wrapping), or None when there is nowhere else to go.
+pub fn neighbour(names: &[String], current: &str, step: isize) -> Option<String> {
+    let others = names.iter().filter(|n| !n.starts_with("plain:") || names.len() < 40).count();
+    if others < 2 {
+        return None;
+    }
+    let at = names.iter().position(|n| n.eq_ignore_ascii_case(current) || n.eq_ignore_ascii_case(&format!("plain:{current}")))? as isize;
+    let len = names.len() as isize;
+    let n = &names[(((at + step) % len + len) % len) as usize];
+    Some(n.trim_start_matches("plain:").to_string())
+}
+
+fn hint(rows: u16, cols: u16, current: &str, names: &[String]) {
+    let at = names.iter().position(|n| n.trim_start_matches("plain:").eq_ignore_ascii_case(current)).map(|i| i + 1).unwrap_or(0);
+    let mut text = format!(" agentdesk | {current} {at}/{} | n next  p prev  1-9 jump  d back to the window ", names.len());
+    text.truncate(cols.saturating_sub(1) as usize);
+    let mut out = std::io::stdout();
+    let _ = write!(out, "\x1b7\x1b[{rows};1H\x1b[7m{text}\x1b[0m\x1b8");
+    let _ = out.flush();
+}
+
+/// A full repaint of whatever the session is showing: a resize that changes and changes back (the session redraws on each).
+fn repaint(link: &mut Link, cols: u16, rows: u16) {
+    let _ = writeln!(link.conn, "RESIZE {cols} {}", rows.saturating_sub(1).max(1));
+    let _ = writeln!(link.conn, "RESIZE {cols} {rows}");
+}
+
+/// `agentdesk attach <name>`: uses a session the supervisor hosts from this console.
+///
+/// Ctrl+] is the prefix. After it: `n`/`p` (or the arrow keys, Tab) switch to the next or previous running session without going back to
+/// the window, `1`-`9` jump, `d` (or Ctrl+] again, Enter, Esc, or waiting a moment) detaches to the window. The sessions keep running.
 pub fn client(name: &str) -> Result<()> {
     use ratatui::crossterm::{
         event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
         terminal,
     };
     let Some((port, key)) = read_addr() else { anyhow::bail!("no supervisor is running: start `agentdesk daemon` (or the window), which owns the sessions") };
-    let (cols, rows) = terminal::size().unwrap_or((120, 30));
-    let mut chosen = None;
-    for target in [name.to_string(), format!("plain:{name}")] {
-        let mut conn = std::net::TcpStream::connect(("127.0.0.1", port))?;
-        writeln!(conn, "ATTACH {key} {target} {cols} {rows}")?;
-        let mut reader = BufReader::new(conn.try_clone()?);
-        let mut line = String::new();
-        reader.read_line(&mut line)?;
-        if line.trim() == "OK" {
-            chosen = Some((conn, reader));
-            break;
-        }
-    }
-    let Some((mut conn, mut reader)) = chosen else { anyhow::bail!("no such session: {name} (is it running? `agentdesk list`)") };
+    let (mut cols, mut rows) = terminal::size().unwrap_or((120, 30));
+    let Some(first) = Link::open(port, &key, name, cols, rows) else { anyhow::bail!("no such session: {name} (is it running? `agentdesk list`)") };
+    let mut link = first;
     terminal::enable_raw_mode()?;
-    let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let d2 = done.clone();
-    let out = std::thread::spawn(move || {
-        let mut stdout = std::io::stdout();
-        let mut buf = [0u8; 8192];
-        while let Ok(n) = std::io::Read::read(&mut reader, &mut buf) {
-            if n == 0 {
+    let title = |n: &str| {
+        let mut o = std::io::stdout();
+        let _ = write!(o, "\x1b]0;agentdesk: {n}\x07");
+        let _ = o.flush();
+    };
+    title(&link.name);
+    let mut prefix: Option<std::time::Instant> = None;
+    let mut ended_session = false;
+    let result = (|| -> Result<()> {
+        loop {
+            if link.ended() {
+                ended_session = true;
                 break;
             }
-            let _ = stdout.write_all(&buf[..n]);
-            let _ = stdout.flush();
-        }
-        d2.store(true, std::sync::atomic::Ordering::Relaxed);
-    });
-    let result = (|| -> Result<()> {
-        while !done.load(std::sync::atomic::Ordering::Relaxed) {
-            if event::poll(std::time::Duration::from_millis(100))? {
-                match event::read()? {
-                    Event::Key(k) if k.kind != KeyEventKind::Release => {
-                        if k.code == KeyCode::Char(']') && k.modifiers.contains(KeyModifiers::CONTROL) {
-                            writeln!(conn, "DETACH")?;
-                            break;
+            // the prefix was pressed and nothing followed: back to the window, as Ctrl+] always did
+            if prefix.is_some_and(|t| t.elapsed() > std::time::Duration::from_millis(1500)) {
+                break;
+            }
+            if !event::poll(std::time::Duration::from_millis(100))? {
+                continue;
+            }
+            match event::read()? {
+                Event::Key(k) if k.kind != KeyEventKind::Release => {
+                    let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
+                    if prefix.take().is_some() {
+                        let names = list_sessions();
+                        let target = match switch_key(k.code, ctrl) {
+                            Switch::Window => break,
+                            Switch::Cancel => None,
+                            Switch::Next => neighbour(&names, &link.name, 1),
+                            Switch::Prev => neighbour(&names, &link.name, -1),
+                            Switch::Jump(i) => names.get(i).map(|n| n.trim_start_matches("plain:").to_string()),
+                        };
+                        match target {
+                            Some(t) if !t.eq_ignore_ascii_case(&link.name) => {
+                                if let Some(next) = Link::open(port, &key, &t, cols, rows) {
+                                    let old = std::mem::replace(&mut link, next);
+                                    old.close();
+                                    let _ = write!(std::io::stdout(), "\x1b[2J\x1b[H");
+                                    title(&link.name);
+                                    repaint(&mut link, cols, rows);
+                                } else {
+                                    repaint(&mut link, cols, rows);
+                                }
+                            }
+                            _ => repaint(&mut link, cols, rows),
                         }
-                        let b = key_bytes(&k);
-                        if !b.is_empty() {
-                            writeln!(conn, "INPUT {}", b64(&b))?;
-                        }
+                        continue;
                     }
-                    Event::Resize(c, r) => writeln!(conn, "RESIZE {c} {r}")?,
-                    _ => {}
+                    if k.code == KeyCode::Char(']') && ctrl {
+                        prefix = Some(std::time::Instant::now());
+                        hint(rows, cols, &link.name, &list_sessions());
+                        continue;
+                    }
+                    let b = key_bytes(&k);
+                    if !b.is_empty() {
+                        writeln!(link.conn, "INPUT {}", b64(&b))?;
+                    }
                 }
+                Event::Resize(c, r) => {
+                    (cols, rows) = (c, r);
+                    writeln!(link.conn, "RESIZE {c} {r}")?;
+                }
+                _ => {}
             }
         }
         Ok(())
     })();
     let _ = terminal::disable_raw_mode();
     println!();
-    drop(conn);
-    if done.load(std::sync::atomic::Ordering::Relaxed) {
-        let _ = out.join();
+    let name = link.name.clone();
+    link.close();
+    if ended_session {
         println!("[the session ended]");
     } else {
         println!("[detached; {name} keeps running]");
@@ -276,6 +425,43 @@ pub fn client(name: &str) -> Result<()> {
 
 #[cfg(test)]
 mod client_tests {
+    use super::*;
+    use ratatui::crossterm::event::KeyCode;
+
+    #[test]
+    fn the_key_after_the_prefix_switches_or_leaves() {
+        assert_eq!(switch_key(KeyCode::Char('n'), false), Switch::Next);
+        assert_eq!(switch_key(KeyCode::Left, false), Switch::Prev);
+        assert_eq!(switch_key(KeyCode::Char('3'), false), Switch::Jump(2));
+        assert_eq!(switch_key(KeyCode::Char(']'), true), Switch::Window);
+        assert_eq!(switch_key(KeyCode::Char('d'), false), Switch::Window);
+        assert_eq!(switch_key(KeyCode::Char('x'), false), Switch::Cancel);
+    }
+
+    #[test]
+    fn the_server_lists_its_sessions_and_refuses_a_bad_key() {
+        let _e = crate::tests_identities::Env::new();
+        let registry: crate::sessions::Registry = Default::default();
+        let _server = start(registry).unwrap();
+        assert!(list_sessions().is_empty(), "no sessions: just END");
+        let (port, _key) = read_addr().unwrap();
+        let mut conn = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        writeln!(conn, "LIST wrong-key").unwrap();
+        let mut line = String::new();
+        BufReader::new(conn).read_line(&mut line).unwrap();
+        assert!(line.starts_with("ERR"), "{line}");
+    }
+
+    #[test]
+    fn the_switcher_wraps_and_has_nowhere_to_go_alone() {
+        let names: Vec<String> = ["a", "b", "c"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(neighbour(&names, "a", 1).as_deref(), Some("b"));
+        assert_eq!(neighbour(&names, "a", -1).as_deref(), Some("c"));
+        assert_eq!(neighbour(&names, "C", 1).as_deref(), Some("a"));
+        assert_eq!(neighbour(&names[..1], "a", 1), None);
+        assert_eq!(neighbour(&names, "zzz", 1), None);
+    }
+
     #[test]
     fn base64_matches_the_standard() {
         assert_eq!(super::b64(b"ping\r"), "cGluZw0=");

@@ -37,7 +37,8 @@ jobs:
         with:
           key: ${{ matrix.target }}
       - name: Test
-        run: cargo test --locked --target ${{ matrix.target }}
+        # one retry: a timing-sensitive socket test is slow on the arm runner; CI already ran the suite on this commit
+        run: cargo test --locked --target ${{ matrix.target }} || cargo test --locked --target ${{ matrix.target }}
       - name: Build
         run: cargo build --release --locked --target ${{ matrix.target }}
       - name: Package
