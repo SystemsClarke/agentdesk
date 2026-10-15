@@ -1198,7 +1198,8 @@ impl App {
                     Some("loading") => "loading the speech model",
                     _ => "listening",
                 };
-                self.say(format!("Dictation: {what}... Ctrl+D stops, Esc cancels."), "cy");
+                let mic = v["device"].as_str().map(|d| format!(" on {d}")).unwrap_or_default();
+                self.say(format!("Dictation: {what}{mic}... Ctrl+D stops, Esc cancels."), "cy");
             }
             Ok(v) => self.say(format!("Dictation: {}", v["error"].as_str().unwrap_or("not available")), "pk b"),
             Err(e) => self.say(format!("Dictation: {e}"), "pk b"),

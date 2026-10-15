@@ -5,3 +5,6 @@ Pillow>=12.3.0
 numpy>=1.26
 # Slack Socket Mode for scripts/slack_bridge.py
 slack_bolt>=1.30.0
+# Dictation (agentdesk/dictate.py): the microphone and the local speech model runtime
+sounddevice>=0.5
+sherpa-onnx>=1.13

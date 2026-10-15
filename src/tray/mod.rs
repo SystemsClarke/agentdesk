@@ -162,6 +162,19 @@ mod gui {
             || std::env::var_os("WAYLAND_DISPLAY").is_some_and(|v| !v.is_empty())
     }
 
+    /// Windows hides a new notification icon in the overflow ("^") until it is promoted: set IsPromoted on this program's entry, a moment
+    /// after the icon is made (Windows writes the entry then). Best effort; the user can still drag it out by hand.
+    fn promote_icon() {
+        #[cfg(windows)]
+        std::thread::spawn(|| {
+            std::thread::sleep(Duration::from_secs(3));
+            let script = r"$me = $env:AD_EXE; Get-ChildItem 'HKCU:\Control Panel\NotifyIconSettings' -ErrorAction SilentlyContinue | Where-Object { (Get-ItemProperty $_.PSPath).ExecutablePath -eq $me } | ForEach-Object { Set-ItemProperty $_.PSPath -Name IsPromoted -Value 1 -Type DWord }";
+            if let Ok(exe) = std::env::current_exe() {
+                let _ = crate::paths::new_command("powershell.exe").args(["-NoProfile", "-NonInteractive", "-Command", script]).env("AD_EXE", exe).output();
+            }
+        });
+    }
+
     fn fail(why: &str) -> ! {
         eprintln!("agentdesk: no system tray here ({why}); use `agentdesk tui`");
         std::process::exit(1);
@@ -217,7 +230,10 @@ mod gui {
                         return;
                     }
                     let drawn = match tray.as_ref() {
-                        None => make_tray(&snap).map(|t| tray = Some(t)),
+                        None => make_tray(&snap).map(|t| {
+                            tray = Some(t);
+                            promote_icon();
+                        }),
                         Some(t) => build_menu(&snap).and_then(|m| {
                             t.set_menu(Some(Box::new(m)));
                             t.set_icon(Some(icon(&snap)?)).map_err(|e| anyhow::anyhow!("{e}"))?;

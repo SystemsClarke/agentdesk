@@ -213,12 +213,22 @@ def disarm() -> dict:
     return _status()
 
 
+def _input_device() -> str:
+    """The name of the microphone that will be used (the system default input)."""
+    import sounddevice as sd
+    try:
+        return str(sd.query_devices(kind="input")["name"])
+    except Exception as e:
+        raise RuntimeError("no microphone found: plug one in or check Windows Settings > Privacy > Microphone") from e
+
+
 def start() -> dict:
     global _job
+    device = _input_device()
     if _job is not None and _job.state != "done":
-        return _status()  # already listening
+        return {**_status(), "device": device}  # already listening
     _job = _Job()
-    return _status()
+    return {**_status(), "device": device}
 
 
 def poll() -> dict:
