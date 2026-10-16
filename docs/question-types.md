@@ -16,7 +16,15 @@ version with mock-ups drawn from real board threads is the private "Work Packets
 - **Two tools.** `update_question` (the agent that asked revises its open packet; John's ticks on steps that still exist are kept)
   and `question_help` (the kinds, the shape of `meta.packet`, and the packet prompt below). The tool fixture and the server
   instructions were updated with them.
-- **Packet in the window** (`src/tui/`): the reader shows the packet's steps live at the bottom, above the reply box (where the reader
+- **Packet as a web page** (`src/packet_page.rs`, routes in `src/web.rs`): the question in the list is one line, "Fill out this packet" with
+  the result and progress; the packet itself is server-rendered HTML on the ops console, `http://127.0.0.1:<port>/packet/<id>` (the
+  same key cookie, Host and Origin checks as the console; posts must be JSON). John ticks steps, picks choices, adds notes (with a
+  step, or to the agent) and finishes it there; each is the same `kinds::step`/`note`/`finish` call the window makes, so the agent is
+  woken as before. The page polls `/packet/<id>/version` and reloads itself when the agent revises the packet (it keeps what John is
+  typing and shows a bar instead). Opening a packet in the window opens the page once; `Alt+O` opens it again, and `agentdesk packet <id>`
+  does the same from a shell (`--print` shows the address). Commands in steps have a Copy button on the page; running one from inside
+  AgentDesk stays in the window (`Alt+R`). The page needs the core running (it serves the console): after an upgrade, restart the core.
+- **Packet in the window** (`src/tui/`): the reader still draws the packet's steps live at the bottom, above the reply box (where the reader
   opens, so they stay in view as ticks add messages). `Alt+Up/Down` move the cursor, `Alt+T` ticks or un-ticks the step (what is in
   the reply box becomes its note), `Alt+V` cycles a choice step's options (and ticks it), `Alt+D` finishes the packet (it asks first and
   says which steps were left). Typing and `Ctrl+S` sends a note and leaves the packet open.
@@ -25,8 +33,8 @@ version with mock-ups drawn from real board threads is the private "Work Packets
   A permission proposal made before kinds existed is still recognised through its row in `permission_proposals`.
 - **Run in the window** reuses the existing script runner (`src/tui/runner.rs`) and does not add another: a run question opens the
   runner pane at once with the script shown, not run; `Alt+R` again runs it as John, `Alt+Y` puts the output in the reply.
-- **Slack.** The message names its kind ("Packet", "Run request", "Permission rule") with the right hint for how to respond; the hidden
-  step markers are stripped. A reply on a packet or a permission question is a note, not an answer; on a run question it is the answer.
+- **Slack.** The message names its kind ("Packet", "Run request", "Permission rule") with the right hint for how to respond; a packet
+  is the one line, since its page is on the laptop. A reply on a packet or a permission question is a note, not an answer; on a run question it is the answer.
 - **Links** (`src/links.rs`): Safe Links and similar wrappers are unwrapped, tracking parameters and fragments stripped, non-default
   ports kept, credentials dropped, duplicates merged (with a count), unknown domains flagged, at most 12 shown. Pure string work.
 

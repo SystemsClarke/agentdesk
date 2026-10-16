@@ -17,7 +17,7 @@ fn caller(session: &str) -> Caller {
     Caller { session_id: Some(session.into()), env_author: None, cwd: Some("/work/proj".into()), harness: Some("claude-code".into()), pid: 1 }
 }
 
-fn spec() -> Value {
+pub(crate) fn spec() -> Value {
     json!({
         "outcome": "Done when both GoCD runs have finished and the evidence is on ADO 201377.",
         "why": "Only John can trigger GoCD.",
@@ -148,20 +148,23 @@ fn a_valid_packet_is_stored_rendered_and_has_its_links_cleaned() {
     assert_eq!(found[0]["cited"], 2);
     assert_eq!(found[1]["url"], "https://dev.azure.com/v/p/_workitems/edit/201377");
     assert_eq!(meta["packet"]["happened"][1]["link"], "https://github.com/o/r/pull/3");
+    // the question is only the line that opens the packet; the packet is a page, read from the spec
     let body = first_body(&db, q);
+    assert!(body.starts_with("**Fill out this packet.** Done when both GoCD runs") && body.contains("0 of 3 steps done, due 2026-10-17"), "{body}");
+    assert!(!body.contains("### ") && !body.contains("Two runs are waiting on you."), "the packet is not in the question: {body}");
+    let page = crate::packet_page::app(&db, q).unwrap();
     for part in [
         "Two runs are waiting on you.",
         "Done when both GoCD runs",
-        "### Why it is yours",
-        "### Your steps",
-        "- [ ] **Start a new run",
-        "(I run it / agent retries)",
-        "### Deadline",
-        "**2026-10-17**",
-        "### Show my work",
-        "**Recommendation:** Run both today.",
+        "Why it is yours",
+        "Your steps",
+        "data-step=\"run-1\"",
+        "data-choose=\"agent retries\"",
+        "2026-10-17",
+        "Show my work",
+        "Run both today.",
     ] {
-        assert!(body.contains(part), "'{part}' not in:\n{body}");
+        assert!(page.contains(part), "'{part}' not in:\n{page}");
     }
     assert_eq!(db.open_questions(false).unwrap().len(), 1, "it rings like any question");
     let big = format!("{} ", "context ".repeat(700));
@@ -186,7 +189,9 @@ fn ticking_a_step_keeps_the_packet_open_wakes_the_agent_and_updates_the_page() {
     let woke = db.row("SELECT author_kind, body FROM messages WHERE thread_id=:t AND id>:a AND author_kind='human'", &[(":t", &q), (":a", &after)]).unwrap().unwrap();
     assert!(woke["body"].as_str().unwrap().contains("Ticked \"Start a new run"), "this is what `agentdesk wait` hands the agent: {woke}");
     assert!(woke["body"].as_str().unwrap().contains("started it at 14:05"));
-    assert!(first_body(&db, q).contains("- [x] **Start a new run"), "the page shows the tick");
+    assert!(first_body(&db, q).contains("1 of 3 steps done"), "the question shows the progress");
+    let page = crate::packet_page::app(&db, q).unwrap();
+    assert!(page.contains("class=\"step ticked\" data-step=\"run-1\"") && page.contains("started it at 14:05"), "the page shows the tick and its note");
     assert_eq!(kinds::progress(&meta_of(&db, q)), (1, 3));
     assert_eq!(db.open_questions(false).unwrap().len(), 0, "after John acts it is the agent's turn, as for any question");
     call(&db, &c, "post_message", json!({"channel": "question", "subject": "x", "body": "Saw it: reading the console.", "author": "builder", "thread_id": q}));
@@ -195,11 +200,11 @@ fn ticking_a_step_keeps_the_packet_open_wakes_the_agent_and_updates_the_page() {
     assert!(kinds::step(&db, q, "which", true, None, None).unwrap_err().to_string().contains("pick one of"));
     assert!(kinds::step(&db, q, "which", true, Some("nonsense"), None).unwrap_err().to_string().contains("not one of"));
     kinds::step(&db, q, "which", true, Some("I run it"), None).unwrap();
-    assert!(first_body(&db, q).contains("→ I run it"));
+    assert!(crate::packet_page::app(&db, q).unwrap().contains("class=\"chip on\" data-choose=\"I run it\""));
     assert!(kinds::step(&db, q, "nope", true, None, None).unwrap_err().to_string().contains("no step"));
     kinds::step(&db, q, "run-1", false, None, None).unwrap();
     assert_eq!(kinds::progress(&meta_of(&db, q)), (1, 3));
-    assert!(first_body(&db, q).contains("- [ ] **Start a new run"));
+    assert!(crate::packet_page::app(&db, q).unwrap().contains("data-step=\"run-1\"><label class=\"head\"><input type=\"checkbox\" data-tick>"), "un-ticked again");
 }
 
 #[test]
@@ -263,8 +268,9 @@ fn the_agent_revises_its_packet_and_johns_ticks_on_surviving_steps_stay() {
     assert_eq!(kinds::progress(&meta), (1, 2), "run-1 stays ticked, the removed step's state is gone");
     assert!(meta["state"].get("which").is_none());
     assert_eq!(meta["changed"], json!(["steps", "next"]));
-    let body = first_body(&db, q);
-    assert!(body.contains("- [x] **Start a new run") && body.contains("Paste the service account name") && body.contains("I wait for the name."));
+    let page = crate::packet_page::app(&db, q).unwrap();
+    assert!(page.contains("step ticked\" data-step=\"run-1\"") && page.contains("Paste the service account name") && page.contains("I wait for the name."));
+    assert!(first_body(&db, q).contains("1 of 2 steps done"));
     let last = db.get_thread(q).unwrap()["messages"].as_array().unwrap().last().unwrap().clone();
     assert!(last["body"].as_str().unwrap().starts_with("Revised (version 2): Dropped the choice"));
     assert_eq!(status(&db, q), "open");

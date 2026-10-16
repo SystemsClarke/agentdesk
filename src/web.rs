@@ -4,7 +4,7 @@
 //! bar. A Host header other than `127.0.0.1:<port>`, or a foreign Origin, is refused (DNS rebinding, cross-site posts); there is no CORS.
 //! Plain HTTP/1.1 over a `TcpListener`, one request per connection.
 
-use crate::{db::Db, identity::Caller, paths, ui_api, update};
+use crate::{db::Db, identity::Caller, kinds, packet_page, paths, ui_api, update};
 use serde_json::{json, Value};
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
@@ -30,6 +30,13 @@ pub fn url() -> Option<String> {
         return None;
     }
     Some(format!("http://127.0.0.1:{port}/?k={key}"))
+}
+
+/// `http://127.0.0.1:<port>/packet/<id>?k=<key>`: a packet's page, or None when no console is serving.
+pub fn packet_url(id: i64) -> Option<String> {
+    let u = url()?;
+    let (base, key) = u.split_once("/?k=")?;
+    Some(format!("{base}/packet/{id}?k={key}"))
 }
 
 fn b64url(bytes: &[u8]) -> String {
@@ -220,6 +227,7 @@ fn reason(status: u16) -> &'static str {
         401 => "Unauthorized",
         404 => "Not Found",
         405 => "Method Not Allowed",
+        500 => "Internal Server Error",
         _ => "Error",
     }
 }
@@ -273,6 +281,9 @@ fn route(r: &Request, port: u16, key: &str, started: &str) -> Reply {
             (405, vec![("Allow".into(), "GET".into())], vec![])
         };
     }
+    if let Some(rest) = r.path.strip_prefix("/packet/") {
+        return packet_route(r, rest);
+    }
     if let Some(op) = r.path.strip_prefix("/api/").filter(|o| !o.is_empty() && !o.contains('/')) {
         if r.method != "POST" {
             return (405, vec![("Allow".into(), "POST".into())], vec![]);
@@ -282,6 +293,72 @@ fn route(r: &Request, port: u16, key: &str, started: &str) -> Reply {
         return (200, vec![("Cache-Control".into(), "no-store".into()), ("Content-Type".into(), "application/json; charset=utf-8".into())], text.into_bytes());
     }
     (404, vec![], vec![])
+}
+
+fn json_reply(status: u16, v: Value) -> Reply {
+    (status, vec![("Cache-Control".into(), "no-store".into()), ("Content-Type".into(), "application/json; charset=utf-8".into())], v.to_string().into_bytes())
+}
+
+/// `/packet/<id>` (the page), `/packet/<id>/version` (what the page polls) and `POST /packet/<id>/step|note|finish` (what John does on it).
+/// A post must be JSON: a plain form post from another page is refused (the cookie is SameSite=Strict as well).
+fn packet_route(r: &Request, rest: &str) -> Reply {
+    let (id, action) = rest.split_once('/').unwrap_or((rest, ""));
+    let Ok(id) = id.parse::<i64>() else { return (404, vec![], vec![]) };
+    let db = match Db::open(&paths::db_path()).and_then(|d| d.init().map(|_| d)) {
+        Ok(d) => d,
+        Err(e) => return json_reply(500, json!({"error": crate::db::anyhow_msg(&e)})),
+    };
+    let is_packet = |db: &Db| kinds::kind_of(db, id).map(|k| k == kinds::PACKET).unwrap_or(false);
+    if !is_packet(&db) {
+        return (404, vec![], b"not a packet".to_vec());
+    }
+    match (r.method.as_str(), action) {
+        ("GET", "") => match packet_page::page(&db, id) {
+            Ok(html) => (
+                200,
+                vec![
+                    ("Cache-Control".into(), "no-store".into()),
+                    ("Content-Type".into(), "text/html; charset=utf-8".into()),
+                    (
+                        "Content-Security-Policy".into(),
+                        "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'".into(),
+                    ),
+                    ("X-Content-Type-Options".into(), "nosniff".into()),
+                    ("Referrer-Policy".into(), "no-referrer".into()),
+                ],
+                html.into_bytes(),
+            ),
+            Err(e) => json_reply(500, json!({"error": crate::db::anyhow_msg(&e)})),
+        },
+        ("GET", "version") => match packet_page::version(&db, id) {
+            Ok(v) => json_reply(200, json!({"v": v})),
+            Err(e) => json_reply(500, json!({"error": crate::db::anyhow_msg(&e)})),
+        },
+        ("POST", "step" | "note" | "finish") => {
+            if !r.header("Content-Type").unwrap_or("").starts_with("application/json") {
+                return json_reply(400, json!({"error": "a post must be JSON"}));
+            }
+            let a: Value = serde_json::from_slice(&r.body).unwrap_or(Value::Null);
+            let text = |k: &str| a[k].as_str().map(str::to_string);
+            let done = match action {
+                "step" => match text("step") {
+                    Some(step) => kinds::step(&db, id, &step, a["done"].as_bool().unwrap_or(true), text("value").as_deref(), text("note").as_deref()).map(|_| ()),
+                    None => Err(anyhow::anyhow!("step is required")),
+                },
+                "note" => match text("body").filter(|b| !b.trim().is_empty()) {
+                    Some(b) => kinds::note(&db, id, &b).map(|_| ()),
+                    None => Err(anyhow::anyhow!("body is required")),
+                },
+                _ => kinds::finish(&db, id),
+            };
+            match done {
+                Ok(()) => json_reply(200, json!({"ok": true})),
+                Err(e) => json_reply(400, json!({"error": crate::db::anyhow_msg(&e)})),
+            }
+        }
+        (_, "" | "version") => (405, vec![("Allow".into(), "GET".into())], vec![]),
+        _ => (404, vec![], vec![]),
+    }
 }
 
 /// The requests the console's page needs, answered by the same objects as the window's. It is `web`, not John: no session, no identity.
@@ -303,4 +380,73 @@ fn call(op: &str, args: &Value, started: &str) -> String {
         }
     })();
     serde_json::to_string_pretty(&doc.unwrap_or_else(|e| json!({"error": crate::db::anyhow_msg(&e)}))).unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tests_identities::Env;
+
+    const KEY: &str = "k3y";
+
+    fn req(method: &str, path: &str, ctype: Option<&str>, body: Value, cookie: bool) -> Request {
+        let mut headers = vec![("Host".to_string(), "127.0.0.1:4000".to_string())];
+        if cookie {
+            headers.push(("Cookie".into(), format!("k={KEY}")));
+        }
+        if let Some(c) = ctype {
+            headers.push(("Content-Type".into(), c.into()));
+        }
+        Request { method: method.into(), path: path.into(), query: String::new(), headers, body: body.to_string().into_bytes() }
+    }
+
+    fn go(r: &Request) -> (u16, String) {
+        let (status, _, body) = route(r, 4000, KEY, "now");
+        (status, String::from_utf8_lossy(&body).into_owned())
+    }
+
+    #[test]
+    fn a_packet_is_a_page_john_can_tick_and_finish_and_the_door_is_locked() {
+        let e = Env::new();
+        let db = Db::open(&paths::db_path()).unwrap();
+        db.init().unwrap();
+        let c = Caller { session_id: Some("s".into()), env_author: None, cwd: None, harness: Some("claude-code".into()), pid: 1 };
+        let made = crate::tests::call(
+            &db,
+            &c,
+            "ask_human",
+            json!({"subject": "Two runs", "body": "Waiting.", "author": "builder", "meta": {"type": "packet", "packet": crate::tests_kinds::spec()}}),
+        );
+        let id = made["thread_id"].as_i64().unwrap();
+        let plain = db.start_thread("question", "Plain?", "builder", "agent", "Ship it?", None, None).unwrap();
+        let page = format!("/packet/{id}");
+
+        assert_eq!(go(&req("GET", &page, None, json!(null), false)).0, 401, "no key, no page");
+        let (s, html) = go(&req("GET", &page, None, json!(null), true));
+        assert_eq!(s, 200);
+        assert!(html.contains("data-step=\"run-1\"") && html.contains("data-finish") && html.contains("Two runs"), "{html}");
+        assert_eq!(go(&req("GET", &format!("/packet/{plain}"), None, json!(null), true)).0, 404, "a plain question has no packet page");
+        assert_eq!(go(&req("GET", "/packet/abc", None, json!(null), true)).0, 404);
+
+        let (_, v1) = go(&req("GET", &format!("{page}/version"), None, json!(null), true));
+        let step = json!({"step": "run-1", "done": true, "note": "started 14:05"});
+        assert_eq!(go(&req("POST", &format!("{page}/step"), Some("text/plain"), step.clone(), true)).0, 400, "a plain form post is refused");
+        assert_eq!(go(&req("POST", &format!("{page}/step"), Some("application/json"), step.clone(), false)).0, 401);
+        assert_eq!(go(&req("POST", &format!("{page}/step"), Some("application/json"), step, true)).0, 200);
+        let (_, v2) = go(&req("GET", &format!("{page}/version"), None, json!(null), true));
+        assert_ne!(v1, v2, "the page notices a change");
+        let (s, bad) = go(&req("POST", &format!("{page}/step"), Some("application/json"), json!({"step": "which", "done": true}), true));
+        assert_eq!(s, 400);
+        assert!(bad.contains("pick one of"), "{bad}");
+        assert_eq!(go(&req("POST", &format!("{page}/note"), Some("application/json"), json!({"body": "  "}), true)).0, 400);
+        assert_eq!(go(&req("POST", &format!("{page}/note"), Some("application/json"), json!({"body": "the second host is down"}), true)).0, 200);
+        let (_, html) = go(&req("GET", &page, None, json!(null), true));
+        assert!(html.contains("step ticked") && html.contains("started 14:05") && html.contains("the second host is down"), "{html}");
+
+        assert_eq!(go(&req("POST", &format!("{page}/finish"), Some("application/json"), json!({}), true)).0, 200);
+        let (_, html) = go(&req("GET", &page, None, json!(null), true));
+        assert!(html.contains("class=\"closed\"") && html.contains("data-finish data-left=\"2\" disabled"), "{html}");
+        assert_eq!(go(&req("POST", &format!("{page}/step"), Some("application/json"), json!({"step": "run-1", "done": false}), true)).0, 400, "a finished packet is not changed");
+        drop(e);
+    }
 }
