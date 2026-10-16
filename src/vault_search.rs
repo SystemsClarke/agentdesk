@@ -251,7 +251,9 @@ fn save_cache(cache: &Path, vault: &Path, docs: &[Doc]) {
     if let Some(d) = cache.parent() {
         let _ = std::fs::create_dir_all(d);
     }
-    let tmp = cache.with_extension(format!("tmp{}", std::process::id()));
+    // Unique per write: two searches in the one process must not interleave in the same temp file.
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let tmp = cache.with_extension(format!("tmp{}-{}", std::process::id(), SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
     if std::fs::write(&tmp, v.to_string()).is_ok() && std::fs::rename(&tmp, cache).is_err() {
         let _ = std::fs::remove_file(&tmp);
     }
