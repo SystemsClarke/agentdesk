@@ -198,3 +198,135 @@ fn a_script_in_a_question_is_shown_then_run_from_the_reader() {
     // a thread with no script says so
     a.on_key(key(KeyCode::Esc));
 }
+
+// ---- the mouse
+
+/// The (column, row) of the first cell where `needle` is drawn in a `screen()` dump.
+fn find(s: &str, needle: &str) -> (u16, u16) {
+    for (y, line) in s.lines().enumerate() {
+        if let Some(at) = line.find(needle) {
+            return (line[..at].chars().count() as u16, y as u16);
+        }
+    }
+    panic!(
+        "{needle:?} is not on the screen:
+{s}"
+    );
+}
+
+fn three_questions() -> (tempfile::TempDir, App) {
+    let (d, mut a) = app();
+    for subj in ["First one", "Second one", "Third one"] {
+        a.db.start_thread("question", subj, "builder", "agent", "body", None, None).unwrap();
+    }
+    a.reload();
+    press(&mut a, 'q');
+    (d, a)
+}
+
+#[test]
+fn a_click_selects_the_row_that_was_drawn_and_a_quick_second_click_opens_it() {
+    let (_d, mut a) = three_questions();
+    let s = screen(&mut a, 110, 30);
+    let (x, y) = find(&s, "Third one");
+    let (_, y2) = find(&s, "Second one");
+    assert_eq!(y2, y + 1, "one line per row");
+    let t = Instant::now();
+    a.click(x, y2, t);
+    assert_eq!(a.sel_now(), 1);
+    assert_eq!(a.screen, Screen::List, "one click only selects");
+    let s2 = screen(&mut a, 110, 30);
+    assert!(s2.lines().nth(y2 as usize).unwrap().contains('▶'), "the picked row is the marked one");
+    a.click(x, y2, t + Duration::from_millis(200));
+    assert_eq!(a.screen, Screen::Read);
+    assert_eq!(a.detail.as_ref().map(|d| d.thread.subject.clone()).as_deref(), Some("Second one"), "the same thread Enter would have opened");
+}
+
+#[test]
+fn two_clicks_on_different_rows_or_too_far_apart_do_not_open() {
+    let (_d, mut a) = three_questions();
+    let s = screen(&mut a, 110, 30);
+    let (x, y) = find(&s, "Third one");
+    let t = Instant::now();
+    a.click(x, y, t);
+    a.click(x, y + 1, t + Duration::from_millis(100));
+    assert_eq!((a.screen, a.sel_now()), (Screen::List, 1));
+    a.click(x, y + 1, t + Duration::from_millis(900));
+    assert_eq!(a.screen, Screen::List);
+    a.click(x, y + 3, t + Duration::from_millis(1000)); // below the last row, on its rule: nothing there
+    assert_eq!(a.screen, Screen::List);
+}
+
+#[test]
+fn a_click_on_a_blank_cell_does_nothing_and_a_stale_map_is_not_trusted() {
+    let (_d, mut a) = three_questions();
+    let s = screen(&mut a, 110, 30);
+    let (x, y) = find(&s, "Third one");
+    a.click(0, 28, Instant::now()); // the line above the footer is blank
+    assert_eq!(a.sel_now(), 0);
+    a.on_key(key(KeyCode::Esc)); // the screen moves on; nothing is drawn yet
+    a.click(x, y + 1, Instant::now());
+    assert_eq!((a.screen, a.sel_now()), (Screen::Main, 0));
+}
+
+#[test]
+fn clicking_a_main_menu_entry_goes_to_that_screen() {
+    let (_d, mut a) = app();
+    let s = screen(&mut a, 110, 40);
+    let (x, y) = find(&s, "[W] Wiki");
+    a.click(x + 2, y, Instant::now());
+    assert_eq!((a.screen, a.channel), (Screen::List, "wiki"));
+    a.on_key(key(KeyCode::Esc));
+    let s = screen(&mut a, 110, 40);
+    let (x, y) = find(&s, "[O] Options"); // the right-hand column
+    a.click(x, y, Instant::now());
+    assert_eq!(a.screen, Screen::Options);
+}
+
+#[test]
+fn clicking_a_footer_hint_is_pressing_its_key() {
+    let (_d, mut a) = three_questions();
+    let s = screen(&mut a, 110, 30);
+    let (x, y) = find(&s, "main menu"); // the label of "Esc"
+    assert_eq!(y, 29, "the footer is the last line");
+    a.click(x, y, Instant::now());
+    assert_eq!(a.screen, Screen::Main);
+    // a confirmation answers to Y
+    let (_d, mut a) = three_questions();
+    a.confirm = Some(("Close it?".into(), Confirm::CloseThread(1)));
+    let s = screen(&mut a, 110, 30);
+    let (x, y) = find(&s, "no");
+    a.click(x, y, Instant::now());
+    assert!(a.confirm.is_none(), "N declined");
+}
+
+#[test]
+fn the_wheel_moves_the_selection_in_a_list_and_scrolls_the_reader() {
+    let (_d, mut a) = three_questions();
+    screen(&mut a, 110, 30);
+    a.wheel(1);
+    assert_eq!(a.sel_now(), 2, "three rows, clamped to the last");
+    a.wheel(-1);
+    assert_eq!(a.sel_now(), 0);
+    a.screen = Screen::Read;
+    a.scroll = 5;
+    a.wheel(-1);
+    assert_eq!(a.scroll, 2);
+    a.wheel(1);
+    assert_eq!(a.scroll, 5);
+}
+
+#[test]
+fn the_options_screen_toggles_the_mouse_and_says_how_to_copy_text() {
+    let (_d, mut a) = app();
+    a.prefs.insert("mouse".into(), json!(true)); // not whatever the real settings file says
+    press(&mut a, 'o');
+    let s = screen(&mut a, 140, 40);
+    assert!(s.contains("Shift"), "Shift+drag is mentioned: {s}");
+    let (x, y) = find(&s, "Mouse  ");
+    let t = Instant::now();
+    a.click(x, y, t);
+    a.click(x, y, t + Duration::from_millis(100)); // double click is Enter: toggles
+    assert_eq!(a.mouse_request, Some(false), "the loop is asked to stop reporting it");
+    assert!(!a.pref_b("mouse", true));
+}
