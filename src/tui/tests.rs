@@ -198,3 +198,34 @@ fn a_script_in_a_question_is_shown_then_run_from_the_reader() {
     // a thread with no script says so
     a.on_key(key(KeyCode::Esc));
 }
+
+#[test]
+fn the_folder_step_lists_the_folders_in_use_filters_them_and_enter_takes_the_pick() {
+    let _e = crate::tests_identities::Env::new();
+    let (_d, mut a) = app();
+    // not under the temp folder: folders there are scratch and left out of the list
+    let work = tempfile::tempdir_in(concat!(env!("CARGO_MANIFEST_DIR"), "/target")).unwrap();
+    let (alpha, beta) = (work.path().join("alpha-repo"), work.path().join("beta-repo"));
+    std::fs::create_dir_all(&alpha).unwrap();
+    std::fs::create_dir_all(&beta).unwrap();
+    crate::identities::create(&a.db, "one", &alpha.to_string_lossy(), None, None, false).unwrap();
+    crate::identities::create(&a.db, "two", &beta.to_string_lossy(), None, None, false).unwrap();
+    a.folder_loaded = None;
+    a.new_agent();
+    for c in "newbie".chars() {
+        press(&mut a, c);
+    }
+    a.on_key(key(KeyCode::Enter)); // the name; now the folder step
+    assert!(a.on_folder_step());
+    let s = screen(&mut a, 120, 40);
+    assert!(s.contains("Folders you use") && s.contains("alpha-repo") && s.contains("beta-repo"), "{s}");
+    for c in "beta".chars() {
+        press(&mut a, c);
+    }
+    let s = screen(&mut a, 120, 40);
+    assert!(s.contains("beta-repo") && !s.contains("alpha-repo"), "typing filters: {s}");
+    a.on_key(key(KeyCode::Tab));
+    assert!(a.subject.ends_with("beta-repo"), "Tab fills the box: {}", a.subject);
+    a.on_key(key(KeyCode::Enter));
+    assert_eq!(a.answers.get(1).map(|p| p.ends_with("beta-repo")), Some(true), "Enter takes it: {:?}", a.answers);
+}

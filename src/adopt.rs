@@ -145,6 +145,9 @@ pub fn folders(db: &Db) -> Result<Value> {
     for r in db.rows("SELECT name, measure_folder AS folder, updated_ts FROM goals", &[]).unwrap_or_default() {
         add(r["folder"].as_str().unwrap_or(""), r["name"].as_str(), 3.0, ts(&r["updated_ts"]));
     }
+    for r in db.rows("SELECT name, folder, COALESCE(last_run_ts, created_ts) AS updated_ts FROM recurring_jobs", &[]).unwrap_or_default() {
+        add(r["folder"].as_str().unwrap_or(""), r["name"].as_str(), 2.0, ts(&r["updated_ts"]));
+    }
     for r in db.rows("SELECT author, cwd, seen_ts FROM sessions", &[]).unwrap_or_default() {
         add(r["cwd"].as_str().unwrap_or(""), r["author"].as_str(), 1.0, ts(&r["seen_ts"]));
     }
