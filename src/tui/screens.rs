@@ -1225,9 +1225,15 @@ impl App {
                 }
             }
             kinds::RUN => {
-                l.push(vec![s(" RUN ", "cy b"), s("the script above is shown, not run. Alt+R again runs it as you; Alt+Y puts the output in your reply.", "mu")]);
+                l.push(vec![s(" RUN ", "cy b"), s("the script above is shown, not run. Alt+R runs it as you, and the result goes back to the agent when it finishes.", "mu")]);
             }
-            _ => {}
+            _ => {
+                // Any question with a runnable script says so, so nobody has to know the key.
+                let msgs: Vec<(String, String)> = d.messages.iter().map(|m| (m.author.clone(), m.body.clone())).collect();
+                if self.runner.is_none() && !super::runner::extract_blocks(&msgs).is_empty() {
+                    l.push(vec![s(" ▶ RUN ", "cy b"), s("a script is in this thread: Alt+R shows it, Alt+R again runs it as you (or click Alt+R in the bar below).", "mu")]);
+                }
+            }
         }
         if !l.is_empty() {
             l.push(vec![]);

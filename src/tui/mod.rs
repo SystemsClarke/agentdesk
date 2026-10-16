@@ -140,6 +140,8 @@ pub struct App {
     pub runner: Option<runner::Runner>,
     /// The step of a packet the cursor is on, in the reader.
     pub step_cursor: usize,
+    /// The run question whose result has already gone back to the agent (so a finished script reports once).
+    pub run_reported: Option<i64>,
     data_version: i64,
     last_load: Instant,
     reader_key: Option<(i64, usize)>,
@@ -290,6 +292,7 @@ impl App {
             attach_request: None,
             runner: None,
             step_cursor: 0,
+            run_reported: None,
             data_version: -1,
             last_load: Instant::now(),
             reader_key: None,
@@ -543,6 +546,7 @@ impl App {
         if self.runner.as_mut().is_some_and(|r| r.pump()) {
             self.dirty = true;
         }
+        self.report_run_result();
         if self.last_save.elapsed() > Duration::from_secs(5) {
             self.save_drafts();
             self.last_save = Instant::now();
@@ -644,6 +648,7 @@ impl App {
         self.read_tid = Some(tid);
         self.read_back = back;
         self.step_cursor = 0;
+        self.run_reported = None;
         self.runner_close(); // the pane belongs to one thread
         if d.kind == kinds::RUN {
             // A run question shows its script at once (nothing runs until Alt+R is pressed a second time).
@@ -1230,10 +1235,30 @@ impl App {
             return self.say("The script is shown, not run. Alt+R again runs it; Alt+1..9 picks another; Alt+X closes.", "cy");
         }
         let started = self.runner.as_mut().is_some_and(|r| r.run());
-        if !started {
+        if started {
+            self.run_reported = None;
+        } else {
             self.say("Already running (Alt+K stops it).", "mu");
         }
         self.dirty = true;
+    }
+
+    /// A run question's result goes back to the agent as soon as the script finishes, as John's reply: he pressed run, and the result is
+    /// what the agent is waiting for. (On any other kind of question the output stays his to send: Alt+Y puts it in the reply.)
+    fn report_run_result(&mut self) {
+        let (Some(tid), Some(r)) = (self.read_tid, self.runner.as_ref()) else { return };
+        if self.run_reported == Some(tid) || !matches!(r.state, runner::State::Done(_) | runner::State::Failed(_)) || self.read_kind() != kinds::RUN {
+            return;
+        }
+        let body = r.summary(30);
+        self.run_reported = Some(tid);
+        match self.db.john_replies(tid, &body) {
+            Ok(_) => {
+                self.reload();
+                self.say(format!("Result sent to #{tid}: the agent will check it."), "gr");
+            }
+            Err(e) => self.fail("Result not sent: ", e),
+        }
     }
 
     fn runner_kill(&mut self) {
