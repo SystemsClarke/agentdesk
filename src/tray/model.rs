@@ -21,6 +21,12 @@ pub struct Snapshot {
     /// All open questions, newest first (only the first few are listed, the count covers all).
     pub questions: Vec<Question>,
     pub concierge_on: bool,
+    /// The ops console answers on its port (it is served by the core or the window, so a down core usually means no console).
+    pub console_up: bool,
+    /// The version (no leading `v`) that the last update check found newer than this build.
+    pub update: Option<String>,
+    /// An install-and-restart is under way: the menu shows it and refuses a second click.
+    pub updating: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -95,6 +101,7 @@ fn shorten(subject: &str) -> String {
 /// The menu for a snapshot. With the core down only the actions that still make sense stay enabled.
 pub fn menu(s: &Snapshot) -> Vec<Entry> {
     let mut m = vec![item("status", status_line(s), false), sep(), item("open", "Open AgentDesk".into(), true)];
+    m.push(item("console", if s.console_up { "Open ops console".into() } else { "Open ops console (not running)".into() }, s.console_up));
     if !s.questions.is_empty() {
         m.push(sep());
         for q in s.questions.iter().take(MAX_QUESTIONS) {
@@ -106,6 +113,15 @@ pub fn menu(s: &Snapshot) -> Vec<Entry> {
     }
     m.push(sep());
     m.push(item("concierge", format!("Concierge: {}", if s.concierge_on { "on (click to turn off)" } else { "off (click to turn on)" }), true));
+    if let Some(v) = s.update.as_deref() {
+        let v = v.trim_start_matches('v');
+        m.push(if s.updating {
+            item("update", format!("Updating to v{v}... (the core restarts when done)"), false)
+        } else {
+            item("update", format!("Update available: v{v} - install and restart"), true)
+        });
+    }
+    m.push(item("folder", "Open the data and logs folder".into(), true));
     m.push(item("stop", "Stop the core".into(), s.core_up));
     m.push(sep());
     m.push(item("quit", "Quit tray".into(), true));
@@ -117,6 +133,9 @@ pub enum Action {
     Open,
     OpenQuestion(i64),
     ToggleConcierge,
+    OpenConsole,
+    OpenFolder,
+    InstallUpdate,
     StopCore,
     Quit,
     None,
@@ -127,6 +146,9 @@ pub fn action(id: &str) -> Action {
     match id {
         "open" => Action::Open,
         "concierge" => Action::ToggleConcierge,
+        "console" => Action::OpenConsole,
+        "folder" => Action::OpenFolder,
+        "update" => Action::InstallUpdate,
         "stop" => Action::StopCore,
         "quit" => Action::Quit,
         _ => match id.strip_prefix("q:").and_then(|n| n.parse().ok()) {
@@ -195,6 +217,51 @@ pub fn terminal_command_args(os: Os, exe: &str, over: Option<&str>, have: &dyn F
             Some(vec![prog.to_string(), flag.to_string()].into_iter().chain(tail).collect())
         }
     }
+}
+
+/// The program and arguments that open `target` (an http URL in the default browser, anything else as a folder in the file manager).
+/// Windows goes through `cmd /c start` for a URL (the empty first argument is the window title `start` insists on) and `explorer` for a
+/// folder; the caller runs both hidden.
+pub fn open_command(os: Os, target: &str) -> Vec<String> {
+    let url = target.starts_with("http://") || target.starts_with("https://");
+    let v = |a: &[&str]| a.iter().map(|x| x.to_string()).chain([target.to_string()]).collect::<Vec<String>>();
+    match (os, url) {
+        (Os::Windows, true) => v(&["cmd", "/c", "start", ""]),
+        (Os::Windows, false) => v(&["explorer"]),
+        (Os::Mac, _) => v(&["open"]),
+        (Os::Linux, _) => v(&["xdg-open"]),
+    }
+}
+
+// ---- Windows: promoting the icon out of the overflow
+
+/// `reg query "HKCU\Control Panel\NotifyIconSettings" /s /v ExecutablePath` output to the registry keys whose `ExecutablePath` is `exe`.
+/// Windows lists one subkey per program that ever showed a notification icon; the path is stored literally for most programs but as
+/// `{KNOWNFOLDER-GUID}\rest` under Program Files and WindowsApps, which cannot be compared to a real path, so a GUID-prefixed entry matches
+/// on the file name alone. Keys with no `ExecutablePath` are skipped. Case, slash direction and a `\\?\` prefix do not matter.
+#[cfg_attr(not(windows), allow(dead_code))] // only the Windows tray promotes its icon
+pub fn promotable_keys(reg_query: &str, exe: &str) -> Vec<String> {
+    let norm = |p: &str| p.trim().trim_start_matches(r"\\?\").replace('/', r"\").to_lowercase();
+    let want = norm(exe);
+    let leaf = |p: &str| p.rsplit('\\').next().unwrap_or("").to_string();
+    let mut out: Vec<String> = Vec::new();
+    let mut key: Option<&str> = None;
+    for line in reg_query.lines() {
+        let t = line.trim();
+        if t.to_uppercase().starts_with("HKEY_") {
+            key = Some(t);
+        } else if let (Some(k), Some((name, rest))) = (key, t.split_once(char::is_whitespace)) {
+            if !name.eq_ignore_ascii_case("ExecutablePath") {
+                continue;
+            }
+            let Some((_, path)) = rest.trim_start().split_once(char::is_whitespace).filter(|(ty, _)| ty.eq_ignore_ascii_case("REG_SZ")) else { continue };
+            let have = norm(path);
+            if (have == want || (have.starts_with('{') && leaf(&have) == leaf(&want))) && !out.iter().any(|o| o == k) {
+                out.push(k.to_string());
+            }
+        }
+    }
+    out
 }
 
 // ---- icons
@@ -267,9 +334,14 @@ fn fingerprint(b: &[u8]) -> String {
 pub fn self_test() -> Value {
     let q = |id: i64, s: &str| Question { id, subject: s.to_string() };
     let samples = [
-        ("idle", Snapshot { core_up: true, questions: vec![], concierge_on: false }),
-        ("attention", Snapshot { core_up: true, questions: vec![q(7, "Deploy to prod?"), q(5, "Which branch")], concierge_on: true }),
-        ("down", Snapshot { core_up: false, questions: vec![q(7, "Deploy to prod?")], concierge_on: false }),
+        ("idle", Snapshot { core_up: true, questions: vec![], concierge_on: false, console_up: true, update: None, updating: false }),
+        (
+            "attention",
+            Snapshot { core_up: true, questions: vec![q(7, "Deploy to prod?"), q(5, "Which branch")], concierge_on: true, console_up: true, update: None, updating: false },
+        ),
+        ("down", Snapshot { core_up: false, questions: vec![q(7, "Deploy to prod?")], concierge_on: false, console_up: false, update: None, updating: false }),
+        ("update-available", Snapshot { core_up: true, questions: vec![], concierge_on: false, console_up: true, update: Some("1.2.3".into()), updating: false }),
+        ("updating", Snapshot { core_up: true, questions: vec![], concierge_on: false, console_up: true, update: Some("1.2.3".into()), updating: true }),
     ];
     let states: Vec<Value> = samples
         .iter()
@@ -287,7 +359,11 @@ pub fn self_test() -> Value {
         })
         .collect();
     let cmd = terminal_command(Os::current(), "agentdesk", std::env::var("AGENTDESK_TERMINAL").ok().as_deref(), &which);
-    json!({"ok": true, "icon_size": ICON_SIZE, "states": states, "terminal": cmd})
+    let opens: Vec<Value> = [Os::Windows, Os::Mac, Os::Linux]
+        .iter()
+        .map(|os| json!({"os": format!("{os:?}"), "console": open_command(*os, "http://127.0.0.1:8123/?k=key"), "folder": open_command(*os, "/data")}))
+        .collect();
+    json!({"ok": true, "icon_size": ICON_SIZE, "states": states, "terminal": cmd, "open": opens})
 }
 
 /// Whether `program` is an executable file in a PATH folder.
@@ -304,7 +380,14 @@ mod tests {
     use super::*;
 
     fn snap(up: bool, n: i64, c: bool) -> Snapshot {
-        Snapshot { core_up: up, questions: (1..=n).rev().map(|i| Question { id: i, subject: format!("question {i}") }).collect(), concierge_on: c }
+        Snapshot {
+            core_up: up,
+            questions: (1..=n).rev().map(|i| Question { id: i, subject: format!("question {i}") }).collect(),
+            concierge_on: c,
+            console_up: up,
+            update: None,
+            updating: false,
+        }
     }
 
     #[test]
@@ -325,7 +408,7 @@ mod tests {
     fn menu_lists_the_latest_questions_and_caps_them() {
         let labels = |s: &Snapshot| menu(s).into_iter().filter(|e| !e.separator).map(|e| e.label).collect::<Vec<_>>();
         let none = labels(&snap(true, 0, false));
-        assert_eq!(none.len(), 5, "status, open, concierge, stop, quit: {none:?}");
+        assert_eq!(none.len(), 7, "status, open, console, concierge, folder, stop, quit: {none:?}");
         let many = menu(&snap(true, 8, false));
         let qs: Vec<_> = many.iter().filter(|e| e.id.starts_with("q:")).collect();
         assert_eq!(qs.len(), MAX_QUESTIONS);
@@ -345,7 +428,7 @@ mod tests {
 
     #[test]
     fn long_subjects_are_one_short_line() {
-        let s = Snapshot { core_up: true, questions: vec![Question { id: 1, subject: format!("a\nb {}", "x".repeat(100)) }], concierge_on: false };
+        let s = Snapshot { questions: vec![Question { id: 1, subject: format!("a\nb {}", "x".repeat(100)) }], ..snap(true, 0, false) };
         let l = menu(&s).into_iter().find(|e| e.id == "q:1").unwrap().label;
         assert!(!l.contains('\n') && l.chars().count() <= 62 && l.ends_with("..."), "{l}");
     }
@@ -356,6 +439,9 @@ mod tests {
         assert_eq!(action("q:42"), Action::OpenQuestion(42));
         assert_eq!(action("concierge"), Action::ToggleConcierge);
         assert_eq!(action("stop"), Action::StopCore);
+        assert_eq!(action("console"), Action::OpenConsole);
+        assert_eq!(action("folder"), Action::OpenFolder);
+        assert_eq!(action("update"), Action::InstallUpdate);
         assert_eq!(action("quit"), Action::Quit);
         assert_eq!(action("status"), Action::None);
         assert_eq!(action("q:x"), Action::None);
@@ -426,10 +512,93 @@ mod tests {
     }
 
     #[test]
-    fn self_test_covers_three_states() {
+    fn self_test_covers_every_state() {
         let v = self_test();
         assert_eq!(v["ok"], true);
         let icons: Vec<&str> = v["states"].as_array().unwrap().iter().map(|s| s["icon"].as_str().unwrap()).collect();
-        assert_eq!(icons, ["idle", "attention", "down"]);
+        assert_eq!(icons, ["idle", "attention", "down", "idle", "idle"]);
+        let samples: Vec<&str> = v["states"].as_array().unwrap().iter().map(|s| s["sample"].as_str().unwrap()).collect();
+        assert_eq!(samples, ["idle", "attention", "down", "update-available", "updating"]);
+        let menu_of = |n: usize| v["states"][n]["menu"].to_string();
+        assert!(menu_of(3).contains("Update available: v1.2.3 - install and restart"));
+        assert!(menu_of(4).contains("Updating to v1.2.3..."));
+        assert!(menu_of(2).contains("Open ops console (not running)"));
+        assert_eq!(v["open"].as_array().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn console_item_needs_a_serving_console() {
+        let find = |s: &Snapshot, id: &str| menu(s).into_iter().find(|e| e.id == id).unwrap();
+        let up = snap(true, 0, false);
+        assert!(find(&up, "console").enabled);
+        assert_eq!(find(&up, "console").label, "Open ops console");
+        let down = Snapshot { console_up: false, ..snap(true, 0, false) };
+        assert!(!find(&down, "console").enabled, "a click with nothing serving would do nothing");
+        assert!(find(&down, "console").label.contains("not running"));
+    }
+
+    #[test]
+    fn update_item_follows_the_check_and_the_install() {
+        let has = |s: &Snapshot| menu(s).into_iter().find(|e| e.id == "update");
+        assert!(has(&snap(true, 0, false)).is_none(), "nothing newer: no item");
+        let newer = Snapshot { update: Some("0.9.1".into()), ..snap(true, 0, false) };
+        let e = has(&newer).unwrap();
+        assert!(e.enabled);
+        assert_eq!(e.label, "Update available: v0.9.1 - install and restart");
+        let tagged = Snapshot { update: Some("v0.9.1".into()), ..snap(true, 0, false) };
+        assert_eq!(has(&tagged).unwrap().label, e.label, "a stored leading v is not doubled");
+        let busy = Snapshot { updating: true, ..newer.clone() };
+        let e = has(&busy).unwrap();
+        assert!(!e.enabled, "no second click while installing");
+        assert!(e.label.starts_with("Updating to v0.9.1"));
+        // offered with the core down too: the install starts it again
+        assert!(has(&Snapshot { update: Some("0.9.1".into()), ..snap(false, 0, false) }).unwrap().enabled);
+    }
+
+    #[test]
+    fn the_folder_item_is_always_there() {
+        for s in [snap(true, 0, false), snap(false, 3, true)] {
+            assert!(menu(&s).iter().any(|e| e.id == "folder" && e.enabled));
+        }
+    }
+
+    #[test]
+    fn open_command_per_os() {
+        let url = "http://127.0.0.1:8123/?k=abc";
+        assert_eq!(open_command(Os::Windows, url), ["cmd", "/c", "start", "", url]);
+        assert_eq!(open_command(Os::Windows, r"C:\Users\x\AgentDesk"), ["explorer", r"C:\Users\x\AgentDesk"]);
+        assert_eq!(open_command(Os::Mac, url), ["open", url]);
+        assert_eq!(open_command(Os::Mac, "/data"), ["open", "/data"]);
+        assert_eq!(open_command(Os::Linux, url), ["xdg-open", url]);
+        assert_eq!(open_command(Os::Linux, "/data"), ["xdg-open", "/data"]);
+    }
+
+    // the shape `reg query` really prints (checked against this machine's registry): literal paths, {GUID}-prefixed ones, and keys with no path
+    const REG: &str = r"
+HKEY_CURRENT_USER\Control Panel\NotifyIconSettings\111
+    ExecutablePath    REG_SZ    C:\Users\me\Whisper\Whisper.exe
+
+HKEY_CURRENT_USER\Control Panel\NotifyIconSettings\222
+    ExecutablePath    REG_SZ    C:\Users\me\AppData\Local\AgentDeskApp\agentdesk.exe
+
+HKEY_CURRENT_USER\Control Panel\NotifyIconSettings\333
+
+HKEY_CURRENT_USER\Control Panel\NotifyIconSettings\444
+    ExecutablePath    REG_SZ    {6D809377-6AF0-444B-8957-A3773F02200E}\AgentDesk\agentdesk.exe
+
+HKEY_CURRENT_USER\Control Panel\NotifyIconSettings\555
+    ExecutablePath    REG_SZ    {6D809377-6AF0-444B-8957-A3773F02200E}\Other\other.exe
+";
+
+    #[test]
+    fn promotion_finds_this_programs_registry_key() {
+        let key = |n: &str| format!(r"HKEY_CURRENT_USER\Control Panel\NotifyIconSettings\{n}");
+        let exe = r"C:\Users\me\AppData\Local\AgentDeskApp\agentdesk.exe";
+        assert_eq!(promotable_keys(REG, exe), [key("222"), key("444")], "the literal path, and the Program Files entry by file name");
+        assert_eq!(promotable_keys(REG, r"c:/users/ME/appdata/local/agentdeskapp/AgentDesk.exe")[0], key("222"), "case and slashes do not matter");
+        assert_eq!(promotable_keys(REG, r"\\?\C:\Users\me\AppData\Local\AgentDeskApp\agentdesk.exe")[0], key("222"), "the verbatim prefix is ignored");
+        assert!(promotable_keys(REG, r"C:\elsewhere\notme.exe").is_empty());
+        assert!(promotable_keys("", exe).is_empty());
+        assert!(promotable_keys("ERROR: The system was unable to find the specified registry key or value.", exe).is_empty());
     }
 }
