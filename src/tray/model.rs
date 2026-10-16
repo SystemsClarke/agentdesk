@@ -233,6 +233,7 @@ pub fn open_command(os: Os, target: &str) -> Vec<String> {
 /// Windows lists one subkey per program that ever showed a notification icon; the path is stored literally for most programs but as
 /// `{KNOWNFOLDER-GUID}\rest` under Program Files and WindowsApps, which cannot be compared to a real path, so a GUID-prefixed entry matches
 /// on the file name alone. Keys with no `ExecutablePath` are skipped. Case, slash direction and a `\\?\` prefix do not matter.
+#[cfg_attr(not(windows), allow(dead_code))] // only the Windows tray promotes its icon
 pub fn promotable_keys(reg_query: &str, exe: &str) -> Vec<String> {
     let norm = |p: &str| p.trim().trim_start_matches(r"\\?\").replace('/', r"\").to_lowercase();
     let want = norm(exe);
