@@ -101,7 +101,7 @@ def _in_core_backup(b):
     assert len(snaps) == 1, snaps
 
 
-@feature("core.no-console-windows", "core", "Every child process the core or tray starts goes through paths::new_command / hide (CREATE_NO_WINDOW on Windows): no bare Command::new outside the helper and the tray's own hidden launcher", "src/paths.rs new_command")
+@feature("core.no-console-windows", "core", "Every child process the core or tray starts goes through paths::new_command / hide (CREATE_NO_WINDOW on Windows): no bare Command::new outside the helper", "src/paths.rs new_command")
 def _hidden_children(b):
     allowed = {os.path.join("src", "paths.rs"), os.path.join("src", "tray", "mod.rs"), os.path.join("src", "tests.rs"), os.path.join("src", "tui", "tests_pty.rs")}
     bare = []
@@ -120,7 +120,7 @@ def _hidden_children(b):
     helper = open(os.path.join(ROOT, "src", "paths.rs"), encoding="utf-8").read()
     assert "0x0800_0000" in helper and "pub fn new_command" in helper, "the helper must set CREATE_NO_WINDOW"
     tray = open(os.path.join(ROOT, "src", "tray", "mod.rs"), encoding="utf-8").read()
-    assert "0x0800_0000" in tray, "the tray's own launcher sets CREATE_NO_WINDOW"
+    assert "new_command" in tray and "Command::new(" not in tray, "the tray starts its terminal through paths::new_command"
 
 
 @feature("options.font-size", "screens", "Options: a font size setting and Ctrl +/- zoom", "parity/README.md, Deliberate non-ports")

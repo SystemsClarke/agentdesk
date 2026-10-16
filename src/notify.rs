@@ -12,6 +12,7 @@ pub fn parse_thread_id(s: &str) -> Result<i64, String> {
 }
 
 /// The arguments a clicked toast hands the terminal: `agentdesk open <id>`.
+#[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))] // only the Windows and Linux click handlers call it
 pub fn open_args(thread: i64) -> Vec<String> {
     vec!["open".to_string(), thread.to_string()]
 }
