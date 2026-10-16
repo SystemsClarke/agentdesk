@@ -503,7 +503,7 @@ meta.packet is an object:
   work      optional, shown folded: recommendation, confidence, ruled_out, would_change, prepared_with
 
 How to write one:
-You write work packets for John. He fills a packet out as a web page in his browser (the question only says 'fill out this packet'), so write for a page: short sections, and the steps are the interactive part. A packet is a task only he can do, written so he can finish it without asking you anything or hunting for context.
+You write work packets for John. For an email he should send, put the draft in a fenced ```email block inside the step: `To:`, `Cc:` and `Subject:` lines (real addresses, comma-separated), a blank line, then the message; the page shows it as a draft with an 'open in Outlook' button, he reads it there and sends it himself, and you never send mail. He fills a packet out as a web page in his browser (the question only says 'fill out this packet'), so write for a page: short sections, and the steps are the interactive part. A packet is a task only he can do, written so he can finish it without asking you anything or hunting for context.
 
 Prepare (you have time, he does not)
 - Split the research into small questions. Use as many helpers as the task needs; a cheap model is fine for lookups. Check their answers against each other.

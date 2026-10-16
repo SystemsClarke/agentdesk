@@ -308,6 +308,21 @@ struct Link {
     /// The session turned bracketed paste on (see `paste_bytes`).
     bracketed: std::sync::Arc<std::sync::atomic::AtomicBool>,
     out: Option<std::thread::JoinHandle<()>>,
+    /// Milliseconds (on `CLOCK`) when the session last printed, and whether what it printed may have wiped the bars (a clear, a reset of the
+    /// scroll region, a switch of screen): the frame is drawn again once the session has gone quiet.
+    last_out: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    wiped: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+static CLOCK: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+
+fn now_ms() -> u64 {
+    CLOCK.get_or_init(std::time::Instant::now).elapsed().as_millis() as u64
+}
+
+/// Does this output touch what the bars rely on?
+fn may_wipe(chunk: &[u8]) -> bool {
+    [&b"\x1b[2J"[..], b"\x1b[3J", b"\x1b[r", b"\x1b[?1049", b"\x1b[?47", b"\x1bc", b"\x1b[?6"].iter().any(|p| chunk.windows(p.len()).any(|w| w == *p))
 }
 
 impl Link {
@@ -328,6 +343,9 @@ impl Link {
             let bracketed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
             let b2 = bracketed.clone();
             let keep_mouse = std::env::var("AGENTDESK_ATTACH_MOUSE").is_ok_and(|v| v == "1");
+            let last_out = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(now_ms()));
+            let wiped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let (lo, wp) = (last_out.clone(), wiped.clone());
             let out = std::thread::spawn(move || {
                 let mut stdout = std::io::stdout();
                 let mut buf = [0u8; 8192];
@@ -343,15 +361,23 @@ impl Link {
                     let shown = if keep_mouse { chunk.to_vec() } else { strip_mouse_on(&mut carry, chunk) };
                     let _ = stdout.write_all(&shown);
                     let _ = stdout.flush();
+                    if may_wipe(chunk) {
+                        wp.store(true, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    lo.store(now_ms(), std::sync::atomic::Ordering::Relaxed);
                 }
                 d2.store(true, std::sync::atomic::Ordering::Relaxed);
             });
-            return Some(Link { name: name.to_string(), conn, done, bracketed, out: Some(out) });
+            return Some(Link { name: name.to_string(), conn, done, bracketed, out: Some(out), last_out, wiped });
         }
         None
     }
     fn ended(&self) -> bool {
         self.done.load(std::sync::atomic::Ordering::Relaxed)
+    }
+    /// The session has printed nothing for a moment: the bars can be drawn without landing inside one of its escape sequences.
+    fn quiet(&self) -> bool {
+        now_ms().saturating_sub(self.last_out.load(std::sync::atomic::Ordering::Relaxed)) >= 120
     }
     fn close(mut self) {
         let _ = writeln!(self.conn, "DETACH");
@@ -396,9 +422,137 @@ pub fn neighbour(names: &[String], current: &str, step: isize) -> Option<String>
     Some(n.trim_start_matches("plain:").to_string())
 }
 
+// ---- the frame: a bar above and a bar below the session, so it is plain you are inside AgentDesk and not in a terminal of your own
+
+/// Rows the bars take from the session.
+const FRAME_ROWS: u16 = 2;
+
+/// Whether to draw the bars: on unless `AGENTDESK_ATTACH_FRAME=0`, and only on a console tall enough to leave the session some room.
+pub fn frame_enabled(env: Option<&str>, rows: u16) -> bool {
+    env.map(str::trim) != Some("0") && rows >= 8
+}
+
+fn frame_on(rows: u16) -> bool {
+    frame_enabled(std::env::var("AGENTDESK_ATTACH_FRAME").ok().as_deref(), rows)
+}
+
+/// The rows the session itself gets.
+fn inner_rows(rows: u16) -> u16 {
+    if frame_on(rows) {
+        rows - FRAME_ROWS
+    } else {
+        rows
+    }
+}
+
+/// The window's colours, as the escapes the bars are drawn with.
+struct Skin {
+    panel: String,
+    fg: String,
+    mu: String,
+    chip: String,
+    name: String,
+    warn: String,
+}
+
+impl Skin {
+    fn load() -> Skin {
+        let (_, p) = crate::packet_page::theme();
+        let rgb = |k: &str| crate::packet_page::rgb_of(p.color(k));
+        let bg = |k: &str| {
+            let (r, g, b) = rgb(k);
+            format!("\x1b[48;2;{r};{g};{b}m")
+        };
+        let fg = |k: &str| {
+            let (r, g, b) = rgb(k);
+            format!("\x1b[38;2;{r};{g};{b}m")
+        };
+        Skin {
+            panel: bg("panel"),
+            fg: fg("fg"),
+            mu: fg("mu"),
+            chip: format!("{}{}\x1b[1m", bg("ye"), fg("bg")),
+            name: format!("{}\x1b[1m", fg("cy")),
+            warn: format!("{}\x1b[1m", fg("ye")),
+        }
+    }
+}
+
+/// One bar: `parts` are (escape, text) and are cut to `cols` columns, the rest of the row filled with the panel colour.
+fn bar(skin: &Skin, parts: &[(&str, String)], right: &str, cols: u16) -> String {
+    let cols = cols as usize;
+    let mut left_len = 0;
+    let mut o = format!("{}{}", skin.panel, skin.fg);
+    let room = cols.saturating_sub(right.chars().count() + 1);
+    for (esc, text) in parts {
+        let take: String = text.chars().take(room.saturating_sub(left_len)).collect();
+        left_len += take.chars().count();
+        o.push_str(&format!("{esc}{take}\x1b[0m{}{}", skin.panel, skin.fg));
+    }
+    let pad = cols.saturating_sub(left_len + right.chars().count());
+    o.push_str(&" ".repeat(pad));
+    o.push_str(&format!("{}{right}\x1b[0m", skin.mu));
+    o
+}
+
+/// Both bars, addressed by screen row (origin mode off while they are drawn). `prefix`: Ctrl+] was pressed and the bottom bar says what follows.
+fn bars(skin: &Skin, name: &str, at: usize, of: usize, cols: u16, rows: u16, prefix: bool) -> String {
+    let top = bar(
+        skin,
+        &[(&skin.chip, " AGENTDESK ".into()), (&skin.name, format!("  {name}  ")), (&skin.mu, "a session AgentDesk is running for you".into())],
+        &if of > 0 { format!("{at}/{of} ") } else { String::new() },
+        cols,
+    );
+    let bottom = if prefix {
+        bar(skin, &[(&skin.chip, " Ctrl+] ".into()), (&skin.warn, "  d back to the window   n next   p previous   1-9 jump   Esc stays".into())], "", cols)
+    } else {
+        bar(
+            skin,
+            &[
+                (&skin.fg, " Ctrl+]".into()),
+                (&skin.mu, " then ".into()),
+                (&skin.fg, "d".into()),
+                (&skin.mu, " back to the window  ·  ".into()),
+                (&skin.fg, "n p".into()),
+                (&skin.mu, " other sessions  ·  it keeps running when you leave".into()),
+            ],
+            "",
+            cols,
+        )
+    };
+    format!("\x1b[?6l\x1b[1;1H{top}\x1b[{rows};1H{bottom}")
+}
+
+/// Takes the console: clears it, draws the bars and confines the session to the rows between them (the scroll region), with cursor
+/// addresses relative to it (origin mode), so a program that positions itself on "row 1" lands under the top bar.
+fn frame_enter(skin: &Skin, name: &str, at: usize, of: usize, cols: u16, rows: u16) {
+    let mut out = std::io::stdout();
+    let _ = write!(out, "\x1b[2J{}\x1b[2;{}r\x1b[?6h", bars(skin, name, at, of, cols, rows, false), rows.saturating_sub(1));
+    let _ = out.flush();
+}
+
+/// Draws the bars again without moving the cursor (the session may have cleared the screen or reset the region since).
+fn frame_redraw(skin: &Skin, name: &str, at: usize, of: usize, cols: u16, rows: u16, prefix: bool) {
+    let mut out = std::io::stdout();
+    let _ = write!(out, "\x1b7{}\x1b[2;{}r\x1b[?6h\x1b8", bars(skin, name, at, of, cols, rows, prefix), rows.saturating_sub(1));
+    let _ = out.flush();
+}
+
+/// Gives the whole console back: no region, no origin mode, the cursor on the last row.
+fn frame_leave(rows: u16) {
+    let mut out = std::io::stdout();
+    let _ = write!(out, "\x1b[?6l\x1b[r\x1b[0m\x1b[{rows};1H");
+    let _ = out.flush();
+}
+
+fn position(current: &str, names: &[String]) -> (usize, usize) {
+    (names.iter().position(|n| n.trim_start_matches("plain:").eq_ignore_ascii_case(current)).map(|i| i + 1).unwrap_or(0), names.len())
+}
+
+/// Without the frame (a short console, or switched off): the one-line hint on the last row, as before.
 fn hint(rows: u16, cols: u16, current: &str, names: &[String]) {
-    let at = names.iter().position(|n| n.trim_start_matches("plain:").eq_ignore_ascii_case(current)).map(|i| i + 1).unwrap_or(0);
-    let mut text = format!(" agentdesk | {current} {at}/{} | n next  p prev  1-9 jump  d back to the window ", names.len());
+    let (at, of) = position(current, names);
+    let mut text = format!(" agentdesk | {current} {at}/{of} | n next  p prev  1-9 jump  d back to the window ");
     text.truncate(cols.saturating_sub(1) as usize);
     let mut out = std::io::stdout();
     let _ = write!(out, "\x1b7\x1b[{rows};1H\x1b[7m{text}\x1b[0m\x1b8");
@@ -407,6 +561,7 @@ fn hint(rows: u16, cols: u16, current: &str, names: &[String]) {
 
 /// A full repaint of whatever the session is showing: a resize that changes and changes back (the session redraws on each).
 fn repaint(link: &mut Link, cols: u16, rows: u16) {
+    let rows = inner_rows(rows);
     let _ = writeln!(link.conn, "RESIZE {cols} {}", rows.saturating_sub(1).max(1));
     let _ = writeln!(link.conn, "RESIZE {cols} {rows}");
 }
@@ -422,9 +577,24 @@ pub fn client(name: &str) -> Result<()> {
     };
     let Some((port, key)) = read_addr() else { anyhow::bail!("no supervisor is running: start `agentdesk daemon` (or the window), which owns the sessions") };
     let (mut cols, mut rows) = terminal::size().unwrap_or((120, 30));
-    let Some(first) = Link::open(port, &key, name, cols, rows) else { anyhow::bail!("no such session: {name} (is it running? `agentdesk list`)") };
+    let skin = Skin::load();
+    let framed = frame_on(rows);
+    let Some(first) = Link::open(port, &key, name, cols, inner_rows(rows)) else { anyhow::bail!("no such session: {name} (is it running? `agentdesk list`)") };
     let mut link = first;
     terminal::enable_raw_mode()?;
+    let draw = |link: &Link, cols: u16, rows: u16, prefix: bool, full: bool| {
+        if !framed {
+            return;
+        }
+        let (at, of) = position(&link.name, &list_sessions());
+        if full {
+            frame_enter(&skin, &link.name, at, of, cols, rows);
+        } else {
+            frame_redraw(&skin, &link.name, at, of, cols, rows, prefix);
+        }
+    };
+    draw(&link, cols, rows, false, true);
+    let mut last_draw = std::time::Instant::now();
     let _ = ratatui::crossterm::execute!(std::io::stdout(), ratatui::crossterm::event::EnableBracketedPaste);
     let title = |n: &str| {
         let mut o = std::io::stdout();
@@ -444,6 +614,14 @@ pub fn client(name: &str) -> Result<()> {
             if prefix.is_some_and(|t| t.elapsed() > std::time::Duration::from_millis(1500)) {
                 break;
             }
+            if framed
+                && link.quiet()
+                && (link.wiped.swap(false, std::sync::atomic::Ordering::Relaxed) || last_draw.elapsed() > std::time::Duration::from_secs(3))
+                && prefix.is_none()
+            {
+                draw(&link, cols, rows, false, false);
+                last_draw = std::time::Instant::now();
+            }
             if !event::poll(std::time::Duration::from_millis(100))? {
                 continue;
             }
@@ -461,10 +639,14 @@ pub fn client(name: &str) -> Result<()> {
                         };
                         match target {
                             Some(t) if !t.eq_ignore_ascii_case(&link.name) => {
-                                if let Some(next) = Link::open(port, &key, &t, cols, rows) {
+                                if let Some(next) = Link::open(port, &key, &t, cols, inner_rows(rows)) {
                                     let old = std::mem::replace(&mut link, next);
                                     old.close();
-                                    let _ = write!(std::io::stdout(), "\x1b[2J\x1b[H");
+                                    if framed {
+                                        draw(&link, cols, rows, false, true);
+                                    } else {
+                                        let _ = write!(std::io::stdout(), "\x1b[2J\x1b[H");
+                                    }
                                     title(&link.name);
                                     repaint(&mut link, cols, rows);
                                 } else {
@@ -473,11 +655,17 @@ pub fn client(name: &str) -> Result<()> {
                             }
                             _ => repaint(&mut link, cols, rows),
                         }
+                        draw(&link, cols, rows, false, false);
+                        last_draw = std::time::Instant::now();
                         continue;
                     }
                     if k.code == KeyCode::Char(']') && ctrl {
                         prefix = Some(std::time::Instant::now());
-                        hint(rows, cols, &link.name, &list_sessions());
+                        if framed {
+                            draw(&link, cols, rows, true, false);
+                        } else {
+                            hint(rows, cols, &link.name, &list_sessions());
+                        }
                         continue;
                     }
                     let b = key_bytes(&k);
@@ -491,7 +679,8 @@ pub fn client(name: &str) -> Result<()> {
                 }
                 Event::Resize(c, r) => {
                     (cols, rows) = (c, r);
-                    writeln!(link.conn, "RESIZE {c} {r}")?;
+                    writeln!(link.conn, "RESIZE {c} {}", inner_rows(r))?;
+                    draw(&link, cols, rows, false, true);
                 }
                 _ => {}
             }
@@ -500,6 +689,9 @@ pub fn client(name: &str) -> Result<()> {
     })();
     let _ = ratatui::crossterm::execute!(std::io::stdout(), ratatui::crossterm::event::DisableBracketedPaste);
     let _ = terminal::disable_raw_mode();
+    if framed {
+        frame_leave(rows);
+    }
     println!();
     let name = link.name.clone();
     link.close();
@@ -574,5 +766,54 @@ mod client_tests {
         assert_eq!(super::b64(b"ping\r"), "cGluZw0=");
         assert_eq!(super::b64(b"a"), "YQ==");
         assert_eq!(super::b64(b"abc"), "YWJj");
+    }
+
+    fn plain(s: &str) -> String {
+        let mut o = String::new();
+        let mut esc = false;
+        for c in s.chars() {
+            match (esc, c) {
+                (false, '\x1b') => esc = true,
+                (true, 'A'..='Z' | 'a'..='z') => esc = false,
+                (true, _) => {}
+                (false, c) => o.push(c),
+            }
+        }
+        o
+    }
+
+    #[test]
+    fn the_frame_is_on_unless_switched_off_and_leaves_the_session_its_rows() {
+        assert!(frame_enabled(None, 30) && frame_enabled(Some("1"), 30));
+        assert!(!frame_enabled(Some("0"), 30), "AGENTDESK_ATTACH_FRAME=0 turns it off");
+        assert!(!frame_enabled(None, 7), "a console too short to share is left alone");
+    }
+
+    #[test]
+    fn the_bars_name_the_session_and_the_way_back_and_fill_the_width() {
+        let skin = Skin {
+            panel: "\x1b[48;2;1;2;3m".into(),
+            fg: "\x1b[38;2;4;5;6m".into(),
+            mu: "\x1b[38;2;7;8;9m".into(),
+            chip: "\x1b[1m".into(),
+            name: "\x1b[1m".into(),
+            warn: "\x1b[1m".into(),
+        };
+        let s = bars(&skin, "Local_Helper", 2, 5, 100, 30, false);
+        let (top, bottom) = s.split_once("[30;1H").map(|(a, b)| (plain(a), plain(b))).unwrap();
+        assert!(top.contains("AGENTDESK") && top.contains("Local_Helper") && top.trim_end().ends_with("2/5"), "{top}");
+        assert!(bottom.contains("Ctrl+] then d back to the window"), "{bottom}");
+        assert_eq!(top.chars().count(), 100, "the top bar fills the row: {top:?}");
+        let p = plain(&bars(&skin, "Local_Helper", 2, 5, 100, 30, true));
+        assert!(p.contains("Ctrl+]") && p.contains("n next") && p.contains("Esc stays"), "after the prefix the bar says what follows: {p}");
+        let narrow = bars(&skin, "a-very-long-session-name-that-does-not-fit", 1, 1, 30, 30, false);
+        let (ntop, nbottom) = narrow.split_once("[30;1H").map(|(a, b)| (plain(a), plain(b))).unwrap();
+        assert!(ntop.chars().count() <= 30 && nbottom.chars().count() <= 30, "a narrow console cuts the text, never wraps: {ntop:?} {nbottom:?}");
+    }
+
+    #[test]
+    fn what_could_wipe_the_bars_is_noticed() {
+        assert!(may_wipe(b"abc\x1b[2Jdef") && may_wipe(b"\x1b[?1049h") && may_wipe(b"\x1b[r"));
+        assert!(!may_wipe(b"plain text \x1b[31mred\x1b[0m"), "ordinary colour does not redraw the frame");
     }
 }

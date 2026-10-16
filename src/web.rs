@@ -281,6 +281,9 @@ fn route(r: &Request, port: u16, key: &str, started: &str) -> Reply {
             (405, vec![("Allow".into(), "GET".into())], vec![])
         };
     }
+    if let Some(action) = r.path.strip_prefix("/dictate/") {
+        return dictate_route(r, action);
+    }
     if let Some(rest) = r.path.strip_prefix("/packet/") {
         return packet_route(r, rest);
     }
@@ -293,6 +296,24 @@ fn route(r: &Request, port: u16, key: &str, started: &str) -> Reply {
         return (200, vec![("Cache-Control".into(), "no-store".into()), ("Content-Type".into(), "application/json; charset=utf-8".into())], text.into_bytes());
     }
     (404, vec![], vec![])
+}
+
+/// `POST /dictate/start|poll|stop`: the window's local speech-to-text (`dictation.rs`, which this process owns), for a page that wants Ctrl+D.
+/// Answered in the plugin's shape (state, text, error, device). JSON only, like every post.
+fn dictate_route(r: &Request, action: &str) -> Reply {
+    if r.method != "POST" {
+        return (405, vec![("Allow".into(), "POST".into())], vec![]);
+    }
+    if !r.header("Content-Type").unwrap_or("").starts_with("application/json") {
+        return json_reply(400, json!({"error": "a post must be JSON"}));
+    }
+    if !matches!(action, "start" | "poll" | "stop") {
+        return (404, vec![], vec![]);
+    }
+    match crate::dictation::call(action) {
+        Ok(v) => json_reply(200, v),
+        Err(e) => json_reply(400, json!({"error": crate::db::anyhow_msg(&e)})),
+    }
 }
 
 /// `?block=<16 hex digits>`: which command of a packet a poll is about.
@@ -511,6 +532,16 @@ mod tests {
 
         assert_eq!(post("finish", json!({})).0, 200);
         assert_eq!(post("run", json!({"block": hash})).0, 400, "a finished packet runs nothing");
+        drop(e);
+    }
+
+    #[test]
+    fn dictation_is_behind_the_same_door_and_only_starts_on_a_json_post() {
+        let e = Env::new();
+        assert_eq!(go(&req("POST", "/dictate/poll", Some("application/json"), json!({}), false)).0, 401, "no key, no microphone");
+        assert_eq!(go(&req("GET", "/dictate/start", None, json!(null), true)).0, 405);
+        assert_eq!(go(&req("POST", "/dictate/start", Some("text/plain"), json!({}), true)).0, 400, "a plain form post from another page is refused");
+        assert_eq!(go(&req("POST", "/dictate/format", Some("application/json"), json!({}), true)).0, 404);
         drop(e);
     }
 }
