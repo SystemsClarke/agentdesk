@@ -59,7 +59,7 @@ pub fn scan(home: &Path, truecolor: bool) -> Vec<(String, Palette)> {
             Err(_) => continue,
         };
         // Newest-looking folder first, so an old copy of the same extension loses the duplicate-id race.
-        dirs.sort_by(|a, b| b.file_name().cmp(&a.file_name()));
+        dirs.sort_by(|a, b| natural_cmp(&name_of(b), &name_of(a)));
         for dir in dirs {
             for (id, label, colors) in extension_themes(&dir) {
                 if out.iter().any(|(k, _)| *k == id) {
@@ -71,6 +71,32 @@ pub fn scan(home: &Path, truecolor: bool) -> Vec<(String, Palette)> {
     }
     out.sort_by_key(|(_, p)| p.label.to_lowercase());
     out
+}
+
+fn name_of(p: &Path) -> String {
+    p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()
+}
+
+/// Orders names with numbers inside them by value, so `x-1.10.0` is newer than `x-1.9.0`.
+fn natural_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    let chunks = |s: &str| -> Vec<(bool, String)> {
+        let mut v: Vec<(bool, String)> = vec![];
+        for ch in s.chars() {
+            let d = ch.is_ascii_digit();
+            match v.last_mut() {
+                Some((kind, text)) if *kind == d => text.push(ch),
+                _ => v.push((d, ch.to_string())),
+            }
+        }
+        v
+    };
+    for (x, y) in chunks(a).iter().zip(chunks(b).iter()) {
+        let o = if x.0 && y.0 { x.1.parse::<u64>().unwrap_or(0).cmp(&y.1.parse::<u64>().unwrap_or(0)) } else { x.1.cmp(&y.1) };
+        if o != std::cmp::Ordering::Equal {
+            return o;
+        }
+    }
+    a.len().cmp(&b.len())
 }
 
 /// (id, label, merged colours) for each dark theme one extension contributes.
@@ -370,6 +396,20 @@ mod tests {
         assert_eq!(nearest_256((255, 255, 255)), 231);
         assert_eq!(nearest_256((0xff, 0, 0)), 196);
         assert_eq!(nearest_256((0x80, 0x80, 0x80)), 244);
+    }
+
+    #[test]
+    fn a_newer_extension_version_wins_the_duplicate_id_by_number_not_by_text() {
+        assert_eq!(natural_cmp("a.b-1.10.0", "a.b-1.9.0"), std::cmp::Ordering::Greater);
+        let d = tempfile::tempdir().unwrap();
+        for (v, bg) in [("1.9.0", "#111111"), ("1.10.0", "#222222")] {
+            let ext = d.path().join(format!(".vscode/extensions/a.b-{v}"));
+            write(&ext.join("package.json"), r#"{"name":"b","publisher":"a","contributes":{"themes":[{"label":"T","uiTheme":"vs-dark","path":"t.json"}]}}"#);
+            write(&ext.join("t.json"), &format!(r#"{{"colors":{{"editor.background":"{bg}"}}}}"#));
+        }
+        let found = scan(d.path(), true);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].1.color("bg"), Color::Rgb(0x22, 0x22, 0x22));
     }
 
     #[test]

@@ -26,8 +26,6 @@ use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::Frame;
 use seg::{palettes, Palette};
-
-const DEFAULT_THEME: &str = "monokai-pro";
 use serde_json::{json, Value};
 use state::{Detail, Fresh, State, Want};
 use std::cell::RefCell;
@@ -80,6 +78,8 @@ pub enum Confirm {
     StopGoal(String),
     ConciergeOff,
 }
+
+const DEFAULT_THEME: &str = "monokai-pro";
 
 pub struct App {
     pub db: Db,
