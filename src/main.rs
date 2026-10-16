@@ -25,6 +25,8 @@ mod identity;
 mod install;
 mod install_dotnet;
 mod jobs;
+mod kinds;
+mod links;
 mod mcp;
 mod migrate;
 mod notify;
@@ -47,6 +49,8 @@ mod swarm;
 mod tests;
 #[cfg(test)]
 mod tests_concierge;
+#[cfg(test)]
+mod tests_kinds;
 #[cfg(test)]
 mod tests_goals;
 #[cfg(test)]

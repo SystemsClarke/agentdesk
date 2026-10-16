@@ -44,7 +44,7 @@ def _main(b):
     seed(b, perms=True)
     s = b.snap("")
     has(s, "█▀█", "ATDT AGENTDESK", "CONNECT", "Since then:", "Recent callers", "Main menu [Q,D,W,J,P,S,B,O,A,G]")
-    for item in ("[Q] Questions", "[J] Work to Hire", "[D] Discussion", "[P] Pull Requests", "[W] Wiki", "[S] SysOp console", "[R] Recurring jobs", "[X] Permission rules", "[B] Who's on", "[O] Options", "[A] Agents & goals", "[G] Hang up"):
+    for item in ("[Q] Questions", "[J] Work to Hire", "[D] Discussion", "[P] Pull Requests", "[W] Wiki", "[S] SysOp console", "[R] Recurring jobs", "[B] Who's on", "[O] Options", "[A] Agents & goals", "[G] Hang up"):
         has(s, item)
     has(s, "2 ringing", "1 to merge", "1 to approve")
 
@@ -57,7 +57,7 @@ def _top(b):
 
 @feature("key.menu-letters", "screens", "Q D W J P S B A R X O open their screens; Esc returns to the menu; M is the menu", SRC)
 def _letters(b):
-    for k, title in (("q", "Questions"), ("d", "Discussion"), ("w", "Wiki"), ("j", "Work to Hire"), ("p", "Pull Requests"), ("s", "SysOp console"), ("b", "Who's on"), ("o", "Options"), ("a", "Agents"), ("r", "Recurring jobs"), ("x", "Permission rules")):
+    for k, title in (("q", "Questions"), ("d", "Discussion"), ("w", "Wiki"), ("j", "Work to Hire"), ("p", "Pull Requests"), ("s", "SysOp console"), ("b", "Who's on"), ("o", "Options"), ("a", "Agents"), ("r", "Recurring jobs")):
         s = b.snap(k)
         assert title in s["lines"][0], (k, s["lines"][0])
         assert b.snap(k + " esc")["screen"] == "main"
@@ -271,19 +271,6 @@ def _jobrun(b):
     b.snap("r r y")
     time.sleep(2)
     assert os.path.exists(out)
-
-
-@feature("screen.rules", "screens", "Permission rules: STATUS RULE ASKED BY WHEN; the selected one's why/blocked/BROAD/in; A approves, R rejects, V reverts, H history, Enter reads its thread", SRC)
-def _rules(b):
-    seed(b, perms=True)
-    s = b.snap("x")
-    has(s, "PERMISSION RULES", "pending", "Bash(cargo test:*)", "why: tests", "Allowed now")
-    assert "Allow Bash(cargo test:*)" in b.snap("x a")["confirm"]
-    b.snap("x a y")
-    assert b.sql("SELECT status FROM permission_proposals")[0]["status"] == "approved"
-    has(b.snap("x h"), "approved")
-    assert "Take Bash(cargo test:*) back" in b.snap("x h v")["confirm"]
-    assert b.snap("x h enter")["screen"] == "read"
 
 
 @feature("screen.agents", "screens", "Agents & goals: one list (goals then agents), the budget panel, running/queued/stopped counts; N new, S start/stop, F forget, A adopt/approve, X stop goal, G new goal", SRC)

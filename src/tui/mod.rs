@@ -9,7 +9,7 @@ mod folders;
 mod live;
 mod md;
 mod mouse;
-mod runner;
+pub(crate) mod runner;
 mod screens;
 pub(crate) mod seg;
 mod state;
@@ -43,7 +43,6 @@ pub enum Screen {
     Read,
     Prs,
     Jobs,
-    Rules,
     Sysop,
     Who,
     Options,
@@ -106,7 +105,6 @@ pub struct App {
     pub mouse_request: Option<bool>,
     pub show_archived: bool,
     pub show_settled: bool,
-    pub show_decided: bool,
     pub confirm: Option<(String, Confirm)>,
     pub flash: Option<(String, String, Instant)>,
     pub scroll: usize,
@@ -240,7 +238,7 @@ impl App {
         let theme_pending = saved.as_deref().is_some_and(|t| t.starts_with(vscode_themes::ID_PREFIX)) && vscode_themes::scanned().is_none();
         let theme = saved.filter(|t| theme_pending || palettes().iter().any(|(k, _)| k == t)).unwrap_or_else(|| DEFAULT_THEME.to_string());
         let mut app = App {
-            st: State::load(&db, false, false),
+            st: State::load(&db, false),
             db,
             screen: Screen::Main,
             channel: "question",
@@ -259,7 +257,6 @@ impl App {
             mouse_request: None,
             show_archived: false,
             show_settled: false,
-            show_decided: false,
             confirm: None,
             flash: None,
             scroll: 0,
@@ -389,7 +386,6 @@ impl App {
         }
         Want {
             archived: self.show_archived,
-            decided: self.show_decided,
             rows,
             read: self.read_tid.filter(|_| self.screen == Screen::Read),
             goal: self.goal_name.clone().filter(|_| self.screen == Screen::Goal),
@@ -584,7 +580,6 @@ impl App {
             Screen::List => self.rows_of(self.channel).len(),
             Screen::Prs => self.prs_shown().len(),
             Screen::Jobs => self.st.jobs.len(),
-            Screen::Rules => self.rules_shown().len(),
             Screen::Who => self.callers().len(),
             Screen::Options => self.option_items().len(),
             Screen::Agents => self.entries().len(),
@@ -821,7 +816,6 @@ impl App {
         let s = self.screen;
         match (s, ch) {
             (Screen::Jobs, 'r' | 'e' | 'x' | 'n') => return self.job_key(ch),
-            (Screen::Rules, 'a' | 'r' | 'v' | 'h') => return self.rule_key(ch),
             _ => {}
         }
         if let Some(c) = match ch {
@@ -886,7 +880,6 @@ impl App {
             (_, 'b') => self.goto(Screen::Who, None),
             (_, 'o') => self.goto(Screen::Options, None),
             (_, 'r') => self.goto(Screen::Jobs, None),
-            (_, 'x') => self.goto(Screen::Rules, None),
             (_, 'm') => self.goto(Screen::Main, None),
             (_, 't') => self.next_theme(1),
             (Screen::Main, 'g') => {
@@ -932,14 +925,6 @@ impl App {
                 }
             }
             Screen::Options => self.change_option(0, false),
-            Screen::Rules => {
-                let tid = self.rules_shown().get(sel).map(|r| r.thread_id);
-                match tid {
-                    Some(Some(t)) => self.open_thread(t, Screen::Rules),
-                    Some(None) => self.say("That proposal has no thread.", "mu"),
-                    None => {}
-                }
-            }
             Screen::Agents => {
                 if let Some(g) = self.sel_goal() {
                     self.goal_name = Some(g.name);
@@ -1059,15 +1044,14 @@ impl App {
         }
     }
 
-    fn rule_key(&mut self, ch: char) {
-        if ch == 'h' {
-            self.show_decided = !self.show_decided;
-            self.sel.insert("rules".into(), 0);
-            return self.reload();
-        }
-        let Some(p) = self.rules_shown().get(self.sel_now()).map(|r| (*r).clone()) else { return };
+    /// A permission question, in the reader: `a` approves the rule, `r` rejects it, `v` takes an approved one back out of settings.json.
+    fn permission_key(&mut self, ch: char) {
+        let Some(tid) = self.read_tid else { return };
+        let Some(p) = self.st.rules.iter().find(|r| r.thread_id == Some(tid)).cloned() else {
+            return self.say("This question is not a permission rule.", "mu");
+        };
         if (matches!(ch, 'a' | 'r') && p.status != "pending") || (ch == 'v' && p.status != "approved") {
-            return self.say(if ch == 'v' { "V reverts an approved rule." } else { "That one is already decided." }, "mu");
+            return self.say(if ch == 'v' { "Alt+V takes back an approved rule." } else { "That one is already decided." }, "mu");
         }
         let text = match ch {
             'a' => format!(

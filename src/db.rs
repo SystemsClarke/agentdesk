@@ -345,9 +345,11 @@ impl Db {
         Ok(())
     }
 
-    fn enforce_question_length(channel: &str, kind: &str, body: &str) -> Result<()> {
+    /// `exempt`: the question's kind (run, permission, packet) is not held to the word limit, because a script, a rule's reasons and a
+    /// packet's parts are longer than a question.
+    fn enforce_question_length(channel: &str, kind: &str, body: &str, exempt: bool) -> Result<()> {
         let words = body.split_whitespace().count();
-        if channel != "question" || kind != AGENT || words <= QUESTION_WORDS {
+        if exempt || channel != "question" || kind != AGENT || words <= QUESTION_WORDS {
             return Ok(());
         }
         err(format!(
@@ -358,8 +360,12 @@ State the decision you need in a few sentences and put any supporting detail in 
 
     /// A question is one question and one answer: after John answered, an agent gets one closing note.
     pub fn enforce_closed_question(&self, thread_id: i64) -> Result<()> {
-        let Some(t) = self.row("SELECT channel FROM threads WHERE id=:id", &[(":id", &thread_id)])? else { return Ok(()) };
+        let Some(t) = self.row("SELECT channel, status FROM threads WHERE id=:id", &[(":id", &thread_id)])? else { return Ok(()) };
         if s(&t["channel"]) != Some("question") {
+            return Ok(());
+        }
+        // A packet or a run question is worked on in several steps and revised by the agent while it is open.
+        if s(&t["status"]) == Some("open") && crate::kinds::stays_open(crate::kinds::kind_of(self, thread_id)?) {
             return Ok(());
         }
         let Some(john) = self.scalar_i64("SELECT MAX(id) FROM messages WHERE thread_id=:t AND author_kind='human'", &[(":t", &thread_id)])? else { return Ok(()) };
@@ -395,7 +401,11 @@ If you need something else from him, ask a new question with ask_human.");
         if !CHANNELS.contains(&channel) {
             return err(format!("channel must be one of ('question', 'discussion', 'wiki', 'work'), got '{channel}'"));
         }
-        Self::enforce_question_length(channel, kind, body)?;
+        let exempt = match thread_id {
+            Some(id) => crate::kinds::exempt_from_limits(crate::kinds::kind_of(self, id)?),
+            None => crate::kinds::exempt_from_limits(crate::kinds::kind_in(meta)),
+        };
+        Self::enforce_question_length(channel, kind, body, exempt)?;
         self.tx(|| {
             let ts = now_iso();
             let tid = match thread_id {
@@ -429,7 +439,7 @@ If you need something else from him, ask a new question with ask_human.");
 
     pub fn reply(&self, thread_id: i64, author: &str, kind: &str, body: &str, reply_to: Option<i64>, meta: Option<&Value>) -> Result<i64> {
         if let Some(ch) = self.scalar_str("SELECT channel FROM threads WHERE id=:id", &[(":id", &thread_id)])? {
-            Self::enforce_question_length(&ch, kind, body)?;
+            Self::enforce_question_length(&ch, kind, body, crate::kinds::exempt_from_limits(crate::kinds::kind_of(self, thread_id)?))?;
         }
         self.tx(|| {
             let ts = now_iso();
@@ -441,6 +451,18 @@ If you need something else from him, ask a new question with ask_human.");
             self.touch_presence(author, kind)?;
             Ok(id)
         })
+    }
+
+    /// Replaces a thread's meta wholesale (callers read it, change what they own, and write it back).
+    pub fn put_thread_meta(&self, id: i64, meta: &Value) -> Result<()> {
+        self.exec("UPDATE threads SET meta=:m, updated_ts=:ts WHERE id=:id", &[(":m", &py_dumps(meta)), (":ts", &now_iso()), (":id", &id)])?;
+        Ok(())
+    }
+
+    /// Rewrites the first message's body: a packet's first message is its current state rendered as Markdown.
+    pub fn set_first_body(&self, thread_id: i64, body: &str) -> Result<()> {
+        self.exec("UPDATE messages SET body=:b WHERE id=(SELECT MIN(id) FROM messages WHERE thread_id=:t)", &[(":b", &body), (":t", &thread_id)])?;
+        Ok(())
     }
 
     // ---- the work queue: claim and complete are each one conditional UPDATE

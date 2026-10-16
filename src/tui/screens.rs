@@ -495,12 +495,6 @@ impl App {
         self.st.prs.iter().filter(|p| self.show_settled || p.state == "open").collect()
     }
 
-    pub fn rules_shown(&self) -> Vec<&Rule> {
-        let mut v: Vec<&Rule> = self.st.rules.iter().filter(|p| self.show_decided || p.status == "pending").collect();
-        v.sort_by_key(|p| (p.status != "pending", std::cmp::Reverse(p.id)));
-        v
-    }
-
     pub fn callers(&self) -> Vec<&Post> {
         self.st.callers.iter().filter(|c| c.author != "john").collect()
     }
@@ -511,7 +505,6 @@ impl App {
             Screen::List => title_of(self.channel).to_string(),
             Screen::Prs => "Pull Requests".into(),
             Screen::Jobs => "Recurring jobs".into(),
-            Screen::Rules => "Permission rules".into(),
             Screen::Sysop => "SysOp console".into(),
             Screen::Who => "Who's on".into(),
             Screen::Options => "Options".into(),
@@ -626,15 +619,6 @@ impl App {
                 cat(v)
             }
             Screen::Jobs => cat(vec![k("↑↓", "move"), k("R", "run now"), k("E", "on/off"), k("N", "new job"), k("X", "delete"), k("Esc", "menu")]),
-            Screen::Rules => cat(vec![
-                k("↑↓", "move"),
-                k("A", "approve"),
-                k("R", "reject"),
-                k("V", "revert"),
-                k("↵", "read its thread"),
-                k("H", if self.show_decided { "pending only" } else { "history" }),
-                k("Esc", "menu"),
-            ]),
             Screen::Who => cat(vec![k("↑↓", "pick a caller"), k("↵", "read bio"), k("P", "page them"), k("Esc", "menu")]),
             Screen::Options => cat(vec![k("↑↓", "move"), k("↵", "change"), k("←→", "adjust"), k("C", "ops console"), k("Esc", "menu")]),
             Screen::Compose => {
@@ -701,7 +685,6 @@ impl App {
             Screen::Read => self.reader(w, h),
             Screen::Prs => self.prs_screen(w, h),
             Screen::Jobs => self.jobs_screen(w, h),
-            Screen::Rules => self.rules_screen(w, h),
             Screen::Sysop => self.sysop_screen(w),
             Screen::Who => self.who_screen(w, h),
             Screen::Options => self.options_screen(w, h),
@@ -789,7 +772,6 @@ impl App {
             names.dedup();
             names.len()
         };
-        let pending_rules = self.st.rules.iter().filter(|p| p.status == "pending").count();
         let items: Vec<(&str, &str, Seg)> = vec![
             ("Q", "Questions", if ringing > 0 { s(format!("{ringing} ringing"), "pk b") } else { s("all quiet", "mu") }),
             ("J", "Work to Hire", s(format!("{} open · {} held", work.iter().filter(|r| r.status == "open").count(), work.iter().filter(|r| r.status == "claimed").count()), "cy")),
@@ -810,7 +792,6 @@ impl App {
                 "Recurring jobs",
                 s(if self.st.jobs.is_empty() { "scheduled prompts".to_string() } else { format!("{} scheduled", self.st.jobs.iter().filter(|j| j.enabled).count()) }, "mu"),
             ),
-            ("X", "Permission rules", if pending_rules > 0 { s(format!("{pending_rules} to approve"), "pk b") } else { s("nothing waiting", "mu") }),
             ("B", "Who's on", s(format!("{} today", n_word(agents_today, "agent")), "pu")),
             ("O", "Options", s(self.palette().label.clone(), "ye")),
             (
@@ -1181,60 +1162,6 @@ impl App {
             if let Some(t) = p.thread_id {
                 l.push(vec![s(format!(" a notice goes to thread #{t} when it merges."), "fa")]);
             }
-        }
-        l
-    }
-
-    fn rules_screen(&mut self, w: usize, h: usize) -> Vec<L> {
-        let rs: Vec<Rule> = self.rules_shown().into_iter().cloned().collect();
-        let rule_w = w.saturating_sub(50).max(24);
-        let rs2 = rs.clone();
-        let row = move |i: usize| -> L {
-            let r = &rs2[i];
-            let tag = match r.status.as_str() {
-                "pending" => "pk b",
-                "approved" => "gr",
-                "reverted" => "or",
-                _ => "fa",
-            };
-            vec![
-                plain("  "),
-                s(fit(&format!("{}{}", r.status, if r.broad { "!" } else { "" }), 10), tag),
-                s(fit(&r.rule, rule_w), if r.broad { "or" } else { "cy" }),
-                s(fit(&r.requested_by, 22), "mu"),
-                s(when(r.decided.or(r.created)), "fa"),
-            ]
-        };
-        let win = self.run_rows(
-            w,
-            h,
-            bar(w, "PERMISSION RULES  ·  agents propose, only you approve  ·  an approval writes the rule into your Claude settings.json", "barcy"),
-            Some(format!("  {}{}{}WHEN", fit("STATUS", 10), fit("RULE", rule_w), fit("ASKED BY", 22))),
-            rs.len(),
-            &row,
-            vec![s("   Nothing waiting. Agents propose rules with propose_permission_rule when Claude Code blocks something you asked for.", "mu")],
-            16,
-            &|_| None,
-            vec![],
-        );
-        let mut l = win.lines;
-        if let Some(p) = rs.get(self.sel_of().min(rs.len().saturating_sub(1))) {
-            l.extend([vec![], vec![s(format!(" {}", p.rule), "fg b"), s(format!("  ({})", p.scope), "mu")], vec![s(" why: ", "mu"), plain(p.reason.clone())]]);
-            if let Some(b) = &p.blocked {
-                l.push(vec![s(" blocked: ", "mu"), s(b.clone(), "cy")]);
-            }
-            if p.broad {
-                l.push(vec![s(" careful: this rule is broad, it allows every use of the tool.", "pk b")]);
-            }
-            if let Some(path) = &p.path {
-                l.push(vec![s(" in: ", "mu"), s(path.clone(), "fa")]);
-            }
-        }
-        l.push(vec![]);
-        l.push(vec![s(format!(" Allowed now ({}) in {}", self.st.allow.len(), self.st.settings_path), "mu")]);
-        let room = h.saturating_sub(l.len() + 1).max(2);
-        for a in self.st.allow.iter().rev().take(room) {
-            l.push(vec![s(format!("   {}", fit(a, w.saturating_sub(4))), "fa")]);
         }
         l
     }

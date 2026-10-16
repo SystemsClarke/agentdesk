@@ -184,7 +184,7 @@ fn mcp_handshake_lists_the_tools_and_calls_one() {
     assert!(init["result"]["instructions"].as_str().unwrap().contains("shared message board"));
     assert!(mcp::handle(&db, &c, &json!({"jsonrpc": "2.0", "method": "notifications/initialized"})).is_none());
     let list = mcp::handle(&db, &c, &json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})).unwrap();
-    assert_eq!(list["result"]["tools"].as_array().unwrap().len(), 28);
+    assert_eq!(list["result"]["tools"].as_array().unwrap().len(), 30);
     let r = mcp::handle(&db, &c, &json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "recent_messages", "arguments": {}}})).unwrap();
     assert!(r["result"]["content"][0]["text"].as_str().unwrap().contains("messages"));
     assert_eq!(mcp::handle(&db, &c, &json!({"jsonrpc": "2.0", "id": 4, "method": "nope"})).unwrap()["error"]["code"], -32601);

@@ -40,7 +40,6 @@ fn main_menu_has_every_original_option() {
         "[W] Wiki",
         "[S] SysOp console",
         "[R] Recurring jobs",
-        "[X] Permission rules",
         "[B] Who's on",
         "[O] Options",
         "[A] Agents & goals",
@@ -66,7 +65,6 @@ fn letter_keys_reach_every_screen() {
         ('o', "Options"),
         ('a', "Agents"),
         ('r', "Recurring jobs"),
-        ('x', "Permission rules"),
     ] {
         a.on_key(key(KeyCode::Esc));
         press(&mut a, c);

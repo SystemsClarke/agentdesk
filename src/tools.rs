@@ -3,7 +3,7 @@
 use crate::db::{self, anyhow_msg, err, Db, AGENT};
 use crate::identity::{resolve, Caller};
 use crate::tools_gen::TOOLS;
-use crate::{paths, vault};
+use crate::{kinds, paths, vault};
 use anyhow::Result;
 use regex::Regex;
 use serde_json::{json, Value};
@@ -109,29 +109,9 @@ fn dispatch(db: &Db, c: &Caller, tool: &str, a: &Args) -> Result<Value> {
             }
             Ok(r)
         }
-        "ask_human" => {
-            let (subject, body) = (a.str("subject")?, a.str("body")?);
-            let who = resolve(a.opt("author").as_deref(), c);
-            let mut meta = serde_json::Map::new();
-            if let Some(Value::Object(m)) = a.0.get("meta") {
-                for (k, v) in m {
-                    if k != "kind" {
-                        meta.insert(k.clone(), v.clone());
-                    }
-                }
-            }
-            if !body.contains('?') {
-                return err("a question has to ask something: John answers questions, he does not read updates. Say what you need decided and end it with the question \
-(it must contain a '?'). If it is only news, post it to discussion instead.");
-            }
-            let tid = db.start_thread("question", &subject, &who, AGENT, &body, Some(&Value::Object(meta)), None)?;
-            deliver_acks(db, &who, c);
-            Ok(ok(json!({
-                "thread_id": tid,
-                "wake_on_reply": {"command": wait_command(tid), "run_in_background": true},
-                "next": "Start wake_on_reply.command now with Bash run_in_background=true. It exits the moment John answers, which wakes you with his reply. Then carry on with other work or end your turn; do not poll."
-            })))
-        }
+        "ask_human" => ask_human(db, c, a),
+        "update_question" => update_question(db, c, a),
+        "question_help" => Ok(Value::String(kinds::HELP.to_string())),
         "list_threads" => Ok(json!({"threads": db.list_threads(
             a.opt("channel").as_deref(), a.opt("status").as_deref(), a.int_or("limit", 50), a.bool_or("include_archived", true), true)?})),
         "read_thread" => {
@@ -224,6 +204,86 @@ fn dispatch(db: &Db, c: &Caller, tool: &str, a: &Args) -> Result<Value> {
         },
         _ => err(format!("no such tool: {tool}")),
     }
+}
+
+/// `ask_human`, by kind (`meta.type`, see docs/question-types.md). An ask keeps its rules: a '?' and at most 500 words.
+fn ask_human(db: &Db, c: &Caller, a: &Args) -> Result<Value> {
+    let (subject, body) = (a.str("subject")?, a.str("body")?);
+    let who = resolve(a.opt("author").as_deref(), c);
+    let mut meta = serde_json::Map::new();
+    if let Some(Value::Object(m)) = a.0.get("meta") {
+        for (k, v) in m {
+            if k != "kind" {
+                meta.insert(k.clone(), v.clone());
+            }
+        }
+    }
+    let kind = match meta.get("type") {
+        None => kinds::ASK,
+        Some(Value::String(t)) if t == kinds::ASK => kinds::ASK,
+        Some(Value::String(t)) if t == kinds::RUN => kinds::RUN,
+        Some(Value::String(t)) if t == kinds::PACKET => kinds::PACKET,
+        Some(Value::String(t)) if t == kinds::PERMISSION => {
+            return err("a permission question is made by propose_permission_rule, which also records the rule John approves or rejects. Call that instead.")
+        }
+        Some(other) => return err(format!("meta.type must be one of ask, run, packet (permission has its own tool: propose_permission_rule), got {other}. Call question_help for what each kind is.")),
+    };
+    let mut stored = body.clone();
+    let mut extra = json!({});
+    match kind {
+        kinds::ASK => {
+            meta.remove("type");
+            if !body.contains('?') {
+                return err("a question has to ask something: John answers questions, he does not read updates. Say what you need decided and end it with the question \
+(it must contain a '?'). If it is only news, post it to discussion instead.");
+            }
+        }
+        kinds::RUN => {
+            if crate::tui::runner::extract_blocks(&[(who.clone(), body.clone())]).is_empty() {
+                return err("a run question needs the script in the body, in a fenced ```powershell, ```bash, ```sh or ```cmd block: John sees it in full and runs it from the reader.");
+            }
+        }
+        _ => {
+            let Some(spec) = meta.remove("packet") else {
+                return err("a packet needs meta.packet with its seven parts (outcome, why, happened, found, steps, next, deadline). Call question_help for the shape.");
+            };
+            let cleaned = match kinds::validate_packet(&spec) {
+                Ok(c) => c,
+                Err(problems) => return err(format!("this packet is not complete: {}", problems.join("; "))),
+            };
+            stored = kinds::render_packet(&body, &cleaned, &json!({}));
+            extra["links"] = cleaned["link_report"].clone();
+            meta.insert("packet".into(), cleaned);
+            meta.insert("state".into(), json!({}));
+            meta.insert("rev".into(), json!(1));
+            meta.insert("intro".into(), json!(body.trim()));
+        }
+    }
+    let tid = db.start_thread("question", &subject, &who, AGENT, &stored, Some(&Value::Object(meta)), None)?;
+    deliver_acks(db, &who, c);
+    let next = match kind {
+        kinds::PACKET => "Start wake_on_reply.command now with Bash run_in_background=true. It exits at John's next action on the packet (a tick, a note or Done) and prints it. Read the thread, act, revise with update_question if the plan changed, and start it again. The packet is finished when John says Done; you never close it.",
+        kinds::RUN => "Start wake_on_reply.command now with Bash run_in_background=true. John runs the script from the reader; it exits when he replies, usually with the output. Check the result yourself.",
+        _ => "Start wake_on_reply.command now with Bash run_in_background=true. It exits the moment John answers, which wakes you with his reply. Then carry on with other work or end your turn; do not poll.",
+    };
+    let mut out = json!({"thread_id": tid, "wake_on_reply": {"command": wait_command(tid), "run_in_background": true}, "next": next});
+    if kind != kinds::ASK {
+        out["type"] = json!(kind);
+        if let (Some(o), Some(e)) = (out.as_object_mut(), extra.as_object()) {
+            o.extend(e.clone());
+        }
+    }
+    Ok(ok(out))
+}
+
+/// `update_question`: the agent that asked revises its open packet. Only the parts it passes change; John's ticks on steps that still exist stay.
+fn update_question(db: &Db, c: &Caller, a: &Args) -> Result<Value> {
+    let id = a.int("thread_id")?;
+    let who = resolve(a.opt("author").as_deref(), c);
+    let patch = a.0.get("packet").cloned().unwrap_or(Value::Null);
+    let out = kinds::update(db, id, &who, &patch, a.opt("summary").as_deref().unwrap_or(""))?;
+    deliver_acks(db, &who, c);
+    Ok(ok(out))
 }
 
 /// `agentdesk wait <thread>` as a shell command that works for this install.

@@ -374,8 +374,8 @@ impl State {
         st
     }
 
-    pub fn load(db: &Db, show_archived: bool, show_decided: bool) -> State {
-        State::load_for(db, &Want { archived: show_archived, decided: show_decided, rows: [true; 4], read: None, goal: None }, None)
+    pub fn load(db: &Db, show_archived: bool) -> State {
+        State::load_for(db, &Want { archived: show_archived, rows: [true; 4], read: None, goal: None }, None)
     }
 
     fn load_rows(&mut self, db: &Db, want: &Want) {
@@ -537,7 +537,6 @@ const BUDGET_TTL: std::time::Duration = std::time::Duration::from_secs(10);
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Want {
     pub archived: bool,
-    pub decided: bool,
     pub rows: [bool; 4],
     pub read: Option<i64>,
     pub goal: Option<String>,
