@@ -1662,8 +1662,41 @@ impl App {
                 vec![s(format!("   {}", fit(label, 10)), "fa"), s(help.clone(), "fa")]
             });
         }
+        if self.on_folder_step() {
+            l.extend(self.folder_lines(w));
+        }
         l.push(vec![]);
         l.push(vec![s(" Type in the box below and press ", "mu"), s("Enter", "ye"), s(" for the next one. ", "mu"), s("Esc", "ye"), s(" cancels.", "mu")]);
+        l
+    }
+
+    /// The folders John uses, most likely first, filtered by what is in the box.
+    fn folder_lines(&self, w: usize) -> Vec<L> {
+        use super::folders;
+        let matches = folders::filter(&self.folder_picks, &self.subject);
+        if matches.is_empty() {
+            return vec![vec![], vec![s(" Nothing you use matches that. Enter takes what you typed if the folder exists.", "ye")]];
+        }
+        let sel = self.folder_sel.min(matches.len() - 1);
+        let top = sel.saturating_sub(folders::ROWS - 1);
+        let home = crate::paths::home_dir().to_string_lossy().into_owned();
+        let path_w = (w / 2).clamp(24, 52);
+        let mut l: Vec<L> = vec![vec![], vec![s(" Folders you use", "mu"), s(" (up/down pick, Tab fills the box, Enter takes it, or a number)", "fa")]];
+        for (i, p) in matches.iter().enumerate().skip(top).take(folders::ROWS) {
+            let who = if p.who.is_empty() { String::new() } else { format!("{} · ", p.who.join(", ")) };
+            let text = format!(
+                " {:>1}  {} {who}{} use{} · {}",
+                i - top + 1,
+                folders::shorten(&folders::tilde(&p.path, &home), path_w),
+                p.uses,
+                if p.uses == 1 { "" } else { "s" },
+                folders::age(&p.last)
+            );
+            l.push(vec![if i == sel { s(format!("{text:<width$}", width = w.saturating_sub(2)), "cur") } else { s(text, "cy") }]);
+        }
+        if matches.len() > folders::ROWS {
+            l.push(vec![s(format!(" {} matches; keep typing to narrow them", matches.len()), "fa")]);
+        }
         l
     }
 }

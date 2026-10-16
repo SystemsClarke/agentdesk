@@ -5,6 +5,7 @@
 mod bench;
 pub(crate) mod charts; // the Slack bridge draws charts and diagrams with it
 mod editor;
+mod folders;
 mod live;
 mod md;
 mod runner;
@@ -114,6 +115,10 @@ pub struct App {
     pub goal_name: Option<String>,
     pub goal_doc: Option<Value>,
     pub adoptables: Vec<crate::adopt::Convo>,
+    /// The folder step's suggestions (see `folders`), loaded when a flow with a folder field opens, and the highlighted row.
+    pub folder_picks: Vec<folders::Pick>,
+    pub folder_sel: usize,
+    folder_loaded: Option<Instant>,
     pub adopt_note: Option<String>,
     pub attach_request: Option<String>,
     /// The script runner pane under the reader (see `runner`).
@@ -250,6 +255,9 @@ impl App {
             goal_name: None,
             goal_doc: None,
             adoptables: vec![],
+            folder_picks: vec![],
+            folder_sel: 0,
+            folder_loaded: None,
             adopt_note: None,
             attach_request: None,
             runner: None,
@@ -1457,6 +1465,11 @@ impl App {
     // ---- ask: a few one-line questions, one at a time
 
     fn ask_for(&mut self, spec: AskSpec, prefill: &str) {
+        if spec.fields.iter().any(|f| f.0 == "folder") && self.folder_loaded.is_none_or(|t| t.elapsed() > Duration::from_secs(60)) {
+            self.folder_picks = crate::adopt::folders(&self.db).map(|v| folders::from_json(&v)).unwrap_or_default();
+            self.folder_loaded = Some(Instant::now());
+        }
+        self.folder_sel = 0;
         self.ask = Some(spec);
         self.answers.clear();
         self.goto(Screen::Ask, None);
@@ -1500,14 +1513,45 @@ impl App {
         );
     }
 
+    /// Whether the question being asked is the folder, and there are suggestions to show.
+    pub fn on_folder_step(&self) -> bool {
+        self.screen == Screen::Ask && !self.folder_picks.is_empty() && self.ask.as_ref().is_some_and(|a| a.fields.get(self.answers.len()).is_some_and(|f| f.0 == "folder"))
+    }
+
     fn ask_key(&mut self, k: KeyEvent) {
+        if self.on_folder_step() {
+            let n = folders::filter(&self.folder_picks, &self.subject).len();
+            match k.code {
+                KeyCode::Down if n > 0 => return self.folder_sel = (self.folder_sel + 1).min(n - 1),
+                KeyCode::Up if n > 0 => return self.folder_sel = self.folder_sel.saturating_sub(1),
+                KeyCode::Tab if n > 0 => {
+                    let m = folders::filter(&self.folder_picks, &self.subject);
+                    let path = m[self.folder_sel.min(n - 1)].path.clone();
+                    self.subject = path;
+                    return;
+                }
+                KeyCode::Enter => {
+                    let m = folders::filter(&self.folder_picks, &self.subject);
+                    let home = crate::paths::home_dir().to_string_lossy().into_owned();
+                    if let Some(path) = folders::resolve(&self.subject, &m, self.folder_sel, &home, &|p| std::path::Path::new(p).is_dir()) {
+                        self.subject = path;
+                    }
+                    return self.ask_next();
+                }
+                _ => {}
+            }
+        }
         match k.code {
             KeyCode::Esc => self.go_back(),
             KeyCode::Backspace => {
                 self.subject.pop();
+                self.folder_sel = 0;
             }
             KeyCode::Enter => self.ask_next(),
-            KeyCode::Char(c) if !k.modifiers.contains(KeyModifiers::CONTROL) => self.subject.push(c),
+            KeyCode::Char(c) if !k.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.subject.push(c);
+                self.folder_sel = 0;
+            }
             _ => {}
         }
     }
