@@ -189,7 +189,7 @@ pub fn call(db: &Db, c: &Caller, req: &str, a: &Value) -> Result<Value> {
                 return crate::db::err("action is start, poll, stop, arm or disarm");
             }
             // a missing microphone or a plugin failure comes back as state done with error, never as a crash
-            Ok(crate::pyhost::call(&format!("dictate.{action}"), json!({})).unwrap_or_else(|e| json!({"state": "done", "text": "", "error": e.to_string(), "progress": 0.0})))
+            Ok(crate::dictation::call(action).unwrap_or_else(|e| json!({"state": "done", "text": "", "error": e.to_string(), "progress": 0.0})))
         }
         "session_start" | "session_stop" | "session_list" | "input" | "resize" | "attach" => sessions_api(db, name, a),
         // the agents' own tools answer here too, with the same names and arguments as the MCP server

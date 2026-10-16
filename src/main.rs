@@ -15,6 +15,7 @@ mod bridge;
 mod concierge;
 mod daemon;
 mod db;
+mod dictation;
 mod dispatcher;
 mod goals;
 mod governor;
