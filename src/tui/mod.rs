@@ -1855,7 +1855,7 @@ fn parse_key(tok: &str) -> Vec<KeyEvent> {
 }
 
 /// Renders the window headlessly: opens the board, presses `keys` (space-separated: `q`, `enter`, `esc`, `ctrl+s`,
-/// `alt+c`, `t:text~with~spaces`), and returns the screen as text (or JSON with the mode and the flash line).
+/// `alt+c`, `t:text~with~spaces`, `wait:300` to let a started script print), and returns the screen as text (or JSON with the mode and the flash line).
 pub fn snapshot(size: &str, keys: &str, as_json: bool) -> Result<String> {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
@@ -1865,6 +1865,14 @@ pub fn snapshot(size: &str, keys: &str, as_json: bool) -> Result<String> {
     let mut app = App::with_db(db);
     let mut t = Terminal::new(TestBackend::new(w, h))?;
     for tok in keys.split_whitespace() {
+        // `wait:300` lets a script the runner started print for 300 ms, then takes what it printed
+        if let Some(ms) = tok.strip_prefix("wait:").and_then(|n| n.parse::<u64>().ok()) {
+            std::thread::sleep(Duration::from_millis(ms));
+            if let Some(r) = app.runner.as_mut() {
+                r.pump();
+            }
+            continue;
+        }
         for k in parse_key(tok) {
             t.draw(|f| app.draw(f))?; // a key acts on the screen it was pressed on, as in a real session
             app.on_key(k);
