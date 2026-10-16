@@ -56,7 +56,7 @@ fn lock_file() -> std::io::Result<File> {
 }
 
 fn claude_program() -> String {
-    std::env::var("AGENTDESK_CLAUDE").ok().filter(|c| !c.is_empty()).unwrap_or_else(|| "claude".to_string())
+    paths::claude_program()
 }
 
 impl Supervisor {
