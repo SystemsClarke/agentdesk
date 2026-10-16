@@ -104,7 +104,7 @@ impl Detail {
             .map(|(i, m)| {
                 let meta = meta_of(&m["meta"]);
                 let mut body: String = m["body"].as_str().unwrap_or("").into();
-                // The window draws a packet's steps live from its state, so they are cut out of the rendered first message.
+                // An older packet's first message still holds the whole packet: the window draws its steps live, so they are cut out.
                 if i == 0 && tkind == kinds::PACKET {
                     body = kinds::without_steps(&body);
                 }
@@ -118,7 +118,17 @@ impl Detail {
                 Msg { author: m["author"].as_str().unwrap_or("").into(), kind, ts: ts(&m["ts"]), body, via: meta["via"].as_str().unwrap_or("").into(), rev }
             })
             .collect();
-        let run_msgs = doc["messages"].as_array()?.iter().map(|m| (m["author"].as_str().unwrap_or("").to_string(), m["body"].as_str().unwrap_or("").to_string())).collect();
+        let run_msgs = doc["messages"]
+            .as_array()?
+            .iter()
+            .enumerate()
+            .map(|(i, m)| {
+                // a packet's commands live in its spec (the first message is only the stub), so they are read from there
+                let body =
+                    if i == 0 && tkind == kinds::PACKET { kinds::render_packet("", &tmeta["packet"], &tmeta["state"]) } else { m["body"].as_str().unwrap_or("").to_string() };
+                (m["author"].as_str().unwrap_or("").to_string(), body)
+            })
+            .collect();
         Some(Detail { thread, messages, kind: tkind, meta: tmeta, run_msgs })
     }
 }

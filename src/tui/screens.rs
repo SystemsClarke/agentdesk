@@ -1208,7 +1208,7 @@ impl App {
                         l.push(vec![plain("       "), s(format!("> {n}"), "fa")]);
                     }
                 }
-                l.push(vec![s(" Alt+↑↓ step · Alt+T tick (reply box = its note) · Alt+V choose · Alt+D finish", "fa")]);
+                l.push(vec![s(" Alt+O opens it in your browser · here: Alt+↑↓ step · Alt+T tick · Alt+V choose · Alt+D finish", "fa")]);
                 if self.runner.is_none() && !super::runner::extract_blocks(&d.run_msgs).is_empty() {
                     l.push(vec![s(" ▶ RUN ", "cy b"), s("commands in the steps: Alt+R shows one, Alt+R again runs it as you (Alt+1..9 picks another).", "mu")]);
                 }

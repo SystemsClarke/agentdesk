@@ -142,6 +142,8 @@ pub struct App {
     pub step_cursor: usize,
     /// The run question whose result has already gone back to the agent (so a finished script reports once).
     pub run_reported: Option<i64>,
+    /// Packets whose page this window has already opened in the browser (it opens once, on the first look).
+    pub pages_opened: std::collections::HashSet<i64>,
     data_version: i64,
     last_load: Instant,
     reader_key: Option<(i64, usize)>,
@@ -293,6 +295,7 @@ impl App {
             runner: None,
             step_cursor: 0,
             run_reported: None,
+            pages_opened: Default::default(),
             data_version: -1,
             last_load: Instant::now(),
             reader_key: None,
@@ -650,6 +653,9 @@ impl App {
         self.step_cursor = 0;
         self.run_reported = None;
         self.runner_close(); // the pane belongs to one thread
+        if d.kind == kinds::PACKET && d.thread.status == "open" && self.pages_opened.insert(tid) {
+            self.browse_packet(tid); // a packet is read and filled out in the browser; the first look opens it
+        }
         if d.kind == kinds::RUN {
             // A run question shows its script at once (nothing runs until Alt+R is pressed a second time).
             let blocks = runner::extract_blocks(&d.run_msgs);
@@ -1205,6 +1211,10 @@ impl App {
             }
             KeyCode::Up if alt => self.step_move(-1),
             KeyCode::Down if alt => self.step_move(1),
+            KeyCode::Char('o') if alt => match self.read_tid {
+                Some(t) if self.detail.as_ref().is_some_and(|d| d.kind == kinds::PACKET) => self.browse_packet(t),
+                _ => self.say("Alt+O opens a packet in your browser; this thread is not one.", "mu"),
+            },
             KeyCode::Char('t') if alt => self.step_tick(),
             KeyCode::Char('v') if alt => self.kind_v(),
             KeyCode::Char('d') if alt => self.kind_d(),
@@ -1654,6 +1664,20 @@ impl App {
             },
             "",
         );
+    }
+
+    /// Opens a packet's page in the browser (the packet is brought up to date first). The page is served by the core's ops console.
+    fn browse_packet(&mut self, tid: i64) {
+        let _ = kinds::refresh(&self.db, tid);
+        match crate::web::packet_url(tid) {
+            Some(u) => {
+                if !cfg!(test) {
+                    open_url(&u);
+                }
+                self.say("Opened the packet in your browser.", "cy");
+            }
+            None => self.say("The ops console isn't running, so the packet has no page: start `agentdesk daemon` (or the window).", "pk b"),
+        }
     }
 
     fn open_console(&mut self) {

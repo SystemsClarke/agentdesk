@@ -250,7 +250,9 @@ impl Bridge {
         let body = body.replace(crate::kinds::STEPS_OPEN, "").replace(crate::kinds::STEPS_CLOSE, "");
         let kind = crate::kinds::kind_of(db, tid).unwrap_or(crate::kinds::ASK);
         let (noun, hint) = match kind {
-            crate::kinds::PACKET => ("Packet", "Reply *in this thread* to add a note. Tick steps and finish it in the AgentDesk window."),
+            crate::kinds::PACKET => {
+                ("Packet", "Reply *in this thread* to add a note. Tick steps and finish it on the packet's page, in a browser at your laptop (Alt+O in AgentDesk).")
+            }
             crate::kinds::RUN => ("Run request", "Run the script in the AgentDesk window (Alt+R twice), or reply *in this thread* with what happened."),
             crate::kinds::PERMISSION => ("Permission rule", "Decide it in the AgentDesk window: Alt+A approves, Alt+D rejects. A reply here is only a note."),
             _ => ("Question", "Reply *in this thread* to answer. Photos work too."),

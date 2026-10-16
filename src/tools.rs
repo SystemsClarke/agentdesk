@@ -264,7 +264,7 @@ fn ask_human(db: &Db, c: &Caller, a: &Args) -> Result<Value> {
                 Ok(c) => c,
                 Err(problems) => return err(format!("this packet is not complete: {}", problems.join("; "))),
             };
-            stored = kinds::render_packet(&body, &cleaned, &json!({}));
+            stored = kinds::stub(&cleaned, &json!({}));
             extra["links"] = cleaned["link_report"].clone();
             meta.insert("packet".into(), cleaned);
             meta.insert("state".into(), json!({}));

@@ -59,8 +59,9 @@ box: `Ctrl+S` sends, `Alt+N`/`Alt+P` step through the list, `Alt+C` closes a que
 A question has a kind, in one Questions list (no extra screens). The agent picks it with `meta.type` on `ask_human`, and the list shows a
 KIND column. `ask` (the default) needs a short answer. `run` carries a script John runs from the reader (`Alt+R` shows it, `Alt+R` again
 runs it as him). `permission` is a rule proposal (`propose_permission_rule`): `Alt+A` approves and `Alt+D` rejects, in the question itself.
-`packet` is work for John with steps and context: the steps sit above the reply box, `Alt+T` ticks one, `Alt+V` picks an option and
-`Alt+D` finishes it; each tick wakes the agent, and the agent revises the packet with `update_question`. Agents get the shape and the
+`packet` is work for John with steps and context. The question is one line ("Fill out this packet"); the packet is a web page on the
+ops console that opens in the browser (`Alt+O`, or `agentdesk packet <id>`), where he ticks steps, picks options, adds notes and finishes
+it. The window can do the same (`Alt+T`, `Alt+V`, `Alt+D`). Each tick wakes the agent, and the agent revises the packet with `update_question`. Agents get the shape and the
 writing rules from `question_help`. Design and status: `docs/question-types.md`.
 
 ## How it differs from the original

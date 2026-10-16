@@ -80,14 +80,14 @@ fn each_kind_says_what_it_is_and_how_to_respond() {
     let mut seen: Vec<(String, String)> = (0..n).map(|i| head_and_hint(&fake, i)).collect();
     seen.sort();
     let find = |noun: &str| seen.iter().find(|(h, _)| h.contains(noun)).unwrap_or_else(|| panic!("no '{noun}' in {seen:?}")).clone();
-    assert!(find(&format!("☎ Packet #{pk}")).1.contains("add a note") && find("Packet").1.contains("finish it in the AgentDesk window"));
+    assert!(find(&format!("☎ Packet #{pk}")).1.contains("add a note") && find("Packet").1.contains("packet's page, in a browser"));
     assert!(find("☎ Run request").1.contains("Alt+R twice"));
     assert!(find("☎ Permission rule").1.contains("Alt+A approves, Alt+D rejects") && find("Permission rule").1.contains("only a note"));
     assert!(find("☎ Question").1.contains("answer. Photos work too"), "an ordinary question reads exactly as before");
     let texts: Vec<String> = fake.posts.lock().unwrap().iter().map(|p| p.3.clone()).collect();
     assert!(texts.iter().any(|t| t.starts_with(&format!("Packet #{pk} from builder: Two GoCD runs"))), "{texts:?}");
     let body: String = fake.posts.lock().unwrap().iter().filter_map(|p| p.2.clone()).flatten().map(|b| b.to_string()).collect::<Vec<_>>().join(" ");
-    assert!(body.contains("Your steps") && !body.contains("<!--"), "the step markers are for the window, not the phone");
+    assert!(body.contains("Fill out this packet") && !body.contains("<!--") && !body.contains("Your steps"), "the phone gets the line that opens the packet, not the packet");
 }
 
 #[test]

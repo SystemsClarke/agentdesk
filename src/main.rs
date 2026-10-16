@@ -30,6 +30,7 @@ mod links;
 mod mcp;
 mod migrate;
 mod notify;
+mod packet_page;
 #[cfg(test)]
 mod parity;
 mod paths;
@@ -214,6 +215,12 @@ enum Cmd {
         /// Run every check and say what would happen, without merging.
         #[arg(long)]
         dry_run: bool,
+    },
+    /// Open a packet in your browser (`packet <id>`), brought up to date first; `--print` prints the address instead.
+    Packet {
+        id: i64,
+        #[arg(long)]
+        print: bool,
     },
     /// Claude Code status-line feed: writes claude_usage.json from the status-line JSON on stdin.
     UsageFeed,
@@ -489,6 +496,18 @@ fn real_main() -> Result<()> {
             println!("{}", prs::merge(&url, squash, dry_run).map_err(|e| anyhow::anyhow!(e))?);
             if !dry_run {
                 prs::check(&open()?); // takes the PR off the merge list and posts the notice on its thread now, not at the next poll
+            }
+            Ok(())
+        }
+        Some(Cmd::Packet { id, print }) => {
+            let db = open()?;
+            kinds::refresh(&db, id)?;
+            let Some(url) = web::packet_url(id) else { anyhow::bail!("the ops console is not running: start `agentdesk daemon` (or the window)") };
+            if print {
+                println!("{url}");
+            } else {
+                tui::open_url(&url);
+                println!("Opened packet #{id} in your browser.");
             }
             Ok(())
         }

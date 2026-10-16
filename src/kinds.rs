@@ -293,6 +293,19 @@ pub fn render_packet(intro: &str, spec: &Value, state: &Value) -> String {
     m
 }
 
+/// What the Questions list, the window and Slack show for a packet: a line to open it, not the packet. The packet itself is a web page
+/// (`packet_page.rs`), read from the same spec and state.
+pub fn stub(spec: &Value, state: &Value) -> String {
+    let steps = spec["steps"].as_array().cloned().unwrap_or_default();
+    let done = steps.iter().filter(|s| s["id"].as_str().is_some_and(|id| state[id]["done"].as_bool().unwrap_or(false))).count();
+    format!(
+        "**Fill out this packet.** {}\n\n{done} of {} steps done, due {}.\n\nIt opens in your browser: press Alt+O in AgentDesk, or run `agentdesk packet`.\n",
+        spec["outcome"].as_str().unwrap_or(""),
+        steps.len(),
+        spec["deadline"]["date"].as_str().unwrap_or("")
+    )
+}
+
 /// The markdown with the steps block cut out, for a view that draws the steps itself.
 pub fn without_steps(markdown: &str) -> String {
     match (markdown.find(STEPS_OPEN), markdown.find(STEPS_CLOSE)) {
@@ -456,10 +469,19 @@ pub fn update(db: &Db, thread_id: i64, who: &str, patch: &Value, summary: &str) 
     Ok(json!({"thread_id": thread_id, "version": rev, "changed": meta["changed"], "links": meta["packet"]["link_report"]}))
 }
 
-/// Re-renders the first message from the packet and its progress, so every surface that shows the message shows the current state.
+/// Rewrites the first message from the packet and its progress, so every surface that shows the message shows the current state.
 fn refresh_body(db: &Db, thread_id: i64, meta: &Value) -> Result<()> {
-    let body = render_packet(meta["intro"].as_str().unwrap_or(""), &meta["packet"], &meta["state"]);
-    db.set_first_body(thread_id, &body)
+    db.set_first_body(thread_id, &stub(&meta["packet"], &meta["state"]))
+}
+
+/// Brings a packet's first message up to date (a packet made before packets were web pages still has the whole packet as its message).
+pub fn refresh(db: &Db, thread_id: i64) -> Result<()> {
+    let Some(t) = db.row("SELECT meta FROM threads WHERE id=:id", &[(":id", &thread_id)])? else { return err(format!("no such thread: {thread_id}")) };
+    let meta = t["meta"].as_str().and_then(|m| serde_json::from_str::<Value>(m).ok()).unwrap_or(Value::Null);
+    if kind_in(Some(&meta)) != PACKET {
+        return err(format!("#{thread_id} is not a packet"));
+    }
+    refresh_body(db, thread_id, &meta)
 }
 
 /// The guidance an agent gets from `question_help`: the kinds, and the prompt for writing a packet.
@@ -481,7 +503,7 @@ meta.packet is an object:
   work      optional, shown folded: recommendation, confidence, ruled_out, would_change, prepared_with
 
 How to write one:
-You write work packets for John. A packet is a task only he can do, written so he can finish it without asking you anything or hunting for context.
+You write work packets for John. He fills a packet out as a web page in his browser (the question only says 'fill out this packet'), so write for a page: short sections, and the steps are the interactive part. A packet is a task only he can do, written so he can finish it without asking you anything or hunting for context.
 
 Prepare (you have time, he does not)
 - Split the research into small questions. Use as many helpers as the task needs; a cheap model is fine for lookups. Check their answers against each other.
