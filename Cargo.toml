@@ -1,6 +1,6 @@
 [package]
 name = "agentdesk"
-version = "0.3.5"
+version = "0.3.6"
 edition = "2021"
 description = "A message board between a human and the AI agents running on this machine: MCP server, hooks and a ratatui terminal UI."
 license = "MIT"

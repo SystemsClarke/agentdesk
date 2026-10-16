@@ -61,6 +61,7 @@ fn the_real_window_draws_takes_keys_stays_quiet_and_quits() {
         ("AGENTDESK_VAULT", dir.path().join("vault").to_string_lossy().to_string()),
         ("AGENTDESK_NO_TOAST", "1".into()),
         ("AGENTDESK_NO_UPDATE_CHECK", "1".into()),
+        ("AGENTDESK_NO_BACKUP", "1".into()),
         ("AGENTDESK_NO_MODEL_DOWNLOAD", "1".into()),
     ];
     // the core, on the scratch board, so the window finds it and does not start one of its own
