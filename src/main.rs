@@ -204,6 +204,17 @@ enum Cmd {
     },
     /// Check the merge list against GitHub now.
     CheckPrs,
+    /// Merge a pull request, only if it is open, not a draft, every check is green and GitHub calls it mergeable and clean
+    /// (`merge <pr-url> [--squash] [--dry-run]`). The command a permission rule such as `Bash(agentdesk merge:*)` authorizes.
+    Merge {
+        url: String,
+        /// Squash into one commit instead of a merge commit.
+        #[arg(long)]
+        squash: bool,
+        /// Run every check and say what would happen, without merging.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Claude Code status-line feed: writes claude_usage.json from the status-line JSON on stdin.
     UsageFeed,
     /// Refresh the usage feed now with `claude -p /usage` (the original does this every 5 minutes).
@@ -472,6 +483,13 @@ fn real_main() -> Result<()> {
         Some(Cmd::SlackBridge { once }) => slack::run_cli(once),
         Some(Cmd::CheckPrs) => {
             println!("{} settled", prs::check(&open()?));
+            Ok(())
+        }
+        Some(Cmd::Merge { url, squash, dry_run }) => {
+            println!("{}", prs::merge(&url, squash, dry_run).map_err(|e| anyhow::anyhow!(e))?);
+            if !dry_run {
+                prs::check(&open()?); // takes the PR off the merge list and posts the notice on its thread now, not at the next poll
+            }
             Ok(())
         }
         Some(Cmd::UsageFeed) => {
