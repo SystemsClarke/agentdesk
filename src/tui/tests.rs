@@ -198,3 +198,42 @@ fn a_script_in_a_question_is_shown_then_run_from_the_reader() {
     // a thread with no script says so
     a.on_key(key(KeyCode::Esc));
 }
+
+#[test]
+fn open_at_starts_on_the_reader_for_that_thread() {
+    let (_d, mut a) = app();
+    let q = a.db.start_thread("question", "Deploy to prod?", "builder", "agent", "Ship now?", None, None).unwrap();
+    a.reload();
+    a.open_at(q);
+    assert_eq!(a.screen, Screen::Read);
+    assert_eq!(a.read_tid, Some(q));
+    let s = screen(&mut a, 110, 30);
+    assert!(s.contains("Msg #1") && s.contains("Ship now?"), "{s}");
+    // Esc goes back to the question list, not out of the window
+    a.on_key(key(KeyCode::Esc));
+    assert_eq!(a.screen, Screen::List);
+    assert!(!a.quit);
+}
+
+#[test]
+fn open_at_an_unknown_thread_stays_on_the_main_menu_and_says_so() {
+    let (_d, mut a) = app();
+    a.open_at(999);
+    assert_eq!(a.screen, Screen::Main);
+    assert!(a.flash.as_ref().is_some_and(|f| f.0.contains("#999 is no longer on the board")));
+}
+
+#[test]
+fn open_and_tui_thread_arguments_parse() {
+    use crate::{Cli, Cmd};
+    use clap::Parser;
+    let p = |a: &[&str]| Cli::try_parse_from(std::iter::once("agentdesk").chain(a.iter().copied()));
+    assert!(matches!(p(&["open", "12"]).unwrap().cmd, Some(Cmd::Open { thread: 12 })));
+    assert!(matches!(p(&["open", "#12"]).unwrap().cmd, Some(Cmd::Open { thread: 12 })));
+    assert!(matches!(p(&["tui", "--thread", "7"]).unwrap().cmd, Some(Cmd::Tui { thread: Some(7) })));
+    assert!(matches!(p(&["tui", "--thread=#7"]).unwrap().cmd, Some(Cmd::Tui { thread: Some(7) })));
+    assert!(matches!(p(&["tui"]).unwrap().cmd, Some(Cmd::Tui { thread: None })));
+    for bad in [&["open"][..], &["open", "abc"], &["open", "0"], &["open", "-1"], &["tui", "--thread"], &["tui", "--thread", "x"]] {
+        assert!(p(bad).is_err(), "{bad:?}");
+    }
+}
