@@ -226,7 +226,11 @@ fn ask_human(db: &Db, c: &Caller, a: &Args) -> Result<Value> {
         Some(Value::String(t)) if t == kinds::PERMISSION => {
             return err("a permission question is made by propose_permission_rule, which also records the rule John approves or rejects. Call that instead.")
         }
-        Some(other) => return err(format!("meta.type must be one of ask, run, packet (permission has its own tool: propose_permission_rule), got {other}. Call question_help for what each kind is.")),
+        Some(other) => {
+            return err(format!(
+                "meta.type must be one of ask, run, packet (permission has its own tool: propose_permission_rule), got {other}. Call question_help for what each kind is."
+            ))
+        }
     };
     let mut stored = body.clone();
     let mut extra = json!({});
@@ -240,7 +244,9 @@ fn ask_human(db: &Db, c: &Caller, a: &Args) -> Result<Value> {
         }
         kinds::RUN => {
             if crate::tui::runner::extract_blocks(&[(who.clone(), body.clone())]).is_empty() {
-                return err("a run question needs the script in the body, in a fenced ```powershell, ```bash, ```sh or ```cmd block: John sees it in full and runs it from the reader.");
+                return err(
+                    "a run question needs the script in the body, in a fenced ```powershell, ```bash, ```sh or ```cmd block: John sees it in full and runs it from the reader.",
+                );
             }
         }
         _ => {

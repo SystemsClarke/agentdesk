@@ -5,6 +5,7 @@ use super::mouse;
 use super::seg::*;
 use super::state::*;
 use super::{App, Screen};
+use crate::kinds;
 use chrono::{DateTime, Local};
 use std::rc::Rc;
 
@@ -54,6 +55,16 @@ pub fn span(seconds: f64) -> String {
 
 pub fn ago(t: Option<DateTime<Local>>) -> String {
     t.map(|t| span((Local::now() - t).num_seconds() as f64)).unwrap_or_default()
+}
+
+/// The colour a kind's tag is drawn in.
+pub fn kind_color(kind: &str) -> &'static str {
+    match kind {
+        kinds::RUN => "cy",
+        kinds::PERMISSION => "pk",
+        kinds::PACKET => "pu",
+        _ => "mu",
+    }
 }
 
 pub fn state_code(ch: &str, r: &ThreadRow) -> (String, &'static str) {
@@ -598,6 +609,11 @@ impl App {
             }
             Screen::Read => {
                 let mut v = vec![k("type", "to reply"), k("Ctrl+S", "send"), k("Ctrl+D", "dictate"), k("PgUp/PgDn", "scroll"), k("Alt+N/P", "next/prev"), k("Alt+R", "run script")];
+                match self.detail.as_ref().map(|d| d.kind.as_str()) {
+                    Some(kinds::PACKET) => v.extend([k("Alt+↑↓", "step"), k("Alt+T", "tick"), k("Alt+V", "choose"), k("Alt+D", "finish")]),
+                    Some(kinds::PERMISSION) => v.extend([k("Alt+A", "approve"), k("Alt+D", "reject")]),
+                    _ => {}
+                }
                 if q {
                     v.push(k("Alt+C", "close"));
                     if self.detail.as_ref().map(|d| d.thread.status == "archived").unwrap_or(false) {
@@ -884,11 +900,12 @@ impl App {
         let ch = self.channel;
         let q = ch == "question";
         let rs: Vec<ThreadRow> = self.rows_of(ch).to_vec();
-        let subj_w = w.saturating_sub(if q { 58 } else { 46 }).max(20);
+        let subj_w = w.saturating_sub(if q { 63 } else { 46 }).max(20);
         let arch = self.show_archived;
         let bnr = bar(w, if q && arch { "QUESTIONS  ·  the archive  ·  settled and filed to the vault" } else { banner(ch) }, "barcy");
         let header = format!(
-            "    #  ST    {} {}{}{} MSG",
+            "    #  ST    {}{} {}{}{} MSG",
+            if q { "KIND " } else { "" },
             fit("SUBJECT", subj_w),
             fit(if ch == "work" { "HELD BY" } else { "FROM" }, 16),
             if q { fit("LAST WORD", 12) } else { String::new() },
@@ -933,7 +950,17 @@ impl App {
                 s(format!("  {:>3}  ", r.id), "ye"),
                 s(code, ctags),
                 plain("  "),
-                s(fit(&r.subject, subj_w), subj_tag),
+                s(if q { format!("{} ", fit(kinds::tag(&r.kind), 4)) } else { String::new() }, kind_color(&r.kind)),
+                s(
+                    fit(
+                        &match r.progress.filter(|_| r.status == "open") {
+                            Some((done, total)) => format!("[{done}/{total}] {}", r.subject),
+                            None => r.subject.clone(),
+                        },
+                        subj_w,
+                    ),
+                    subj_tag,
+                ),
                 plain(" "),
                 s(fit(&by, 16), hue(&r.opened_by)),
                 s(last, last_tag),
@@ -1027,6 +1054,10 @@ impl App {
                 s(word, ctags),
             ],
         ];
+        if d.kind != kinds::ASK {
+            l[1].push(s("  Kind: ", "mu"));
+            l[1].push(s(kinds::tag(&d.kind), kind_color(&d.kind)));
+        }
         let sw = w.saturating_sub(10).max(10);
         let subj: Vec<char> = t.subject.chars().collect();
         let mut n = 0;
@@ -1048,6 +1079,8 @@ impl App {
         }
         l.push(date);
         l.push(vec![s(format!("╚{}╝", rep('═', w.saturating_sub(2))), "rule")]);
+        // The kind's panel (a packet's steps) sits last, just above the reply box, where the reader opens, so it is always in view.
+        let panel = self.kind_panel(w);
         // Each message's Markdown is rendered once (per width) and kept: rendering a long thread is the slow part, and a frame
         // (every key typed in the reply box) must not redo it. Only the lines in view are filled in; the rest stay empty
         // placeholders so the line count, and so the scroll range, is the same.
@@ -1078,7 +1111,7 @@ impl App {
                 })
                 .collect()
         };
-        let total = l.len() + bodies.iter().map(|b| b.len() + 2).sum::<usize>();
+        let total = l.len() + bodies.iter().map(|b| b.len() + 2).sum::<usize>() + panel.len();
         let lo = self.scroll.min(total.saturating_sub(h));
         let hi = lo + h;
         for (i, (m, body)) in msgs.iter().zip(&bodies).enumerate() {
@@ -1108,6 +1141,96 @@ impl App {
             } else {
                 l.resize(at + body.len() + 2, vec![]);
             }
+        }
+        l.extend(panel);
+        l
+    }
+
+    /// What a question's kind adds under the header: a packet's live steps, a permission rule's status, a run question's hint.
+    fn kind_panel(&self, w: usize) -> Vec<L> {
+        let Some(d) = &self.detail else { return vec![] };
+        let mut l: Vec<L> = vec![];
+        match d.kind.as_str() {
+            kinds::PACKET => {
+                let steps = d.meta["packet"]["steps"].as_array().cloned().unwrap_or_default();
+                let (done, total) = kinds::progress(&d.meta);
+                let bar_w = 20;
+                let filled = (done * bar_w).checked_div(total).unwrap_or(0);
+                let mut head: L = vec![
+                    s(" PACKET ", "pu b"),
+                    s(format!("{done} of {total} steps "), if done == total { "gr b" } else { "ye" }),
+                    s(format!("{}{}", rep('█', filled), rep('░', bar_w - filled)), "gr"),
+                ];
+                if let Some(due) = d.meta["packet"]["deadline"]["date"].as_str() {
+                    let tag = match chrono::NaiveDate::parse_from_str(due, "%Y-%m-%d") {
+                        Ok(day) if day < Local::now().date_naive() => "pk b",
+                        Ok(day) if day == Local::now().date_naive() => "or",
+                        _ => "mu",
+                    };
+                    head.push(s(format!("   due {due}"), tag));
+                }
+                if let Some(rev) = d.meta["rev"].as_i64().filter(|r| *r > 1) {
+                    head.push(s(format!("   revised, version {rev}"), "or"));
+                }
+                l.push(head);
+                let here = self.step_cursor.min(steps.len().saturating_sub(1));
+                for (i, st) in steps.iter().enumerate() {
+                    let state = &d.meta["state"][st["id"].as_str().unwrap_or("")];
+                    let ticked = state["done"].as_bool().unwrap_or(false);
+                    let mut line: L = vec![
+                        s(if i == here { " ▶ " } else { "   " }, "cy b"),
+                        s(if ticked { "[x]" } else { "[ ]" }, if ticked { "gr b" } else { "ye" }),
+                        s(
+                            format!(" {}", st["title"].as_str().unwrap_or("")),
+                            if i == here {
+                                "fg b"
+                            } else if ticked {
+                                "mu"
+                            } else {
+                                "fg"
+                            },
+                        ),
+                    ];
+                    if let Some(v) = state["value"].as_str() {
+                        line.push(s(format!("   → {v}"), "cy"));
+                    } else if let Some(opts) = st["options"].as_array() {
+                        line.push(s(format!("   ({})", opts.iter().filter_map(|o| o.as_str()).collect::<Vec<_>>().join(" / ")), "fa"));
+                    }
+                    l.push(line);
+                    if let Some(detail) = st["detail"].as_str() {
+                        for dl in md::render(detail, w.saturating_sub(8)) {
+                            let mut segs = vec![plain("       ")];
+                            segs.extend(dl);
+                            l.push(segs);
+                        }
+                    }
+                    if let Some(n) = state["note"].as_str() {
+                        l.push(vec![plain("       "), s(format!("> {n}"), "fa")]);
+                    }
+                }
+                l.push(vec![s(" Alt+↑↓ step · Alt+T tick (what is in the reply box becomes its note) · Alt+V choose · Alt+D finish · Ctrl+S sends a note", "fa")]);
+            }
+            kinds::PERMISSION => {
+                if let Some(r) = self.st.rules.iter().find(|r| Some(r.thread_id) == Some(self.read_tid)) {
+                    let (word, tag, hint) = match r.status.as_str() {
+                        "pending" => ("waiting for you", "pk b", "Alt+A approves · Alt+D rejects"),
+                        "approved" => ("approved", "gr", "Alt+V takes it back out of settings.json"),
+                        "reverted" => ("taken back", "or", ""),
+                        _ => ("rejected", "fa", ""),
+                    };
+                    l.push(vec![s(" PERMISSION ", "pk b"), s(word, tag), s(if hint.is_empty() { String::new() } else { format!("   {hint}") }, "mu")]);
+                    if r.broad {
+                        l.push(vec![s(" careful: this rule is broad, it allows every use of the tool.", "pk b")]);
+                    }
+                }
+            }
+            kinds::RUN => {
+                l.push(vec![s(" RUN ", "cy b"), s("the script above is shown, not run. Alt+R again runs it as you; Alt+Y puts the output in your reply.", "mu")]);
+            }
+            _ => {}
+        }
+        if !l.is_empty() {
+            l.push(vec![]);
         }
         l
     }

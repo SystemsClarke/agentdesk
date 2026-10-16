@@ -17,7 +17,7 @@ mod term;
 mod vscode_themes;
 
 use crate::db::{anyhow_msg, Db};
-use crate::{jobs, paths, permissions, prs, update};
+use crate::{jobs, kinds, paths, permissions, prs, update};
 use anyhow::Result;
 use editor::Editor;
 use ratatui::crossterm::event::{self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -75,6 +75,7 @@ pub enum Confirm {
     DeleteJob(String),
     Rule(i64, char),
     CloseThread(i64),
+    FinishPacket(i64),
     Forget(String),
     StopGoal(String),
     ConciergeOff,
@@ -137,6 +138,8 @@ pub struct App {
     pub attach_request: Option<String>,
     /// The script runner pane under the reader (see `runner`).
     pub runner: Option<runner::Runner>,
+    /// The step of a packet the cursor is on, in the reader.
+    pub step_cursor: usize,
     data_version: i64,
     last_load: Instant,
     reader_key: Option<(i64, usize)>,
@@ -286,6 +289,7 @@ impl App {
             adopt_note: None,
             attach_request: None,
             runner: None,
+            step_cursor: 0,
             data_version: -1,
             last_load: Instant::now(),
             reader_key: None,
@@ -639,6 +643,16 @@ impl App {
         }
         self.read_tid = Some(tid);
         self.read_back = back;
+        self.step_cursor = 0;
+        self.runner_close(); // the pane belongs to one thread
+        if d.kind == kinds::RUN {
+            // A run question shows its script at once (nothing runs until Alt+R is pressed a second time).
+            let msgs: Vec<(String, String)> = d.messages.iter().map(|m| (m.author.clone(), m.body.clone())).collect();
+            let blocks = runner::extract_blocks(&msgs);
+            if !blocks.is_empty() {
+                self.runner = Some(runner::Runner::new(blocks));
+            }
+        }
         self.reply = Editor::from(self.drafts.get(&tid).map(|s| s.as_str()).unwrap_or(""));
         self.reader_key = None;
         self.screen = Screen::Read;
@@ -814,9 +828,8 @@ impl App {
 
     fn letter(&mut self, ch: char) {
         let s = self.screen;
-        match (s, ch) {
-            (Screen::Jobs, 'r' | 'e' | 'x' | 'n') => return self.job_key(ch),
-            _ => {}
+        if matches!((s, ch), (Screen::Jobs, 'r' | 'e' | 'x' | 'n')) {
+            return self.job_key(ch);
         }
         if let Some(c) = match ch {
             'q' => Some("question"),
@@ -1098,6 +1111,10 @@ impl App {
                 Ok(false) => self.say(format!("Nothing to close: #{tid} is not an open question."), "ye"),
                 Err(e) => self.fail("Not closed: ", e),
             },
+            Confirm::FinishPacket(tid) => match kinds::finish(&self.db, tid) {
+                Ok(()) => self.say("Packet finished. The agent is told.", "gr"),
+                Err(e) => self.fail("Not finished: ", e),
+            },
             Confirm::Forget(name) => match crate::identities::forget(&self.db, &name) {
                 Ok(_) => self.say(format!("{name} forgotten."), "gr"),
                 Err(e) => self.fail("Not forgotten: ", e),
@@ -1136,13 +1153,25 @@ impl App {
             }
             Screen::Read => {
                 let Some(tid) = self.read_tid else { return };
-                match self.db.john_replies(tid, &body) {
-                    Ok(_) => {
+                // A packet stays open while John works on it, and a permission question is decided with Approve or Reject: his text
+                // on either is a note to the agent, not the answer that closes it.
+                let kind = self.read_kind();
+                let noted = matches!(kind.as_str(), kinds::PACKET | kinds::PERMISSION);
+                let sent = if noted { kinds::note(&self.db, tid, &body).map(|_| ()) } else { self.db.john_replies(tid, &body).map(|_| ()) };
+                match sent {
+                    Ok(()) => {
                         self.drafts.remove(&tid);
                         self.reply = Editor::new();
                         self.scroll_end = true;
                         self.reload();
-                        self.say(format!("Sent to #{tid}."), "gr");
+                        self.say(
+                            match kind.as_str() {
+                                kinds::PACKET => format!("Note sent to #{tid}. The packet stays open."),
+                                kinds::PERMISSION => format!("Note sent to #{tid}. The rule is still waiting: Alt+A approves, Alt+D rejects."),
+                                _ => format!("Sent to #{tid}."),
+                            },
+                            "gr",
+                        );
                     }
                     Err(e) => self.fail("Not sent: ", e),
                 }
@@ -1170,6 +1199,12 @@ impl App {
                     self.say("No such script in this thread (or one is running).", "mu");
                 }
             }
+            KeyCode::Up if alt => self.step_move(-1),
+            KeyCode::Down if alt => self.step_move(1),
+            KeyCode::Char('t') if alt => self.step_tick(),
+            KeyCode::Char('v') if alt => self.kind_v(),
+            KeyCode::Char('d') if alt => self.kind_d(),
+            KeyCode::Char('a') if alt => self.permission_key('a'),
             KeyCode::Char('u') if alt => {
                 if let (Some(t), "question") = (self.read_tid, self.channel) {
                     self.unarchive(t);
@@ -1219,6 +1254,108 @@ impl App {
             r.kill();
         }
         self.dirty = true;
+    }
+
+    /// The kind of the thread in the reader.
+    fn read_kind(&self) -> String {
+        self.detail.as_ref().map(|d| d.kind.clone()).unwrap_or_else(|| kinds::ASK.to_string())
+    }
+
+    fn packet_steps(&self) -> Vec<Value> {
+        self.detail.as_ref().and_then(|d| d.meta["packet"]["steps"].as_array().cloned()).unwrap_or_default()
+    }
+
+    /// The step under the cursor, with John's state for it.
+    fn cursor_step(&self) -> Option<(Value, Value)> {
+        let steps = self.packet_steps();
+        let st = steps.get(self.step_cursor.min(steps.len().saturating_sub(1)))?.clone();
+        let state = self.detail.as_ref().map(|d| d.meta["state"][st["id"].as_str().unwrap_or("")].clone()).unwrap_or(Value::Null);
+        Some((st, state))
+    }
+
+    /// Alt+Up and Alt+Down: the cursor on a packet's steps.
+    fn step_move(&mut self, delta: i64) {
+        let n = self.packet_steps().len();
+        if self.read_kind() != kinds::PACKET || n == 0 {
+            return;
+        }
+        self.step_cursor = (self.step_cursor as i64 + delta).clamp(0, n as i64 - 1) as usize;
+        self.dirty = true;
+    }
+
+    /// Alt+T: tick the step under the cursor, or un-tick it. What is in the reply box becomes the step's note.
+    fn step_tick(&mut self) {
+        let Some(tid) = self.read_tid else { return };
+        if self.read_kind() != kinds::PACKET {
+            return self.say("Alt+T ticks a step of a packet.", "mu");
+        }
+        let Some((st, state)) = self.cursor_step() else { return };
+        let id = st["id"].as_str().unwrap_or("").to_string();
+        let was_done = state["done"].as_bool().unwrap_or(false);
+        let value = state["value"].as_str().map(String::from);
+        let note = self.reply.text().trim().to_string();
+        let r = if was_done {
+            kinds::step(&self.db, tid, &id, false, value.as_deref(), None)
+        } else {
+            kinds::step(&self.db, tid, &id, true, value.as_deref(), (!note.is_empty()).then_some(note.as_str()))
+        };
+        match r {
+            Ok(p) => {
+                if !was_done && !note.is_empty() {
+                    self.reply = Editor::new();
+                    self.drafts.remove(&tid);
+                }
+                self.reload();
+                self.say(format!("{} {} of {} steps.", if was_done { "Un-ticked." } else { "Ticked." }, p["done"], p["total"]), "gr");
+            }
+            Err(e) => self.fail("Not ticked: ", e),
+        }
+    }
+
+    /// Alt+V: on a packet's choice step, the next option (which ticks the step); on a permission question, take an approved rule back.
+    fn kind_v(&mut self) {
+        match self.read_kind().as_str() {
+            kinds::PERMISSION => self.permission_key('v'),
+            kinds::PACKET => {
+                let Some(tid) = self.read_tid else { return };
+                let Some((st, state)) = self.cursor_step() else { return };
+                if st["input"] != "choice" {
+                    return self.say("Alt+V picks an option on a choice step. Tick this one with Alt+T.", "mu");
+                }
+                let opts: Vec<String> = st["options"].as_array().map(|o| o.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default();
+                if opts.is_empty() {
+                    return;
+                }
+                let cur = state["value"].as_str();
+                let next = opts[opts.iter().position(|o| Some(o.as_str()) == cur).map(|i| i + 1).unwrap_or(0) % opts.len()].clone();
+                match kinds::step(&self.db, tid, st["id"].as_str().unwrap_or(""), true, Some(&next), None) {
+                    Ok(_) => {
+                        self.reload();
+                        self.say(format!("{}: {next}", st["title"].as_str().unwrap_or("")), "gr");
+                    }
+                    Err(e) => self.fail("Not chosen: ", e),
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Alt+D: finish a packet (it asks first), or reject a permission rule.
+    fn kind_d(&mut self) {
+        match self.read_kind().as_str() {
+            kinds::PERMISSION => self.permission_key('r'),
+            kinds::PACKET => {
+                let (Some(tid), Some(d)) = (self.read_tid, &self.detail) else { return };
+                let (done, total) = kinds::progress(&d.meta);
+                let text = if done == total {
+                    "Finish this packet? Every step is ticked.".to_string()
+                } else {
+                    format!("Finish this packet with {done} of {total} steps ticked? The agent is told which are left.")
+                };
+                self.confirm = Some((text, Confirm::FinishPacket(tid)));
+            }
+            _ => {}
+        }
     }
 
     fn reader_step(&mut self, delta: i64) {
@@ -1928,6 +2065,8 @@ fn handle(app: &mut App, ev: Event) {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_kinds;
 #[cfg(test)]
 mod tests_perf;
 #[cfg(test)]

@@ -1,7 +1,41 @@
 # Question kinds: ask, run, permission, packet
 
-Status: **design, not built.** Written from John's messages on the board and a read of the current code. The readable version
-with mock-ups drawn from real board threads is the private "Work Packets" page John was sent; this file is the tracked copy.
+Status: **the core, the tools, the terminal window and the Slack bridge are built** (see "What is built" below); the parts that need a
+browser, a calendar or a model are not. Written from John's messages on the board and a read of the current code. The readable
+version with mock-ups drawn from real board threads is the private "Work Packets" page John was sent; this file is the tracked copy.
+
+## What is built
+
+- **The kind** is `meta.type` on the question thread: `ask` (the default), `run`, `permission`, `packet` (`src/kinds.rs`). The
+  Questions list has a KIND column, and a packet shows `[done/total]` in front of its subject.
+- **ask_human by kind.** An ask is unchanged. A run question needs its script in a fenced block, and a packet needs `meta.packet` with
+  all seven parts; it is refused, with every missing part named, if any is absent. `permission` is refused here: use
+  `propose_permission_rule`, which now marks its question `type: permission`. Run, permission and packet are not held to the
+  "contains a ?" and "500 words" rules, and run and packet stay open past John's first message (the "one question, one answer" rule
+  does not apply to them while open).
+- **Two tools.** `update_question` (the agent that asked revises its open packet; John's ticks on steps that still exist are kept)
+  and `question_help` (the kinds, the shape of `meta.packet`, and the packet prompt below). The tool fixture and the server
+  instructions were updated with them.
+- **Packet in the window** (`src/tui/`): the reader shows the packet's steps live at the bottom, above the reply box (where the reader
+  opens, so they stay in view as ticks add messages). `Alt+Up/Down` move the cursor, `Alt+T` ticks or un-ticks the step (what is in
+  the reply box becomes its note), `Alt+V` cycles a choice step's options (and ticks it), `Alt+D` finishes the packet (it asks first and
+  says which steps were left). Typing and `Ctrl+S` sends a note and leaves the packet open.
+- **Permission in the window.** The separate Permission rules screen (and its menu entry, `X` key, tests and parity feature) is gone.
+  On a permission question `Alt+A` approves, `Alt+D` rejects, `Alt+V` takes an approved rule back; each asks first. Typing is a note.
+  A permission proposal made before kinds existed is still recognised through its row in `permission_proposals`.
+- **Run in the window** reuses the existing script runner (`src/tui/runner.rs`) and does not add another: a run question opens the
+  runner pane at once with the script shown, not run; `Alt+R` again runs it as John, `Alt+Y` puts the output in the reply.
+- **Slack.** The message names its kind ("Packet", "Run request", "Permission rule") with the right hint for how to respond; the hidden
+  step markers are stripped. A reply on a packet or a permission question is a note, not an answer; on a run question it is the answer.
+- **Links** (`src/links.rs`): Safe Links and similar wrappers are unwrapped, tracking parameters and fragments stripped, non-default
+  ports kept, credentials dropped, duplicates merged (with a count), unknown domains flagged, at most 12 shown. Pure string work.
+
+**Not built:** link steps 3 and 6 (resolving short links, opening pages in a headless browser) and the headless browser itself; meeting
+scheduling and the working-hours filter (the prompt tells the agent to find free times, but there is no code that enforces 10:00 to
+16:30 and the lunch hour yet); calendar holds and nudges; "verified by the agent" as a state; AI-drafted blocks (agent-side work).
+**Not verified:** how any of it looks in a real terminal and against real Claude sessions (everything is tested against the window's
+test backend and a scratch board); that the wake path delivers a tick to a waiting agent (inferred from how replies work, covered
+by a test that a tick is a message from John after the agent's baseline).
 
 ## The idea
 

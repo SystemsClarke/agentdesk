@@ -40,7 +40,8 @@ fn spec() -> Value {
 }
 
 fn packet(db: &Db, c: &Caller) -> i64 {
-    let r = call(db, c, "ask_human", json!({"subject": "Two GoCD runs", "body": "Two runs are waiting on you.", "author": "builder", "meta": {"type": "packet", "packet": spec()}}));
+    let r =
+        call(db, c, "ask_human", json!({"subject": "Two GoCD runs", "body": "Two runs are waiting on you.", "author": "builder", "meta": {"type": "packet", "packet": spec()}}));
     assert_eq!(r["ok"], true, "{r}");
     r["thread_id"].as_i64().unwrap()
 }
@@ -135,7 +136,8 @@ fn packet_fields_are_checked_one_by_one() {
 fn a_valid_packet_is_stored_rendered_and_has_its_links_cleaned() {
     let (_d, db) = board();
     let c = caller("s1");
-    let r = call(&db, &c, "ask_human", json!({"subject": "Two GoCD runs", "body": "Two runs are waiting on you.", "author": "builder", "meta": {"type": "packet", "packet": spec()}}));
+    let r =
+        call(&db, &c, "ask_human", json!({"subject": "Two GoCD runs", "body": "Two runs are waiting on you.", "author": "builder", "meta": {"type": "packet", "packet": spec()}}));
     assert_eq!(r["type"], "packet");
     assert_eq!(r["links"]["rejected"][0], "javascript:alert(1)", "a bad link is reported, not hidden");
     let q = r["thread_id"].as_i64().unwrap();
@@ -147,14 +149,29 @@ fn a_valid_packet_is_stored_rendered_and_has_its_links_cleaned() {
     assert_eq!(found[1]["url"], "https://dev.azure.com/v/p/_workitems/edit/201377");
     assert_eq!(meta["packet"]["happened"][1]["link"], "https://github.com/o/r/pull/3");
     let body = first_body(&db, q);
-    for part in ["Two runs are waiting on you.", "Done when both GoCD runs", "### Why it is yours", "### Your steps", "- [ ] **Start a new run", "(I run it / agent retries)", "### Deadline", "**2026-10-17**", "### Show my work", "**Recommendation:** Run both today."] {
+    for part in [
+        "Two runs are waiting on you.",
+        "Done when both GoCD runs",
+        "### Why it is yours",
+        "### Your steps",
+        "- [ ] **Start a new run",
+        "(I run it / agent retries)",
+        "### Deadline",
+        "**2026-10-17**",
+        "### Show my work",
+        "**Recommendation:** Run both today.",
+    ] {
         assert!(body.contains(part), "'{part}' not in:\n{body}");
     }
     assert_eq!(db.open_questions(false).unwrap().len(), 1, "it rings like any question");
     let big = format!("{} ", "context ".repeat(700));
     let mut s = spec();
     s["why"] = json!(big);
-    assert_eq!(call(&db, &c, "ask_human", json!({"subject": "Long", "body": "Details.", "author": "b", "meta": {"type": "packet", "packet": s}}))["ok"], true, "a packet is not held to 500 words or a '?'");
+    assert_eq!(
+        call(&db, &c, "ask_human", json!({"subject": "Long", "body": "Details.", "author": "b", "meta": {"type": "packet", "packet": s}}))["ok"],
+        true,
+        "a packet is not held to 500 words or a '?'"
+    );
 }
 
 #[test]
@@ -234,7 +251,12 @@ fn the_agent_revises_its_packet_and_johns_ticks_on_surviving_steps_stay() {
         {"id": "run-1", "title": "Start a new run with MIN_FREE_PERCENT empty"},
         {"id": "creds", "title": "Paste the service account name", "input": "note"}
     ]);
-    let r = call(&db, &c, "update_question", json!({"thread_id": q, "author": "builder", "packet": {"steps": new_steps, "next": "I wait for the name."}, "summary": "Dropped the choice: you will run it. Added the account name."}));
+    let r = call(
+        &db,
+        &c,
+        "update_question",
+        json!({"thread_id": q, "author": "builder", "packet": {"steps": new_steps, "next": "I wait for the name."}, "summary": "Dropped the choice: you will run it. Added the account name."}),
+    );
     assert_eq!(r["ok"], true, "{r}");
     assert_eq!(r["version"], 2);
     let meta = meta_of(&db, q);
@@ -273,7 +295,12 @@ fn a_permission_proposal_is_a_permission_question_and_old_ones_are_still_recogni
     let _env = ENV.lock().unwrap_or_else(|e| e.into_inner());
     let (d, db) = board();
     std::env::set_var("AGENTDESK_DATA", d.path());
-    let r = call(&db, &caller("a"), "propose_permission_rule", json!({"rule": "Bash(cargo fmt:*)", "reason": "formatting", "author": "b", "scope": "project", "project_dir": d.path().to_string_lossy()}));
+    let r = call(
+        &db,
+        &caller("a"),
+        "propose_permission_rule",
+        json!({"rule": "Bash(cargo fmt:*)", "reason": "formatting", "author": "b", "scope": "project", "project_dir": d.path().to_string_lossy()}),
+    );
     let tid = r["thread_id"].as_i64().unwrap();
     assert_eq!(kinds::kind_of(&db, tid).unwrap(), "permission");
     assert_eq!(meta_of(&db, tid)["type"], "permission");
@@ -308,6 +335,29 @@ fn the_steps_block_can_be_cut_out_for_a_view_that_draws_them_live() {
     let cut = kinds::without_steps(&md);
     assert!(!cut.contains("### Your steps") && !cut.contains("MIN_FREE_PERCENT") && cut.contains("### What the agent does next") && cut.contains("### Deadline"));
     assert_eq!(kinds::without_steps("no markers here"), "no markers here");
+}
+
+#[test]
+fn a_note_is_for_a_packet_or_a_permission_question_and_never_closes_either() {
+    let _env = ENV.lock().unwrap_or_else(|e| e.into_inner());
+    let (d, db) = board();
+    std::env::set_var("AGENTDESK_DATA", d.path());
+    let c = caller("s1");
+    let perm = call(
+        &db,
+        &c,
+        "propose_permission_rule",
+        json!({"rule": "Bash(cargo fmt:*)", "reason": "format", "author": "b", "scope": "project", "project_dir": d.path().to_string_lossy()}),
+    )["thread_id"]
+        .as_i64()
+        .unwrap();
+    let mid = kinds::note(&db, perm, "what does this allow exactly?").unwrap();
+    assert!(mid > 0);
+    assert_eq!(status(&db, perm), "open", "the rule is still waiting for Approve or Reject");
+    let ask = call(&db, &c, "ask_human", json!({"subject": "x", "body": "ok?", "author": "b"}))["thread_id"].as_i64().unwrap();
+    assert!(kinds::note(&db, ask, "hi").unwrap_err().to_string().contains("takes an answer, not a note"));
+    db.john_replies(perm, "decided").unwrap();
+    assert!(kinds::note(&db, perm, "late").unwrap_err().to_string().contains("not open"));
 }
 
 #[test]

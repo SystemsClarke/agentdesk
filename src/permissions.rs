@@ -168,12 +168,7 @@ pub fn decide(db: &Db, id: i64, approve: bool) -> Result<Value> {
             "UPDATE permission_proposals SET status='approved', decided_ts=:ts, settings_path=:p, backup=:b WHERE id=:id",
             &[(":ts", &now_iso()), (":p", &path.to_string_lossy().into_owned()), (":b", &backup), (":id", &id)],
         )?;
-        tell(
-            db,
-            &p,
-            &format!("Approved in AgentDesk: `{rule}` is now in `permissions.allow` of {}. Retry the action.", path.display()),
-            Some("Approved in AgentDesk."),
-        )?;
+        tell(db, &p, &format!("Approved in AgentDesk: `{rule}` is now in `permissions.allow` of {}. Retry the action.", path.display()), Some("Approved in AgentDesk."))?;
     } else {
         db.exec("UPDATE permission_proposals SET status='rejected', decided_ts=:ts WHERE id=:id", &[(":ts", &now_iso()), (":id", &id)])?;
         tell(db, &p, &format!("Rejected in AgentDesk: `{rule}` was not added. Do not retry the action; ask John another way."), Some("Rejected in AgentDesk."))?;

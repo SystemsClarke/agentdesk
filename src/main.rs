@@ -50,17 +50,19 @@ mod tests;
 #[cfg(test)]
 mod tests_concierge;
 #[cfg(test)]
-mod tests_kinds;
-#[cfg(test)]
 mod tests_goals;
 #[cfg(test)]
 mod tests_governor;
 #[cfg(test)]
 mod tests_identities;
 #[cfg(test)]
+mod tests_kinds;
+#[cfg(test)]
 mod tests_slack;
 #[cfg(test)]
 mod tests_slack_http;
+#[cfg(test)]
+mod tests_slack_kinds;
 #[cfg(test)]
 mod tests_swarm;
 mod tools;

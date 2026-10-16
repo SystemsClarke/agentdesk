@@ -87,14 +87,7 @@ fn screens(app: &mut App, w: u16, h: u16, runs: usize, long_thread: Option<i64>)
     for ch in state::CHANNELS {
         list.push((format!("list-{ch}"), Screen::List, ch));
     }
-    for (n, s) in [
-        ("prs", Screen::Prs),
-        ("jobs", Screen::Jobs),
-        ("sysop", Screen::Sysop),
-        ("who", Screen::Who),
-        ("options", Screen::Options),
-        ("agents", Screen::Agents),
-    ] {
+    for (n, s) in [("prs", Screen::Prs), ("jobs", Screen::Jobs), ("sysop", Screen::Sysop), ("who", Screen::Who), ("options", Screen::Options), ("agents", Screen::Agents)] {
         list.push((n.into(), s, "question"));
     }
     for (name, screen, ch) in list {

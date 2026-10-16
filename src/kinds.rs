@@ -150,7 +150,11 @@ pub fn validate_packet(spec: &Value) -> std::result::Result<Value, Vec<String>> 
                     bad.push(format!("steps[{i}] ({id}).input must be check, choice or note, got '{input}'"));
                     continue;
                 }
-                let options: Vec<String> = st.get("options").and_then(|o| o.as_array()).map(|o| o.iter().filter_map(|x| x.as_str()).map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect()).unwrap_or_default();
+                let options: Vec<String> = st
+                    .get("options")
+                    .and_then(|o| o.as_array())
+                    .map(|o| o.iter().filter_map(|x| x.as_str()).map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect())
+                    .unwrap_or_default();
                 if input == "choice" && !(2..=MAX_OPTIONS).contains(&options.len()) {
                     bad.push(format!("steps[{i}] ({id}) is a choice: it needs 2 to {MAX_OPTIONS} options"));
                     continue;
@@ -274,7 +278,13 @@ pub fn render_packet(intro: &str, spec: &Value, state: &Value) -> String {
     m.push_str(&format!("### Deadline\n**{}**: {}\n", spec["deadline"]["date"].as_str().unwrap_or(""), spec["deadline"]["reason"].as_str().unwrap_or("")));
     if let Some(w) = spec["work"].as_object() {
         m.push_str("\n### Show my work\n");
-        for (k, label) in [("recommendation", "Recommendation"), ("confidence", "Confidence"), ("ruled_out", "Ruled out"), ("would_change", "Would change my mind"), ("prepared_with", "Prepared with")] {
+        for (k, label) in [
+            ("recommendation", "Recommendation"),
+            ("confidence", "Confidence"),
+            ("ruled_out", "Ruled out"),
+            ("would_change", "Would change my mind"),
+            ("prepared_with", "Prepared with"),
+        ] {
             if let Some(v) = w.get(k).and_then(|v| v.as_str()) {
                 m.push_str(&format!("**{label}:** {v}\n\n"));
             }
@@ -364,11 +374,22 @@ pub fn step(db: &Db, thread_id: i64, step_id: &str, done: bool, value: Option<&s
     Ok(json!({"done": d, "total": t}))
 }
 
-/// John adds a free-text note to the packet (not tied to a step). Wakes the agent; the packet stays open.
-pub fn note(db: &Db, thread_id: i64, body: &str) -> Result<()> {
-    open_packet(db, thread_id)?;
-    db.reply(thread_id, JOHN, HUMAN, body, None, Some(&json!({"packet_event": {"note": true}})))?;
-    Ok(())
+/// John adds a free-text note to a packet (not tied to a step) or to a permission question. It wakes the agent and leaves the question
+/// open: a note is not the answer. Returns the message id. Typing in the window or replying on the phone is a note on these two kinds,
+/// because the answer to a packet is "finish" and the answer to a permission question is Approve or Reject.
+pub fn note(db: &Db, thread_id: i64, body: &str) -> Result<i64> {
+    match kind_of(db, thread_id)? {
+        PACKET => {
+            open_packet(db, thread_id)?;
+        }
+        PERMISSION => {
+            if db.scalar_str("SELECT status FROM threads WHERE id=:id", &[(":id", &thread_id)])?.as_deref() != Some("open") {
+                return err(format!("#{thread_id} is not open"));
+            }
+        }
+        _ => return err(format!("#{thread_id} takes an answer, not a note")),
+    }
+    db.reply(thread_id, JOHN, HUMAN, body, None, Some(&json!({"packet_event": {"note": true}})))
 }
 
 /// John finishes the packet. Closes it like an answer does (so the agent is acknowledged and woken), and says what was left undone.
@@ -381,7 +402,11 @@ pub fn finish(db: &Db, thread_id: i64) -> Result<()> {
         .filter(|s| !meta["state"][s["id"].as_str().unwrap_or("")]["done"].as_bool().unwrap_or(false))
         .map(|s| s["title"].as_str().unwrap_or("").to_string())
         .collect();
-    let body = if left.is_empty() { "Done: every step is ticked.".to_string() } else { format!("Finished with {} step(s) not ticked:\n{}", left.len(), left.iter().map(|l| format!("- {l}")).collect::<Vec<_>>().join("\n")) };
+    let body = if left.is_empty() {
+        "Done: every step is ticked.".to_string()
+    } else {
+        format!("Finished with {} step(s) not ticked:\n{}", left.len(), left.iter().map(|l| format!("- {l}")).collect::<Vec<_>>().join("\n"))
+    };
     db.john_replies(thread_id, &body)?;
     Ok(())
 }

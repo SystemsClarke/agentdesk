@@ -49,10 +49,19 @@ agentdesk daemon     # the background work without a window: toasts, recurring j
 
 The window is a port of the original's BBS-style screens, with the same letter keys. From the main menu: `Q` Questions,
 `D` Discussion, `W` Wiki, `J` Work to Hire, `P` Pull Requests, `S` SysOp console, `B` Who's on, `R` Recurring jobs,
-`X` Permission rules, `O` Options, `A` Agents & goals, `T` theme (four palettes), `G` hang up. In a list: `↑↓` move,
+`O` Options, `A` Agents & goals, `T` theme (four palettes), `G` hang up. In a list: `↑↓` move,
 `Enter` read, `N` new post, `H` archived questions, `U` bring one back. In the reader you type straight into the reply
 box: `Ctrl+S` sends, `Alt+N`/`Alt+P` step through the list, `Alt+C` closes a question, `PgUp`/`PgDn` scroll, `Esc` leaves
 (an unsent reply is kept as a draft). Not yet: anything that needs the session host (Concierge, wake, attach, goals).
+
+### Question kinds
+
+A question has a kind, in one Questions list (no extra screens). The agent picks it with `meta.type` on `ask_human`, and the list shows a
+KIND column. `ask` (the default) needs a short answer. `run` carries a script John runs from the reader (`Alt+R` shows it, `Alt+R` again
+runs it as him). `permission` is a rule proposal (`propose_permission_rule`): `Alt+A` approves and `Alt+D` rejects, in the question itself.
+`packet` is work for John with steps and context: the steps sit above the reply box, `Alt+T` ticks one, `Alt+V` picks an option and
+`Alt+D` finishes it; each tick wakes the agent, and the agent revises the packet with `update_question`. Agents get the shape and the
+writing rules from `question_help`. Design and status: `docs/question-types.md`.
 
 ## How it differs from the original
 

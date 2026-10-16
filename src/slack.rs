@@ -246,15 +246,24 @@ impl Bridge {
         let body = db.scalar_str("SELECT body FROM messages WHERE thread_id=:t ORDER BY id DESC LIMIT 1", &[(":t", &tid)])?.unwrap_or_default();
         let asker = label(q["opened_by"].as_str().filter(|a| !a.is_empty()).unwrap_or("an agent"));
         let subject = q["subject"].as_str().unwrap_or("");
+        // A packet's steps are wrapped in hidden markers for the window; they are not for the phone.
+        let body = body.replace(crate::kinds::STEPS_OPEN, "").replace(crate::kinds::STEPS_CLOSE, "");
+        let kind = crate::kinds::kind_of(db, tid).unwrap_or(crate::kinds::ASK);
+        let (noun, hint) = match kind {
+            crate::kinds::PACKET => ("Packet", "Reply *in this thread* to add a note. Tick steps and finish it in the AgentDesk window."),
+            crate::kinds::RUN => ("Run request", "Run the script in the AgentDesk window (Alt+R twice), or reply *in this thread* with what happened."),
+            crate::kinds::PERMISSION => ("Permission rule", "Decide it in the AgentDesk window: Alt+A approves, Alt+D rejects. A reply here is only a note."),
+            _ => ("Question", "Reply *in this thread* to answer. Photos work too."),
+        };
         let head = match prev {
-            None => format!("*☎ Question #{tid}* from *{}*\n*{}*", slackfmt::esc(&asker), slackfmt::inline(subject)),
+            None => format!("*☎ {noun} #{tid}* from *{}*\n*{}*", slackfmt::esc(&asker), slackfmt::inline(subject)),
             Some(_) => format!("*↩ Follow-up on #{tid}* from *{}*", slackfmt::esc(&asker)),
         };
         let mut blocks = vec![json!({"type": "section", "text": {"type": "mrkdwn", "text": head}}), json!({"type": "divider"})];
         blocks.extend(slackfmt::md_to_slack(&body));
-        blocks.push(json!({"type": "context", "elements": [{"type": "mrkdwn", "text": "Reply *in this thread* to answer. Photos work too."}]}));
+        blocks.push(json!({"type": "context", "elements": [{"type": "mrkdwn", "text": hint}]}));
         blocks.truncate(50);
-        let text = format!("Question #{tid} from {asker}: {subject} · {}", slackfmt::fallback_text(&body, 200));
+        let text = format!("{noun} #{tid} from {asker}: {subject} · {}", slackfmt::fallback_text(&body, 200));
         let prev_ts = prev.and_then(|p| p["ts"].as_str());
         let ts = self.chat.post(&self.dm, prev_ts, Some(blocks), &text, prev.is_some())?;
         Ok(prev_ts.map(String::from).unwrap_or(ts))
@@ -375,8 +384,13 @@ impl Bridge {
         if body.trim().is_empty() {
             return Ok(());
         }
-        let mid = db.john_replies(tid, &body)?;
+        // On a packet or a permission question a reply is a note: the answer is Finish, or Approve / Reject, and those are in the window.
+        let noted = matches!(crate::kinds::kind_of(db, tid).unwrap_or(crate::kinds::ASK), crate::kinds::PACKET | crate::kinds::PERMISSION);
+        let mid = if noted { crate::kinds::note(db, tid, &body)? } else { db.john_replies(tid, &body)? };
         db.exec("UPDATE messages SET meta=:m WHERE id=:i", &[(":m", &crate::db::dumps(Some(&json!({"via": "slack"})))), (":i", &mid)])?;
+        if noted {
+            return say(&format!("Recorded as a note on #{tid}, and the agent is told. It stays open: finish or decide it in the AgentDesk window."), Some(thread_ts));
+        }
         say(&format!("Recorded as your answer to #{tid}. Thanks!"), Some(thread_ts))
     }
 }
