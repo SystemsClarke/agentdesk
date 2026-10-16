@@ -165,8 +165,13 @@ impl Os {
 /// The program and arguments that open a terminal window running `<exe> tui`. `over` is `AGENTDESK_TERMINAL` (a terminal command line,
 /// split on spaces, that gets `<exe> tui` appended); `have` says whether a program is on the PATH. None when no terminal is found.
 pub fn terminal_command(os: Os, exe: &str, over: Option<&str>, have: &dyn Fn(&str) -> bool) -> Option<Vec<String>> {
+    terminal_command_args(os, exe, over, have, &["tui".to_string()])
+}
+
+/// Like `terminal_command`, but the terminal runs `<exe> <args...>` (`["open", "12"]` for a clicked toast).
+pub fn terminal_command_args(os: Os, exe: &str, over: Option<&str>, have: &dyn Fn(&str) -> bool, args: &[String]) -> Option<Vec<String>> {
     let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<String>>();
-    let tail = [exe.to_string(), "tui".to_string()];
+    let tail: Vec<String> = std::iter::once(exe.to_string()).chain(args.iter().cloned()).collect();
     if let Some(o) = over.map(str::trim).filter(|o| !o.is_empty()) {
         return Some(o.split_whitespace().map(str::to_string).chain(tail).collect());
     }
@@ -180,8 +185,9 @@ pub fn terminal_command(os: Os, exe: &str, over: Option<&str>, have: &dyn Fn(&st
             }
         }
         Os::Mac => {
-            let script =
-                format!("tell application \"Terminal\"\nactivate\ndo script \"'{}' tui\"\nend tell", exe.replace('\'', "'\\''").replace('\\', "\\\\").replace('"', "\\\""));
+            let esc = |t: &str| t.replace('\'', "'\\''").replace('\\', "\\\\").replace('"', "\\\"");
+            let rest: String = args.iter().map(|a| format!(" {}", esc(a))).collect();
+            let script = format!("tell application \"Terminal\"\nactivate\ndo script \"'{}'{rest}\"\nend tell", esc(exe));
             Some(vec!["osascript".into(), "-e".into(), script])
         }
         Os::Linux => {
@@ -359,6 +365,19 @@ mod tests {
     fn questions_come_from_board_rows() {
         let rows = vec![json!({"thread_id": 9, "subject": "s"}), json!({"id": 4, "subject": "t"}), json!({"subject": "no id"})];
         assert_eq!(questions_from_rows(&rows), vec![Question { id: 9, subject: "s".into() }, Question { id: 4, subject: "t".into() }]);
+    }
+
+    #[test]
+    fn terminal_command_can_carry_other_arguments() {
+        let all = |_: &str| true;
+        let none = |_: &str| false;
+        let args = ["open".to_string(), "12".to_string()];
+        let w = terminal_command_args(Os::Windows, "ad.exe", None, &all, &args).unwrap();
+        assert_eq!(&w[w.len() - 3..], ["ad.exe", "open", "12"]);
+        let o = terminal_command_args(Os::Linux, "ad", Some("alacritty -e"), &none, &args).unwrap();
+        assert_eq!(o, ["alacritty", "-e", "ad", "open", "12"]);
+        let m = terminal_command_args(Os::Mac, "/bin/ad", None, &none, &args).unwrap();
+        assert!(m[2].contains("do script \"'/bin/ad' open 12\""), "{}", m[2]);
     }
 
     #[test]

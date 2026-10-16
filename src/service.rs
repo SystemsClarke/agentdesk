@@ -102,7 +102,7 @@ fn toasts(db: &Db, known: &mut HashSet<i64>, last_msg: &mut i64) {
     for q in &now {
         let id = q["thread_id"].as_i64().unwrap_or(0);
         if known.insert(id) {
-            notify::toast(&format!("Question from {}", q["opened_by"].as_str().unwrap_or("an agent")), &format!("#{id} {}", q["subject"].as_str().unwrap_or("")));
+            notify::toast(&format!("Question from {}", q["opened_by"].as_str().unwrap_or("an agent")), &format!("#{id} {}", q["subject"].as_str().unwrap_or("")), Some(id));
         }
     }
     let ids: HashSet<i64> = now.iter().filter_map(|q| q["thread_id"].as_i64()).collect();
@@ -115,6 +115,7 @@ fn toasts(db: &Db, known: &mut HashSet<i64>, last_msg: &mut i64) {
             notify::toast(
                 &format!("{} from {}", if done { "Done" } else { "Follow-up" }, f["author"].as_str().unwrap_or("agent")),
                 &format!("#{} {}: {first}", f["thread_id"], f["subject"].as_str().unwrap_or("")),
+                f["thread_id"].as_i64(),
             );
         }
         *last_msg = max;

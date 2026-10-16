@@ -608,6 +608,11 @@ impl App {
         self.reload_nav(None);
     }
 
+    /// Starts on the reader for `tid` (`agentdesk open`); Esc goes back to that channel's list. A thread that is gone leaves the main menu with a note.
+    pub fn open_at(&mut self, tid: i64) {
+        self.open_thread(tid, Screen::List);
+    }
+
     fn open_thread(&mut self, tid: i64, back: Screen) {
         self.set_draft_aside();
         let Some(d) = Detail::load(&self.db, tid) else {
@@ -1799,10 +1804,13 @@ impl App {
     }
 }
 
-pub fn run() -> Result<()> {
+pub fn run(thread: Option<i64>) -> Result<()> {
     let db = Db::open(&paths::db_path())?;
     db.init()?;
     let mut app = App::with_db(db);
+    if let Some(t) = thread {
+        app.open_at(t);
+    }
     // The window is a client: the core (`agentdesk daemon`) owns the sessions, jobs and the Slack bridge. Start it if it is not running.
     if let Err(e) = crate::daemon::ensure(Duration::from_secs(15)) {
         eprintln!("agentdesk: {e}. The window works on the board, but nothing will run agents or send toasts until the core is up (`agentdesk core start`).");
@@ -1961,13 +1969,16 @@ fn parse_key(tok: &str) -> Vec<KeyEvent> {
 
 /// Renders the window headlessly: opens the board, presses `keys` (space-separated: `q`, `enter`, `esc`, `ctrl+s`,
 /// `alt+c`, `t:text~with~spaces`), and returns the screen as text (or JSON with the mode and the flash line).
-pub fn snapshot(size: &str, keys: &str, as_json: bool) -> Result<String> {
+pub fn snapshot(size: &str, keys: &str, as_json: bool, thread: Option<i64>) -> Result<String> {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
     let (w, h) = size.split_once('x').and_then(|(w, h)| Some((w.parse::<u16>().ok()?, h.parse::<u16>().ok()?))).unwrap_or((110, 36));
     let db = Db::open(&paths::db_path())?;
     db.init()?;
     let mut app = App::with_db(db);
+    if let Some(tid) = thread {
+        app.open_at(tid);
+    }
     let mut t = Terminal::new(TestBackend::new(w, h))?;
     for tok in keys.split_whitespace() {
         for k in parse_key(tok) {

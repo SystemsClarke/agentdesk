@@ -33,18 +33,18 @@ fn run_tray() -> Result<()> {
 
 /// Opens the terminal window running `agentdesk tui`. Fire and forget: the terminal outlives the tray.
 fn open_window() -> Result<()> {
+    open_terminal(&["tui".to_string()])
+}
+
+/// Opens a terminal window running `agentdesk <args>` (`open 12` for a clicked toast). Fire and forget.
+pub fn open_terminal(args: &[String]) -> Result<()> {
     let exe = std::env::current_exe()?.display().to_string();
     let over = std::env::var("AGENTDESK_TERMINAL").ok();
-    let Some(cmd) = model::terminal_command(model::Os::current(), &exe, over.as_deref(), &model::which) else {
+    let Some(cmd) = model::terminal_command_args(model::Os::current(), &exe, over.as_deref(), &model::which, args) else {
         anyhow::bail!("no terminal found (set AGENTDESK_TERMINAL to a terminal command line)");
     };
-    let mut c = std::process::Command::new(&cmd[0]);
+    let mut c = crate::paths::new_command(&cmd[0]); // no console flash on Windows
     c.args(&cmd[1..]).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        c.creation_flags(0x0800_0000); // CREATE_NO_WINDOW: no flash of the cmd that runs `start`
-    }
     c.spawn().map_err(|e| anyhow::anyhow!("could not start {}: {e}", cmd[0]))?;
     Ok(())
 }
