@@ -23,9 +23,9 @@ use editor::Editor;
 use ratatui::crossterm::event::{self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::crossterm::execute;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::Style;
+use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 use ratatui::Frame;
 use seg::{palettes, Palette};
 use serde_json::{json, Value};
@@ -1904,7 +1904,12 @@ impl App {
         f.render_widget(Clear, area);
         f.render_widget(
             Paragraph::new(lines).block(
-                Block::default().borders(Borders::ALL).border_style(Style::default().fg(border)).title(title).style(Style::default().bg(pal.color("bg")).fg(pal.color("fg"))),
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
+                    .border_style(Style::default().fg(border))
+                    .title(title)
+                    .style(Style::default().bg(pal.color("bg")).fg(pal.color("fg"))),
             ),
             area,
         );
@@ -1914,6 +1919,7 @@ impl App {
         let border = if focus { pal.color("ye") } else { pal.color("rule") };
         let inner = Block::default()
             .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(border))
             .title(title.to_string())
             .style(Style::default().bg(pal.color("bg")).fg(pal.color("fg")));
@@ -1927,7 +1933,12 @@ impl App {
         }
         match self.screen {
             Screen::Read => {
-                self.editor_box(f, area, " Reply (Ctrl+S sends, Esc leaves the draft) ", &self.reply, pal, true);
+                let to = self.detail.as_ref().and_then(|d| d.messages.iter().rev().find(|m| m.kind != "read-receipt" && m.author != "john").map(|m| m.author.clone()));
+                let title = match to {
+                    Some(a) => format!(" ✎ Reply to {a} "),
+                    None => " ✎ Reply ".to_string(),
+                };
+                self.editor_box(f, area, &title, &self.reply, pal, true);
             }
             Screen::Compose => {
                 let parts = Layout::default().direction(Direction::Vertical).constraints([Constraint::Length(3), Constraint::Min(3)]).split(area);
@@ -1935,7 +1946,7 @@ impl App {
                 if self.subject_focus {
                     f.set_cursor_position((parts[0].x + 1 + self.subject.chars().count().min(parts[0].width.saturating_sub(3) as usize) as u16, parts[0].y + 1));
                 }
-                self.editor_box(f, parts[1], " Message (Ctrl+S posts) ", &self.reply, pal, !self.subject_focus);
+                self.editor_box(f, parts[1], " ✎ Message ", &self.reply, pal, !self.subject_focus);
             }
             Screen::Ask => {
                 self.boxed(f, area, " Answer ", &self.subject, pal, true);
@@ -1950,15 +1961,37 @@ impl App {
         let inner_w = area.width.saturating_sub(2) as usize;
         let top = (ed.row + 1).saturating_sub(inner_h);
         let left = (ed.col + 1).saturating_sub(inner_w.max(1));
-        let text: Vec<Line> = ed.lines.iter().skip(top).take(inner_h).map(|l| Line::raw(l.chars().skip(left).take(inner_w).collect::<String>())).collect();
-        let border = if focus { pal.color("ye") } else { pal.color("rule") };
+        let blank = ed.is_blank();
+        let text: Vec<Line> = if blank && focus {
+            // a dim line says what the box is for, and goes the moment a key is typed
+            let hint = if self.screen == Screen::Read { "Type to reply · Ctrl+S sends · Esc leaves the draft" } else { "Write the message · Ctrl+S posts" };
+            vec![Line::styled(hint.chars().take(inner_w).collect::<String>(), Style::default().fg(pal.color("fa")).add_modifier(Modifier::ITALIC))]
+        } else {
+            ed.lines.iter().skip(top).take(inner_h).map(|l| Line::raw(l.chars().skip(left).take(inner_w).collect::<String>())).collect()
+        };
+        // typing lights the border; the bottom edge says what Ctrl+S will do, and how much is written
+        let border = if !focus {
+            pal.color("rule")
+        } else if blank {
+            pal.color("mu")
+        } else {
+            pal.color("ye")
+        };
+        let foot = if blank {
+            String::new()
+        } else {
+            let t = ed.text();
+            format!(" {} words · {} lines · Ctrl+S sends ", t.split_whitespace().count(), ed.lines.len())
+        };
         f.render_widget(Clear, area);
         f.render_widget(
             Paragraph::new(text).block(
                 Block::default()
                     .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
                     .border_style(Style::default().fg(border))
-                    .title(title.to_string())
+                    .title(Line::styled(title.to_string(), Style::default().fg(border).add_modifier(Modifier::BOLD)))
+                    .title_bottom(Line::styled(foot, Style::default().fg(pal.color("mu"))).right_aligned())
                     .style(Style::default().bg(pal.color("bg")).fg(pal.color("fg"))),
             ),
             area,

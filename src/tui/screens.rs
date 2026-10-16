@@ -1042,9 +1042,9 @@ impl App {
             Some(i) => format!("{} of {} in {}", i + 1, list.len(), title_of(ch)),
             None => title_of(ch).to_string(),
         };
-        let head = format!("═ Msg #{} ═ {pos} ", t.id);
+        let head = format!("─ Msg #{} ─ {pos} ", t.id);
         let mut l: Vec<L> = vec![
-            vec![s("╔", "rule"), s(head.clone(), "ye b"), s(format!("{}╗", rep('═', w.saturating_sub(2 + head.chars().count()))), "rule")],
+            vec![s("╭", "rule"), s(head.clone(), "ye b"), s(format!("{}╮", rep('─', w.saturating_sub(2 + head.chars().count()))), "rule")],
             vec![
                 s("  From: ", "mu"),
                 s(fit(&t.opened_by, 30), hue(&t.opened_by)),
@@ -1078,7 +1078,7 @@ impl App {
             date.push(s("SlackNet", "pu"));
         }
         l.push(date);
-        l.push(vec![s(format!("╚{}╝", rep('═', w.saturating_sub(2))), "rule")]);
+        l.push(vec![s(format!("╰{}╯", rep('─', w.saturating_sub(2))), "rule")]);
         // The kind's panel (a packet's steps) sits last, just above the reply box, where the reader opens, so it is always in view.
         let panel = self.kind_panel(w);
         // Each message's Markdown is rendered once (per width) and kept: rendering a long thread is the slow part, and a frame
