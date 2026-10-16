@@ -106,6 +106,7 @@ class Board:
             "AGENTDESK_DATA": self.data,
             "AGENTDESK_NO_TOAST": "1",
             "AGENTDESK_NO_UPDATE_CHECK": "1",
+            "AGENTDESK_NO_BACKUP": "1",
             "AGENTDESK_NO_MODEL_DOWNLOAD": "1",
             "AGENTDESK_VAULT": os.path.join(self.dir, "vault"),
             "HOME": self.home,

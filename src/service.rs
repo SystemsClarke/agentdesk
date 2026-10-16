@@ -12,6 +12,8 @@ use std::time::{Duration, Instant};
 
 /// Settled questions older than this are filed (written to the vault, status `archived`).
 const SWEEP_AFTER_MINUTES: i64 = 24 * 60;
+/// How old the newest snapshot may be before the core takes another.
+const BACKUP_EVERY: Duration = Duration::from_secs(55 * 60);
 
 pub fn run(stop: Arc<AtomicBool>) {
     // the ops console lives as long as this loop
@@ -25,6 +27,8 @@ pub fn run(stop: Arc<AtomicBool>) {
     let mut last_human = db.scalar_i64("SELECT COALESCE(MAX(id),0) FROM messages WHERE author_kind='human'", &[]).ok().flatten().unwrap_or(0);
     let start = Instant::now();
     let mut t_update = None::<Instant>;
+    let mut t_backup = None::<Instant>;
+    let backing_up = Arc::new(AtomicBool::new(false));
     let mut t_super = None::<Instant>;
     let mut supervisor = crate::supervisor::Supervisor::new();
     let (mut t_jobs, mut t_prs, mut t_usage, mut t_sweep, mut t_toast) = (None::<Instant>, None::<Instant>, None::<Instant>, None::<Instant>, None::<Instant>);
@@ -64,12 +68,33 @@ pub fn run(stop: Arc<AtomicBool>) {
         if due(&mut t_sweep, Duration::from_secs(60), Duration::from_secs(10)) {
             sweep(&db);
         }
+        // The hourly backup runs in the core: a scheduled task would start the executable from outside, which a security product may not trust.
+        if due(&mut t_backup, Duration::from_secs(600), Duration::from_secs(120)) && std::env::var_os("AGENTDESK_NO_BACKUP").is_none() {
+            backup_if_due(&backing_up);
+        }
         if due(&mut t_update, Duration::from_secs(4 * 3600), Duration::from_secs(30)) && std::env::var_os("AGENTDESK_NO_UPDATE_CHECK").is_none() {
             crate::update::check_and_record();
         }
         std::thread::sleep(Duration::from_millis(250));
     }
     supervisor.shutdown(); // its sessions end with it; the next supervisor resumes them
+}
+
+/// Snapshots the board (and files the vault) when the newest snapshot is an hour old, on its own thread so the loop keeps ticking.
+fn backup_if_due(running: &Arc<AtomicBool>) {
+    let newest = std::fs::read_dir(paths::backup_dir()).ok().into_iter().flatten().flatten().filter_map(|e| e.metadata().ok()?.modified().ok()).max();
+    let fresh = newest.is_some_and(|t| t.elapsed().is_ok_and(|age| age < BACKUP_EVERY));
+    if fresh || running.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let running = running.clone();
+    std::thread::spawn(move || {
+        match Db::open(&paths::db_path()).and_then(|db| crate::backup::run_with(&db, false)) {
+            Ok(note) => paths::log("INFO", &format!("backup: {}", note.lines().next().unwrap_or(""))),
+            Err(e) => paths::log("WARN", &format!("backup failed: {e}")),
+        }
+        running.store(false, Ordering::SeqCst);
+    });
 }
 
 fn toasts(db: &Db, known: &mut HashSet<i64>, last_msg: &mut i64) {
@@ -135,5 +160,31 @@ fn ack_watch(db: &Db, last_human: &mut i64) {
     }
     if let Ok(Some(max)) = db.scalar_i64("SELECT MAX(id) FROM messages WHERE author_kind='human'", &[]).map(|m| m.filter(|m| *m > *last_human)) {
         *last_human = max;
+    }
+}
+
+#[cfg(test)]
+mod backup_tests {
+    use super::*;
+    use crate::tests_identities::Env;
+
+    #[test]
+    fn a_fresh_snapshot_means_no_new_one_and_no_thread() {
+        let _e = Env::new();
+        std::fs::create_dir_all(paths::backup_dir()).unwrap();
+        std::fs::write(paths::backup_dir().join("agentdesk-20200101T000000.db"), b"x").unwrap();
+        let running = Arc::new(AtomicBool::new(false));
+        backup_if_due(&running);
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(!running.load(Ordering::SeqCst), "nothing was started");
+        assert_eq!(std::fs::read_dir(paths::backup_dir()).unwrap().count(), 1, "no second snapshot");
+    }
+
+    #[test]
+    fn a_backup_in_progress_is_not_started_twice() {
+        let _e = Env::new();
+        let running = Arc::new(AtomicBool::new(true));
+        backup_if_due(&running);
+        assert!(!paths::backup_dir().exists() || std::fs::read_dir(paths::backup_dir()).unwrap().count() == 0);
     }
 }
