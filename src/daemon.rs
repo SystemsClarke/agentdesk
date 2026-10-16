@@ -95,11 +95,10 @@ pub fn status_json() -> Value {
 }
 
 /// Starts `<exe> daemon` detached from this process and its terminal.
-fn spawn_detached() -> Result<()> {
-    let exe = std::env::var("AGENTDESK_CORE_EXE").ok().filter(|e| !e.is_empty()).map(PathBuf::from).map(Ok).unwrap_or_else(std::env::current_exe)?;
+fn spawn_detached(exe: &std::path::Path) -> Result<()> {
     #[cfg(windows)]
     {
-        spawn_detached_windows(&exe)
+        spawn_detached_windows(exe)
     }
     #[cfg(not(windows))]
     {
@@ -146,10 +145,16 @@ fn spawn_detached_windows(exe: &std::path::Path) -> Result<()> {
 
 /// The core, started if it is not running; waits up to `wait` for it to hold its lock.
 pub fn ensure(wait: Duration) -> Result<Info> {
+    let exe = std::env::var("AGENTDESK_CORE_EXE").ok().filter(|e| !e.is_empty()).map(PathBuf::from).map(Ok).unwrap_or_else(std::env::current_exe)?;
+    ensure_at(&exe, wait)
+}
+
+/// Like `ensure`, starting the core from `exe`: after a self-update the running program's own path may name the parked old build.
+pub fn ensure_at(exe: &std::path::Path, wait: Duration) -> Result<Info> {
     if let Some(i) = status() {
         return Ok(i);
     }
-    spawn_detached()?;
+    spawn_detached(exe)?;
     let start = Instant::now();
     while start.elapsed() < wait {
         if let Some(i) = status() {
