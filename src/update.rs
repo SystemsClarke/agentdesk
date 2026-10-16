@@ -83,7 +83,7 @@ fn rollback_copy(exe: &std::path::Path) -> std::path::PathBuf {
 
 /// True when the file at `exe` exists and answers `--version` with `agentdesk <version>`.
 fn works(exe: &std::path::Path, version: &str) -> bool {
-    std::process::Command::new(exe)
+    crate::paths::new_command(exe)
         .arg("--version")
         .output()
         .map(|o| o.status.success() && String::from_utf8_lossy(&o.stdout).trim() == format!("agentdesk {version}"))
