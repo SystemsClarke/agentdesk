@@ -67,6 +67,7 @@ mod ui_api;
 mod update;
 mod usage;
 mod vault;
+mod vault_search;
 mod vault_threads;
 mod web;
 
