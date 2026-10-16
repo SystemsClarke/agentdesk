@@ -652,8 +652,7 @@ impl App {
         self.runner_close(); // the pane belongs to one thread
         if d.kind == kinds::RUN {
             // A run question shows its script at once (nothing runs until Alt+R is pressed a second time).
-            let msgs: Vec<(String, String)> = d.messages.iter().map(|m| (m.author.clone(), m.body.clone())).collect();
-            let blocks = runner::extract_blocks(&msgs);
+            let blocks = runner::extract_blocks(&d.run_msgs);
             if !blocks.is_empty() {
                 self.runner = Some(runner::Runner::new(blocks));
             }
@@ -1226,7 +1225,7 @@ impl App {
     /// Alt+R: the first press opens the runner pane on the thread's scripts and shows the picked one; the next runs it.
     fn runner_key_r(&mut self) {
         if self.runner.is_none() {
-            let msgs: Vec<(String, String)> = self.detail.as_ref().map(|d| d.messages.iter().map(|m| (m.author.clone(), m.body.clone())).collect()).unwrap_or_default();
+            let msgs: Vec<(String, String)> = self.detail.as_ref().map(|d| d.run_msgs.clone()).unwrap_or_default();
             let blocks = runner::extract_blocks(&msgs);
             if blocks.is_empty() {
                 return self.say("No script in this thread: it needs a fenced ```powershell, ```bash, ```sh or ```cmd block.", "mu");

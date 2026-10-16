@@ -1209,6 +1209,9 @@ impl App {
                     }
                 }
                 l.push(vec![s(" Alt+↑↓ step · Alt+T tick (reply box = its note) · Alt+V choose · Alt+D finish", "fa")]);
+                if self.runner.is_none() && !super::runner::extract_blocks(&d.run_msgs).is_empty() {
+                    l.push(vec![s(" ▶ RUN ", "cy b"), s("commands in the steps: Alt+R shows one, Alt+R again runs it as you (Alt+1..9 picks another).", "mu")]);
+                }
             }
             kinds::PERMISSION => {
                 if let Some(r) = self.st.rules.iter().find(|r| Some(r.thread_id) == Some(self.read_tid)) {
@@ -1229,8 +1232,7 @@ impl App {
             }
             _ => {
                 // Any question with a runnable script says so, so nobody has to know the key.
-                let msgs: Vec<(String, String)> = d.messages.iter().map(|m| (m.author.clone(), m.body.clone())).collect();
-                if self.runner.is_none() && !super::runner::extract_blocks(&msgs).is_empty() {
+                if self.runner.is_none() && !super::runner::extract_blocks(&d.run_msgs).is_empty() {
                     l.push(vec![s(" ▶ RUN ", "cy b"), s("a script is in this thread: Alt+R shows it, Alt+R again runs it as you (or click Alt+R in the bar below).", "mu")]);
                 }
             }

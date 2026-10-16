@@ -273,6 +273,30 @@ fn a_question_with_a_script_says_so_and_does_not_send_the_output_by_itself() {
 }
 
 #[test]
+fn a_command_inside_a_packet_step_can_be_run_from_the_reader() {
+    let (_d, mut a) = app();
+    let lang = if cfg!(windows) { "cmd" } else { "sh" };
+    let mut args = packet_args();
+    args["meta"]["packet"]["steps"][0]["detail"] = json!(format!("Run this:\n```{lang}\necho from-a-packet-step\n```"));
+    let pk = ask(&a, args);
+    a.reload();
+    press(&mut a, 'q');
+    a.on_key(key(KeyCode::Enter));
+    let s = screen(&mut a, 120, 50);
+    assert!(s.contains("▶ RUN") && s.contains("commands in the steps"), "the packet says a command can be run: {s}");
+    assert!(!s.contains("echo from-a-packet-step\n```"), "the steps are still drawn live, once");
+    a.on_key(alt('r'));
+    let s = screen(&mut a, 120, 50);
+    assert!(s.contains("Script 1/1") && s.contains("> echo from-a-packet-step"), "the command from the step is shown, not run: {s}");
+    assert!(!screen(&mut a, 120, 50).contains("commands in the steps"), "the hint goes once the pane is open");
+    a.on_key(alt('r'));
+    wait_for_runner(&mut a);
+    let s = screen(&mut a, 120, 50);
+    assert!(s.contains("from-a-packet-step") && s.contains("done (exit 0)"), "{s}");
+    assert_eq!(status_of(&a, pk), "open", "a command run inside a packet does not close it or send anything");
+}
+
+#[test]
 fn the_packet_key_hint_fits_the_default_window_width() {
     let (_d, mut a) = app();
     ask(&a, packet_args());

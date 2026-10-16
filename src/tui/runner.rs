@@ -43,7 +43,7 @@ pub fn shell_for(lang: &str) -> Option<Shell> {
 pub fn extract_blocks(msgs: &[(String, String)]) -> Vec<Block> {
     let mut out = Vec::new();
     for (author, body) in msgs.iter().rev() {
-        let (mut lang, mut buf): (Option<String>, Vec<&str>) = (None, vec![]);
+        let (mut lang, mut buf, mut indent): (Option<String>, Vec<&str>, usize) = (None, vec![], 0);
         let mut found: Vec<Block> = Vec::new();
         for line in body.lines() {
             let t = line.trim_start();
@@ -51,6 +51,7 @@ pub fn extract_blocks(msgs: &[(String, String)]) -> Vec<Block> {
                 None => {
                     if let Some(rest) = t.strip_prefix("```") {
                         lang = Some(rest.trim().to_string());
+                        indent = line.len() - t.len(); // a fence inside an indented block (a packet's step) keeps its body indented
                         buf.clear();
                     }
                 }
@@ -61,7 +62,8 @@ pub fn extract_blocks(msgs: &[(String, String)]) -> Vec<Block> {
                         }
                         lang = None;
                     } else {
-                        buf.push(line);
+                        let lead = line.len() - line.trim_start().len();
+                        buf.push(&line[lead.min(indent)..]);
                     }
                 }
             }
@@ -306,6 +308,15 @@ mod tests {
         assert_eq!((b[1].lang.as_str(), b[1].script.as_str()), ("powershell", "Get-Date\nWrite-Output hi"));
         assert!(extract_blocks(&msgs(&[("a", "```text\nnope\n```")])).is_empty());
         assert!(extract_blocks(&msgs(&[("a", "```cmd\n   \n```")])).is_empty(), "an empty block is not a script");
+    }
+
+    #[test]
+    fn a_fenced_block_loses_the_indent_of_its_fence() {
+        // inside a packet, a step's detail is indented two spaces: the script must not be
+        let body = "Run this:\n  ```sh\n  echo one\n    echo nested\n  ```\n```sh\necho flush\n```";
+        let blocks = extract_blocks(&[("a".to_string(), body.to_string())]);
+        let scripts: Vec<&str> = blocks.iter().map(|b| b.script.as_str()).collect();
+        assert_eq!(scripts, ["echo one\n  echo nested", "echo flush"]);
     }
 
     #[test]

@@ -85,6 +85,9 @@ pub struct Detail {
     pub kind: String,
     /// The thread's meta: a packet's spec and John's progress live here.
     pub meta: Value,
+    /// `(author, body)` of every message with nothing cut out, for the script runner: a packet's steps are cut out of the displayed
+    /// first message (the window draws them live), but a command inside a step must still be runnable.
+    pub run_msgs: Vec<(String, String)>,
 }
 
 impl Detail {
@@ -115,7 +118,8 @@ impl Detail {
                 Msg { author: m["author"].as_str().unwrap_or("").into(), kind, ts: ts(&m["ts"]), body, via: meta["via"].as_str().unwrap_or("").into(), rev }
             })
             .collect();
-        Some(Detail { thread, messages, kind: tkind, meta: tmeta })
+        let run_msgs = doc["messages"].as_array()?.iter().map(|m| (m["author"].as_str().unwrap_or("").to_string(), m["body"].as_str().unwrap_or("").to_string())).collect();
+        Some(Detail { thread, messages, kind: tkind, meta: tmeta, run_msgs })
     }
 }
 
