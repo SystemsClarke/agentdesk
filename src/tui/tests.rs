@@ -228,6 +228,7 @@ fn the_folder_step_lists_the_folders_in_use_filters_them_and_enter_takes_the_pic
     assert!(a.subject.ends_with("beta-repo"), "Tab fills the box: {}", a.subject);
     a.on_key(key(KeyCode::Enter));
     assert_eq!(a.answers.get(1).map(|p| p.ends_with("beta-repo")), Some(true), "Enter takes it: {:?}", a.answers);
+}
 
 // ---- the mouse
 
@@ -372,7 +373,9 @@ fn a_click_after_a_key_in_the_same_batch_is_ignored_until_the_next_draw() {
     screen(&mut a, 110, 30);
     a.click(x, y + 2, Instant::now());
     assert_eq!(a.sel_now(), 2);
+}
 
+#[test]
 fn open_at_starts_on_the_reader_for_that_thread() {
     let (_d, mut a) = app();
     let q = a.db.start_thread("question", "Deploy to prod?", "builder", "agent", "Ship now?", None, None).unwrap();
@@ -409,7 +412,9 @@ fn open_and_tui_thread_arguments_parse() {
     for bad in [&["open"][..], &["open", "abc"], &["open", "0"], &["open", "-1"], &["tui", "--thread"], &["tui", "--thread", "x"]] {
         assert!(p(bad).is_err(), "{bad:?}");
     }
+}
 
+#[test]
 fn a_saved_vscode_theme_is_resolved_when_the_scan_lands_and_an_unknown_one_falls_back_silently() {
     use super::vscode_themes::set_scanned_for_test;
     static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());

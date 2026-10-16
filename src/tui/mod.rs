@@ -1989,11 +1989,9 @@ fn parse_key(tok: &str) -> Vec<KeyEvent> {
 }
 
 /// Renders the window headlessly: opens the board, presses `keys` (space-separated: `q`, `enter`, `esc`, `ctrl+s`,
-/// `alt+c`, `t:text~with~spaces`), and returns the screen as text (or JSON with the mode and the flash line).
+/// `alt+c`, `t:text~with~spaces`, `wait:300` to let a started script print), and returns the screen as text (or JSON with the mode and
+/// the flash line). `thread` opens the reader on that thread first.
 pub fn snapshot(size: &str, keys: &str, as_json: bool, thread: Option<i64>) -> Result<String> {
-
-/// `alt+c`, `t:text~with~spaces`, `wait:300` to let a started script print), and returns the screen as text (or JSON with the mode and the flash line).
-pub fn snapshot(size: &str, keys: &str, as_json: bool) -> Result<String> {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
     let (w, h) = size.split_once('x').and_then(|(w, h)| Some((w.parse::<u16>().ok()?, h.parse::<u16>().ok()?))).unwrap_or((110, 36));
