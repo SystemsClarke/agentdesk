@@ -1,5 +1,5 @@
 //! The memory vault: durable knowledge as a folder of Markdown notes. Wiki posts are mirrored in, notes
-//! are searched by the exact terms of the query, and settled question threads are transcribed.
+//! are searched (natively, see `vault_search`), and settled question threads are transcribed.
 
 use crate::paths;
 use anyhow::Result;
@@ -87,22 +87,8 @@ fn render(doc: &Value) -> String {
     out
 }
 
-fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(rd) = std::fs::read_dir(dir) else { return };
-    for e in rd.flatten() {
-        let p = e.path();
-        if p.is_dir() {
-            if p.file_name().map(|n| n.to_string_lossy().starts_with('.')).unwrap_or(false) {
-                continue;
-            }
-            walk(&p, out);
-        } else if p.extension().map(|x| x == "md").unwrap_or(false) {
-            out.push(p);
-        }
-    }
-}
-
-/// Matches the exact terms of the query against every note; best matches first. `full` inlines the body of that many
+/// Searches the notes (BM25 keyword ranking in `vault_search`, the Python half's embeddings when `vault_search` is `semantic`, or
+/// `auto` and nothing matched); best matches first. `full` inlines the body of that many
 /// top hits (a negative count inlines all but that many from the end).
 pub fn search(query: &str, k: usize, full: i64) -> Value {
     #[cfg(test)]
@@ -119,46 +105,29 @@ pub fn search(query: &str, k: usize, full: i64) -> Value {
         }
         return json!({"hits": hits});
     }
-    if let Ok(r) = crate::pyhost::call("vault.search", json!({"query": query, "k": k, "full": full.max(0)})) {
-        return r;
-    }
-    let root = paths::vault_dir();
-    let terms: Vec<String> = query.split_whitespace().map(|t| t.to_lowercase()).collect();
-    let mut files = Vec::new();
-    walk(&root, &mut files);
-    let mut hits: Vec<(usize, PathBuf, String)> = Vec::new();
-    if !terms.is_empty() {
-        for f in files {
-            let Ok(text) = std::fs::read_to_string(&f) else { continue };
-            let lower = text.to_lowercase();
-            let matched = terms.iter().filter(|t| lower.contains(t.as_str())).count();
-            if matched == 0 {
-                continue;
+    use crate::vault_search::{self as vs, Mode};
+    let python = || crate::pyhost::call("vault.search", json!({"query": query, "k": k, "full": full.max(0)}));
+    let mut semantic_error = None;
+    if vs::mode() == Mode::Semantic {
+        match python() {
+            Ok(mut r) if r["hits"].is_array() => {
+                r["mode"] = json!("semantic");
+                return r;
             }
-            let score = matched * 1000 + terms.iter().map(|t| lower.matches(t.as_str()).count()).sum::<usize>().min(999);
-            hits.push((score, f, text));
+            Ok(r) => semantic_error = Some(r["error"].as_str().unwrap_or("the Python search returned no hits list").to_string()),
+            Err(e) => semantic_error = Some(e.to_string()),
         }
     }
-    hits.sort_by_key(|h| std::cmp::Reverse(h.0));
-    let top = hits.iter().map(|h| h.0).max().unwrap_or(1).max(1) as f64;
-    let n = hits.len().min(k);
-    let inline = if full >= 0 { full as usize } else { (n as i64 + full).max(0) as usize };
-    let out: Vec<Value> = hits
-        .into_iter()
-        .take(k)
-        .enumerate()
-        .map(|(i, (score, f, text))| {
-            let lower = text.to_lowercase();
-            let at = terms.iter().filter_map(|t| lower.find(t.as_str())).min().unwrap_or(0);
-            let start = text.char_indices().map(|(i, _)| i).find(|&i| i + 80 >= at).unwrap_or(0);
-            let snippet: String = text[start..].chars().take(240).collect();
-            let rel = f.strip_prefix(&root).unwrap_or(&f).to_string_lossy().replace('\\', "/");
-            let mut o = json!({"path": rel, "score": (score as f64 / top * 10000.0).round() / 10000.0, "type": "note", "summary": snippet.replace('\n', " ")});
-            if i < inline {
-                o["body"] = json!(text);
+    let mut r = vs::search(query, k, full);
+    if let Some(e) = semantic_error {
+        r["semantic_error"] = json!(e); // asked for, not available: the keyword answer says so
+    } else if vs::mode() == Mode::Auto && r["hits"].as_array().is_some_and(|h| h.is_empty()) && vs::semantic_available() {
+        if let Ok(mut s) = python() {
+            if s["hits"].as_array().is_some_and(|h| !h.is_empty()) {
+                s["mode"] = json!("semantic");
+                return s;
             }
-            o
-        })
-        .collect();
-    json!({"hits": out})
+        }
+    }
+    r
 }

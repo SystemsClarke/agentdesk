@@ -1,6 +1,7 @@
 //! The BBS screens: every screen is a list of lines built from the board's state, as in the original window.
 
 use super::md;
+use super::mouse;
 use super::seg::*;
 use super::state::*;
 use super::{App, Screen};
@@ -95,6 +96,8 @@ pub struct Windowed {
     pub end: usize,
     pub count: usize,
     pub visible: usize,
+    /// (index into `lines`, item) of each row drawn: what a click on that line means.
+    pub rows: Vec<(usize, usize)>,
 }
 
 /// The one list renderer behind every selectable screen: header, a scrolled window of rows, the selected one in reverse.
@@ -137,11 +140,13 @@ pub fn rows_block(
     };
     top = top.min(count.saturating_sub(visible));
     let end = count.min(top + visible);
+    let mut rows = Vec::new();
     for i in top..end {
         if let Some(extra) = before(i) {
             lines.push(extra);
         }
         let segs = row(i);
+        rows.push((lines.len(), i));
         if i == sel {
             let text: String = segs.iter().map(|x| x.text.as_str()).collect();
             let rest: String = text.chars().skip(2).collect();
@@ -153,7 +158,7 @@ pub fn rows_block(
     if count > 0 {
         lines.push(vec![s(rep('─', cols), "rule")]);
     }
-    Windowed { lines, top, end, count, visible }
+    Windowed { lines, top, end, count, visible, rows }
 }
 
 fn scroll_cue(w: &Windowed) -> L {
@@ -667,6 +672,11 @@ impl App {
                 return pad(vec![s(format!(" {text}"), &format!("{tags} inv"))], w, "inv");
             }
         }
+        pad(self.fitted_hints(w), w, "inv")
+    }
+
+    /// The footer's hints, with whole hints dropped from the right until they fit `w`.
+    pub fn fitted_hints(&self, w: usize) -> L {
         let mut hints = self.hints();
         // drop whole hints from the right, never Esc, when it does not fit
         while width(&hints) > w {
@@ -679,7 +689,7 @@ impl App {
                 _ => break,
             }
         }
-        pad(hints, w, "inv")
+        hints
     }
 
     // ---- screens
@@ -728,6 +738,7 @@ impl App {
         let out = rows_block(w, h, sel, top, banner, header, count, row, empty, fixed, before, head);
         self.top_row.insert(key, out.top);
         self.window = Some((out.top, out.end, out.count, out.visible));
+        self.row_lines = out.rows.clone();
         out
     }
 
@@ -801,7 +812,7 @@ impl App {
             ),
             ("X", "Permission rules", if pending_rules > 0 { s(format!("{pending_rules} to approve"), "pk b") } else { s("nothing waiting", "mu") }),
             ("B", "Who's on", s(format!("{} today", n_word(agents_today, "agent")), "pu")),
-            ("O", "Options", s(self.palette().label, "ye")),
+            ("O", "Options", s(self.palette().label.clone(), "ye")),
             (
                 "A",
                 "Agents & goals",
@@ -833,7 +844,13 @@ impl App {
             ]
         };
         let colw = ((w.saturating_sub(2)) / 2).max(38);
+        let mut cells = Vec::new();
         for pair in items.chunks(2) {
+            let key_of = |p: &(&str, &str, Seg)| p.0.to_lowercase().chars().next().unwrap_or(' ');
+            cells.push((l.len(), 0, colw, key_of(&pair[0])));
+            if let Some(b) = pair.get(1) {
+                cells.push((l.len(), colw, w.saturating_sub(colw), key_of(b)));
+            }
             let mut line = vec![plain(" ")];
             line.extend(item(&pair[0]));
             let mut line = pad(line, colw, "");
@@ -842,6 +859,7 @@ impl App {
             }
             l.push(line);
         }
+        self.menu_cells = cells;
         l.push(vec![]);
         let recent: Vec<L> = st
             .recent
@@ -1447,6 +1465,15 @@ impl App {
                 },
                 "web",
             ),
+            (
+                "Mouse".into(),
+                if mouse::env_off() {
+                    "off   AGENTDESK_MOUSE=0 is set".into()
+                } else {
+                    format!("{}   ↵ toggles · click selects, double-click opens, wheel scrolls · Shift+drag copies text", if self.pref_b("mouse", true) { "ON" } else { "off" })
+                },
+                "mouse",
+            ),
             ("Toasts".into(), format!("{}   desktop notification for each new question", if self.pref_b("toasts", true) { "ON" } else { "off" }), "toasts"),
             (
                 "Updates".into(),
@@ -1464,7 +1491,7 @@ impl App {
         let items = self.option_items();
         let it2 = items.clone();
         let row = move |i: usize| -> L { vec![s(format!("   {}", fit(&it2[i].0, 28)), "fg"), s(format!(" {}", it2[i].1), if it2[i].1.starts_with("ON") { "ye" } else { "mu" })] };
-        let win = self.run_rows(w, h, bar(w, "OPTIONS  ·  the SysOp's control panel", "bar"), None, items.len(), &row, vec![], 20, &|_| None, vec![]);
+        let win = self.run_rows(w, h, bar(w, "OPTIONS  ·  the SysOp's control panel", "bar"), None, items.len(), &row, vec![], 21, &|_| None, vec![]);
         let mut l = win.lines;
         l.extend([
             vec![],
@@ -1474,6 +1501,7 @@ impl App {
             vec![s(" small swarm, which completes it with a report on its thread. Off until you turn it on.", "mu")],
             vec![],
             vec![s(" Version ", "fa"), s(crate::update::CURRENT, "ye"), s("   ·   updates arrive from GitHub Releases: ↵ on Updates, or `agentdesk update --apply`", "fa")],
+            vec![s(" Mouse: ", "cy b"), s("click a row to select it, double-click to open it, the wheel scrolls. To copy text hold Shift while you drag.", "mu")],
             vec![s(" Settings live in ", "fa"), s(self.settings_path().to_string_lossy().into_owned(), "mu")],
         ]);
         l

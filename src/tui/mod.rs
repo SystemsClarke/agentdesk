@@ -8,17 +8,19 @@ mod editor;
 mod folders;
 mod live;
 mod md;
+mod mouse;
 mod runner;
 mod screens;
 pub(crate) mod seg;
 mod state;
 mod term;
+mod vscode_themes;
 
 use crate::db::{anyhow_msg, Db};
 use crate::{jobs, paths, permissions, prs, update};
 use anyhow::Result;
 use editor::Editor;
-use ratatui::crossterm::event::{self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use ratatui::crossterm::event::{self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::crossterm::execute;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Style;
@@ -79,6 +81,8 @@ pub enum Confirm {
     ConciergeOff,
 }
 
+const DEFAULT_THEME: &str = "monokai-pro";
+
 pub struct App {
     pub db: Db,
     pub st: State,
@@ -90,6 +94,16 @@ pub struct App {
     pub sel: HashMap<String, usize>,
     pub top_row: HashMap<String, usize>,
     pub window: Option<(usize, usize, usize, usize)>,
+    /// What the last frame drew where a click can land (see `mouse`), and the screen it was drawn for.
+    hits: mouse::HitMap,
+    hits_screen: Screen,
+    clicks: mouse::Clicks,
+    /// (line in the body, item) of each list row the last `build` produced, and (line, column, width, key) of each main-menu cell.
+    row_lines: Vec<(usize, usize)>,
+    menu_cells: Vec<(usize, usize, usize, char)>,
+    /// The terminal is reporting the mouse to the window; `mouse_request` is a change the loop has yet to carry out.
+    pub mouse_on: bool,
+    pub mouse_request: Option<bool>,
     pub show_archived: bool,
     pub show_settled: bool,
     pub show_decided: bool,
@@ -106,6 +120,8 @@ pub struct App {
     pub ask: Option<AskSpec>,
     pub answers: Vec<String>,
     pub theme: String,
+    /// The saved theme is a VS Code one and the scan has not finished, so it cannot be resolved yet.
+    theme_pending: bool,
     pub prefs: serde_json::Map<String, Value>,
     pub update: Option<String>,
     pub quit_at: Option<Instant>,
@@ -218,7 +234,11 @@ impl App {
             .and_then(|t| serde_json::from_str::<Value>(&t).ok())
             .and_then(|v| v.as_object().cloned())
             .unwrap_or_default();
-        let theme = prefs.get("theme").and_then(|t| t.as_str()).filter(|t| palettes().iter().any(|(k, _)| k == t)).unwrap_or("monokai-pro").to_string();
+        vscode_themes::start_scan();
+        let saved = prefs.get("theme").and_then(|t| t.as_str()).map(String::from);
+        // A saved VS Code theme can only be found once the background scan is done; until then it is kept, not judged.
+        let theme_pending = saved.as_deref().is_some_and(|t| t.starts_with(vscode_themes::ID_PREFIX)) && vscode_themes::scanned().is_none();
+        let theme = saved.filter(|t| theme_pending || palettes().iter().any(|(k, _)| k == t)).unwrap_or_else(|| DEFAULT_THEME.to_string());
         let mut app = App {
             st: State::load(&db, false, false),
             db,
@@ -230,6 +250,13 @@ impl App {
             sel: HashMap::new(),
             top_row: HashMap::new(),
             window: None,
+            hits: mouse::HitMap::default(),
+            hits_screen: Screen::Main,
+            clicks: mouse::Clicks::default(),
+            row_lines: vec![],
+            menu_cells: vec![],
+            mouse_on: false,
+            mouse_request: None,
             show_archived: false,
             show_settled: false,
             show_decided: false,
@@ -246,6 +273,7 @@ impl App {
             ask: None,
             answers: vec![],
             theme,
+            theme_pending,
             prefs,
             update: update::pending(),
             quit_at: None,
@@ -266,7 +294,7 @@ impl App {
             reader_key: None,
             scroll_end: false,
             dirty: true,
-            pal: palettes().remove(0).1,
+            pal: palettes()[0].1.clone(),
             memo: state::Memo::default(),
             refresher: None,
             md_cache: RefCell::new(MdCache::default()),
@@ -286,7 +314,8 @@ impl App {
     }
 
     fn palette_for(&self, theme: &str) -> Palette {
-        palettes().into_iter().find(|(k, _)| *k == theme).map(|(_, p)| p).unwrap_or_else(|| palettes().remove(0).1)
+        let all = palettes();
+        all.iter().find(|(k, _)| k == theme).unwrap_or(&all[0]).1.clone()
     }
 
     /// The current theme's palette, built when the theme was chosen rather than on every frame.
@@ -495,6 +524,15 @@ impl App {
     /// and the things that change the screen by themselves (a flash message ending, the clock moving on a minute). Returns
     /// whether the screen needs drawing; an unchanged screen costs no frame at all.
     pub fn tick(&mut self) -> bool {
+        if self.theme_pending && vscode_themes::scanned().is_some() {
+            self.theme_pending = false;
+            // Still saved in settings.json; an unknown one just shows the default until the user picks another.
+            if !palettes().iter().any(|(k, _)| *k == self.theme) {
+                self.theme = DEFAULT_THEME.to_string();
+            }
+            self.pal = self.palette_for(&self.theme);
+            self.dirty = true;
+        }
         if self.dictating && self.last_dictation.elapsed() >= Duration::from_millis(250) {
             self.last_dictation = Instant::now();
             self.dictation_tick();
@@ -588,6 +626,11 @@ impl App {
             self.subject_focus = self.subject.is_empty();
         }
         self.reload_nav(None);
+    }
+
+    /// Starts on the reader for `tid` (`agentdesk open`); Esc goes back to that channel's list. A thread that is gone leaves the main menu with a note.
+    pub fn open_at(&mut self, tid: i64) {
+        self.open_thread(tid, Screen::List);
     }
 
     fn open_thread(&mut self, tid: i64, back: Screen) {
@@ -722,7 +765,7 @@ impl App {
         }
         if self.dictating && matches!(k.code, KeyCode::Esc | KeyCode::Enter) {
             if k.code == KeyCode::Esc {
-                let _ = crate::pyhost::call("dictate.stop", json!({}));
+                let _ = crate::dictation::call("stop");
                 self.dictating = false;
                 self.say("Dictation cancelled.", "mu");
             } else {
@@ -857,7 +900,8 @@ impl App {
     fn next_theme(&mut self, step: i64) {
         let all = palettes();
         let i = (self.theme_index() as i64 + step).rem_euclid(all.len() as i64) as usize;
-        self.theme = all[i].0.to_string();
+        self.theme = all[i].0.clone();
+        self.theme_pending = false;
         self.pal = self.palette_for(&self.theme);
         self.dirty = true;
         let t = self.theme.clone();
@@ -934,6 +978,21 @@ impl App {
                 );
             }
             "web" => self.open_console(),
+            "mouse" => {
+                let on = !self.pref_b("mouse", true);
+                self.set_pref("mouse", json!(on));
+                self.mouse_request = Some(on && !mouse::env_off());
+                self.say(
+                    if !on {
+                        "Mouse off: the terminal's own selection works as usual."
+                    } else if mouse::env_off() {
+                        "Mouse on in settings, but AGENTDESK_MOUSE=0 is set, so it stays off."
+                    } else {
+                        "Mouse on: click a row, double-click opens it, the wheel scrolls. Shift+drag selects text."
+                    },
+                    "ye",
+                );
+            }
             "theme" => self.next_theme(step),
             "toasts" => {
                 let on = !self.pref_b("toasts", true);
@@ -1214,7 +1273,7 @@ impl App {
         }
     }
 
-    // ---- dictation: local speech-to-text through the Python plugin
+    // ---- dictation: local speech-to-text (the Python plugin, or the native backend; see dictation.rs)
 
     fn insert_dictated(&mut self, text: &str) {
         let text = text.trim();
@@ -1236,11 +1295,11 @@ impl App {
             return self.say("Ctrl+D dictates into a text box: open a reply or a new post first.", "ye");
         }
         if self.dictating {
-            let _ = crate::pyhost::call("dictate.stop", json!({}));
+            let _ = crate::dictation::call("stop");
             let end = std::time::Instant::now() + Duration::from_secs(8);
             let mut said = String::new();
             while std::time::Instant::now() < end {
-                match crate::pyhost::call("dictate.poll", json!({})) {
+                match crate::dictation::call("poll") {
                     Ok(v) => {
                         said = v["text"].as_str().unwrap_or("").to_string();
                         if v["state"].as_str() == Some("done") {
@@ -1255,7 +1314,7 @@ impl App {
             self.insert_dictated(&said);
             return self.say(if said.trim().is_empty() { "Dictation: nothing heard.".to_string() } else { "Dictation: done. Ctrl+D again to add more.".to_string() }, "gr");
         }
-        match crate::pyhost::call("dictate.start", json!({})) {
+        match crate::dictation::call("start") {
             Ok(v) if v["state"].as_str() != Some("done") => {
                 self.dictating = true;
                 let what = match v["state"].as_str() {
@@ -1276,7 +1335,7 @@ impl App {
         if !self.dictating {
             return;
         }
-        match crate::pyhost::call("dictate.poll", json!({})) {
+        match crate::dictation::call("poll") {
             Ok(v) => {
                 if v["state"].as_str() == Some("done") {
                     self.dictating = false;
@@ -1655,6 +1714,8 @@ impl App {
         let (w, h) = (body.width as usize, body.height as usize);
         self.body_h = h;
         f.render_widget(Paragraph::new(pal.line(&self.top_line(parts[0].width as usize))), parts[0]);
+        self.row_lines.clear();
+        self.menu_cells.clear();
         let mut lines = self.build(w, h);
         let max_scroll = lines.len().saturating_sub(h);
         if self.item_count() == 0 || matches!(self.screen, Screen::Read) {
@@ -1668,6 +1729,7 @@ impl App {
             self.draw_runner(f, pane, &pal);
         }
         f.render_widget(Paragraph::new(pal.line(&self.bar_line(parts[3].width as usize))), parts[3]);
+        self.record_hits(body, parts[3]);
         self.draw_inputs(f, parts[2], &pal);
         if let Some((_, _, t)) = &self.flash {
             if t.elapsed() > FLASH {
@@ -1763,10 +1825,13 @@ impl App {
     }
 }
 
-pub fn run() -> Result<()> {
+pub fn run(thread: Option<i64>) -> Result<()> {
     let db = Db::open(&paths::db_path())?;
     db.init()?;
     let mut app = App::with_db(db);
+    if let Some(t) = thread {
+        app.open_at(t);
+    }
     // The window is a client: the core (`agentdesk daemon`) owns the sessions, jobs and the Slack bridge. Start it if it is not running.
     if let Err(e) = crate::daemon::ensure(Duration::from_secs(15)) {
         eprintln!("agentdesk: {e}. The window works on the board, but nothing will run agents or send toasts until the core is up (`agentdesk core start`).");
@@ -1777,7 +1842,8 @@ pub fn run() -> Result<()> {
         leave();
         prev_hook(info);
     }));
-    let mut console = enter()?;
+    app.mouse_on = app.mouse_wanted();
+    let mut console = enter(app.mouse_on)?;
     app.start_refresher(paths::db_path());
     let result = (|| -> Result<()> {
         let mut redraw = true;
@@ -1795,6 +1861,10 @@ pub fn run() -> Result<()> {
                     }
                 }
             }
+            if let Some(on) = app.mouse_request.take() {
+                set_mouse(on);
+                app.mouse_on = on;
+            }
             if let Some(name) = app.attach_request.take() {
                 // leave the window, hand the console to the session, and come back when it is detached
                 leave();
@@ -1802,7 +1872,7 @@ pub fn run() -> Result<()> {
                     eprintln!("{}", anyhow_msg(&e));
                     std::thread::sleep(Duration::from_secs(2));
                 }
-                console = enter()?;
+                console = enter(app.mouse_on)?;
                 app.reload();
             }
             redraw = app.tick();
@@ -1815,11 +1885,26 @@ pub fn run() -> Result<()> {
     result
 }
 
-/// The window takes the console: raw mode, the alternate screen, bracketed paste.
-fn enter() -> Result<term::Console<std::io::Stdout>> {
+/// Whether this process has switched mouse reporting on, so `leave` (also the panic hook) switches it off only then.
+static MOUSE_CAPTURED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Switches the terminal's mouse reporting on or off.
+fn set_mouse(on: bool) {
+    use std::sync::atomic::Ordering::SeqCst;
+    if on {
+        if execute!(std::io::stdout(), EnableMouseCapture).is_ok() {
+            MOUSE_CAPTURED.store(true, SeqCst);
+        }
+    } else if MOUSE_CAPTURED.swap(false, SeqCst) {
+        let _ = execute!(std::io::stdout(), DisableMouseCapture);
+    }
+}
+
+/// The window takes the console: raw mode, the alternate screen, bracketed paste, and the mouse when `mouse`.
+fn enter(mouse: bool) -> Result<term::Console<std::io::Stdout>> {
     use ratatui::crossterm::terminal::{enable_raw_mode, EnterAlternateScreen};
     enable_raw_mode()?;
-    let entered = execute!(std::io::stdout(), EnterAlternateScreen, EnableBracketedPaste).and_then(|_| term::Console::new(std::io::stdout()));
+    let entered = execute!(std::io::stdout(), EnterAlternateScreen, EnableBracketedPaste).map(|_| set_mouse(mouse)).and_then(|_| term::Console::new(std::io::stdout()));
     entered.map_err(|e| {
         leave();
         e.into()
@@ -1828,6 +1913,7 @@ fn enter() -> Result<term::Console<std::io::Stdout>> {
 
 /// Gives the console back.
 fn leave() {
+    set_mouse(false);
     let _ = execute!(std::io::stdout(), DisableBracketedPaste);
     ratatui::restore();
 }
@@ -1836,6 +1922,9 @@ fn handle(app: &mut App, ev: Event) {
     match ev {
         Event::Key(k) => {
             app.dirty |= k.kind != KeyEventKind::Release;
+            if k.kind != KeyEventKind::Release {
+                app.hits.clear(); // the frame on screen is out of date until the next draw; a click in this batch must not trust it
+            }
             app.on_key(k)
         }
         Event::Paste(s) => {
@@ -1847,6 +1936,7 @@ fn handle(app: &mut App, ev: Event) {
             }
             app.dirty = true;
         }
+        Event::Mouse(m) => app.on_mouse(m),
         Event::Resize(..) => app.dirty = true,
         _ => {}
     }
@@ -1899,16 +1989,28 @@ fn parse_key(tok: &str) -> Vec<KeyEvent> {
 }
 
 /// Renders the window headlessly: opens the board, presses `keys` (space-separated: `q`, `enter`, `esc`, `ctrl+s`,
-/// `alt+c`, `t:text~with~spaces`), and returns the screen as text (or JSON with the mode and the flash line).
-pub fn snapshot(size: &str, keys: &str, as_json: bool) -> Result<String> {
+/// `alt+c`, `t:text~with~spaces`, `wait:300` to let a started script print), and returns the screen as text (or JSON with the mode and
+/// the flash line). `thread` opens the reader on that thread first.
+pub fn snapshot(size: &str, keys: &str, as_json: bool, thread: Option<i64>) -> Result<String> {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
     let (w, h) = size.split_once('x').and_then(|(w, h)| Some((w.parse::<u16>().ok()?, h.parse::<u16>().ok()?))).unwrap_or((110, 36));
     let db = Db::open(&paths::db_path())?;
     db.init()?;
     let mut app = App::with_db(db);
+    if let Some(tid) = thread {
+        app.open_at(tid);
+    }
     let mut t = Terminal::new(TestBackend::new(w, h))?;
     for tok in keys.split_whitespace() {
+        // `wait:300` lets a script the runner started print for 300 ms, then takes what it printed
+        if let Some(ms) = tok.strip_prefix("wait:").and_then(|n| n.parse::<u64>().ok()) {
+            std::thread::sleep(Duration::from_millis(ms));
+            if let Some(r) = app.runner.as_mut() {
+                r.pump();
+            }
+            continue;
+        }
         for k in parse_key(tok) {
             t.draw(|f| app.draw(f))?; // a key acts on the screen it was pressed on, as in a real session
             app.on_key(k);

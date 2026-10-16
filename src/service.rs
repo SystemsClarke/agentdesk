@@ -69,7 +69,7 @@ pub fn run(stop: Arc<AtomicBool>) {
             sweep(&db);
         }
         // The hourly backup runs in the core: a scheduled task would start the executable from outside, which a security product may not trust.
-        if due(&mut t_backup, Duration::from_secs(600), Duration::from_secs(120)) && std::env::var_os("AGENTDESK_NO_BACKUP").is_none() {
+        if due(&mut t_backup, Duration::from_secs(600), backup_first_delay()) && std::env::var_os("AGENTDESK_NO_BACKUP").is_none() {
             backup_if_due(&backing_up);
         }
         if due(&mut t_update, Duration::from_secs(4 * 3600), Duration::from_secs(30)) && std::env::var_os("AGENTDESK_NO_UPDATE_CHECK").is_none() {
@@ -78,6 +78,12 @@ pub fn run(stop: Arc<AtomicBool>) {
         std::thread::sleep(Duration::from_millis(250));
     }
     supervisor.shutdown(); // its sessions end with it; the next supervisor resumes them
+}
+
+/// How long after start the core first checks whether a backup is due: two minutes, or `AGENTDESK_BACKUP_FIRST_SECS` (the parity suite
+/// sets it to a second so the in-core backup can be observed).
+fn backup_first_delay() -> Duration {
+    Duration::from_secs(std::env::var("AGENTDESK_BACKUP_FIRST_SECS").ok().and_then(|v| v.trim().parse().ok()).unwrap_or(120))
 }
 
 /// Snapshots the board (and files the vault) when the newest snapshot is an hour old, on its own thread so the loop keeps ticking.
@@ -102,7 +108,7 @@ fn toasts(db: &Db, known: &mut HashSet<i64>, last_msg: &mut i64) {
     for q in &now {
         let id = q["thread_id"].as_i64().unwrap_or(0);
         if known.insert(id) {
-            notify::toast(&format!("Question from {}", q["opened_by"].as_str().unwrap_or("an agent")), &format!("#{id} {}", q["subject"].as_str().unwrap_or("")));
+            notify::toast(&format!("Question from {}", q["opened_by"].as_str().unwrap_or("an agent")), &format!("#{id} {}", q["subject"].as_str().unwrap_or("")), Some(id));
         }
     }
     let ids: HashSet<i64> = now.iter().filter_map(|q| q["thread_id"].as_i64()).collect();
@@ -115,6 +121,7 @@ fn toasts(db: &Db, known: &mut HashSet<i64>, last_msg: &mut i64) {
             notify::toast(
                 &format!("{} from {}", if done { "Done" } else { "Follow-up" }, f["author"].as_str().unwrap_or("agent")),
                 &format!("#{} {}: {first}", f["thread_id"], f["subject"].as_str().unwrap_or("")),
+                f["thread_id"].as_i64(),
             );
         }
         *last_msg = max;

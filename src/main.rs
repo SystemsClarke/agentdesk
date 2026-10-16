@@ -15,6 +15,7 @@ mod bridge;
 mod concierge;
 mod daemon;
 mod db;
+mod dictation;
 mod dispatcher;
 mod goals;
 mod governor;
@@ -66,6 +67,7 @@ mod ui_api;
 mod update;
 mod usage;
 mod vault;
+mod vault_search;
 mod vault_threads;
 mod web;
 
@@ -85,8 +87,16 @@ struct Cli {
 enum Cmd {
     /// The MCP server on stdio.
     Mcp,
-    /// The terminal window.
-    Tui,
+    /// The terminal window. `--thread 12` opens straight at that thread.
+    Tui {
+        #[arg(long, value_parser = notify::parse_thread_id)]
+        thread: Option<i64>,
+    },
+    /// The terminal window, opened at one thread (what a clicked toast runs): `agentdesk open 12`.
+    Open {
+        #[arg(value_parser = notify::parse_thread_id)]
+        thread: i64,
+    },
     /// The system tray / menu-bar icon: core status, open questions, open the window. `--self-test` prints the menu and icons and exits.
     Tray {
         #[arg(long)]
@@ -214,6 +224,9 @@ enum Cmd {
         keys: String,
         #[arg(long)]
         json: bool,
+        /// Start on the reader for this thread, as `agentdesk open` does.
+        #[arg(long, value_parser = notify::parse_thread_id)]
+        thread: Option<i64>,
     },
     /// Time the window on a board and print JSON (reload, draw, markdown, keys, console bytes). Needs AGENTDESK_DATA to point at a COPY of a board.
     #[command(hide = true)]
@@ -381,13 +394,14 @@ fn real_main() -> Result<()> {
     match cli.cmd {
         None => {
             if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
-                tui::run()
+                tui::run(None)
             } else {
                 mcp::serve()
             }
         }
         Some(Cmd::Mcp) => mcp::serve(),
-        Some(Cmd::Tui) => tui::run(),
+        Some(Cmd::Tui { thread }) => tui::run(thread),
+        Some(Cmd::Open { thread }) => tui::run(Some(thread)),
         Some(Cmd::Tray { self_test }) => tray::run(self_test),
         Some(Cmd::Daemon) => daemon::run_daemon(),
         Some(Cmd::Core { action }) => core_cmd(action.as_deref()),
@@ -479,8 +493,8 @@ fn real_main() -> Result<()> {
             Ok(())
         }
         Some(Cmd::Ui { request, args }) => std::process::exit(ui_api::run(&request, args.as_deref())),
-        Some(Cmd::UiSnapshot { size, keys, json }) => {
-            println!("{}", tui::snapshot(&size, &keys, json)?);
+        Some(Cmd::UiSnapshot { size, keys, json, thread }) => {
+            println!("{}", tui::snapshot(&size, &keys, json, thread)?);
             Ok(())
         }
         Some(Cmd::UiBench { runs, quick }) => {

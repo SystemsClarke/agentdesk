@@ -45,7 +45,23 @@ against either one (`PyBridge` / `NativeBridge`), registered as `slack.<feature>
 - **missing**: the feature does not exist yet (or only partly: the reason says what is absent). The check is the
   acceptance test: when it passes, the feature is done.
 - **waived**: deliberately not reproduced, with the reason in `Waived(...)`. Waivers are visible in the report and
-  should stay rare (today: the tray icon, which a terminal program does not have).
+  should stay rare; the list is in "Deliberate non-ports" below.
+
+## Deliberate non-ports
+
+Things the .NET window did that the terminal version does not, on purpose. Each is registered as a waived feature, so the
+report shows it instead of the score hiding it.
+
+| Feature | Why it is not ported |
+|---|---|
+| Font size option and Ctrl +/- zoom (`options.font-size`) | A terminal program draws in the terminal's own font. Size and zoom are the terminal's setting (Ctrl +/- in Windows Terminal, iTerm, GNOME Terminal). |
+| Open a window at logon (`startup.open-window`) | A TUI has no window to open. `agentdesk install` starts the core and the tray at login; the tray's Open entry (and a double click) launches a terminal running `agentdesk tui` (`tray.terminal-override`, `AGENTDESK_TERMINAL` overrides it). |
+| Embedding search in the vault (`vault.embedding-search`) | Switched off in the original too (Ollama is not wanted); search is lexical. |
+
+Not waived, but not done yet: `agentdesk install` does not register a Start Menu shortcut that opens Windows Terminal (or conhost)
+on `agentdesk tui`. A `.lnk` is a binary file that only the shell (COM / `WScript.Shell`) writes, which the install `Host` fake
+cannot model faithfully, and a text file in the Start Menu folder does not appear in Start. Until it is built, the tray's Open entry
+is the way in on Windows.
 
 ## The manifest cannot silently leave things out
 
