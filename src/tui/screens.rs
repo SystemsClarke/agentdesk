@@ -801,7 +801,7 @@ impl App {
             ),
             ("X", "Permission rules", if pending_rules > 0 { s(format!("{pending_rules} to approve"), "pk b") } else { s("nothing waiting", "mu") }),
             ("B", "Who's on", s(format!("{} today", n_word(agents_today, "agent")), "pu")),
-            ("O", "Options", s(self.palette().label, "ye")),
+            ("O", "Options", s(self.palette().label.clone(), "ye")),
             (
                 "A",
                 "Agents & goals",
