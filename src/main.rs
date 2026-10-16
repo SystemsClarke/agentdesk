@@ -37,6 +37,7 @@ mod permissions;
 mod plain;
 mod prs;
 mod pyhost;
+mod schedule;
 mod service;
 mod sessions;
 mod slack;

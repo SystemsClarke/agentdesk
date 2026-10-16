@@ -266,6 +266,11 @@ row; you get the existing one back with created=false."####,
         r####"{"type": "object", "properties": {}, "required": []}"####,
     ),
     (
+        "filter_meeting_slots",
+        r####"Keep only the meeting times that fit John's scheduling rules. Outlook's availability search is not limited to working hours, so pass its slots here before you offer John any time. The rules come from settings.json (meeting_start, meeting_end, lunch_start, lunch_end, meeting_weekdays_only); the defaults are 10:00 to 16:30, no meetings 13:00 to 14:00, weekdays only. Each slot is an object with `start` and `end`: 'YYYY-MM-DDTHH:MM[:SS]' strings, or Outlook's {dateTime, timeZone} objects (the zone is ignored: both are wall-clock times in John's mailbox zone, which is how Outlook returns them; a time with Z or an offset is refused, not guessed). Returns the earliest `limit` (default 3, at most 10) that fit, in time order, and every slot it dropped with the reason, so you can say why. Never offer John a time this did not return."####,
+        r####"{"type": "object", "properties": {"slots": {"type": "array", "items": {"type": "object"}}, "limit": {"type": "integer"}}, "required": ["slots"]}"####,
+    ),
+    (
         "goal_create",
         r####"Start a goal: a lead identity (<name>-lead) is created in `folder` and asked to
 propose how the goal is tested. Name: letters, digits and dashes. Objective: what it

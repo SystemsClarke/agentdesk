@@ -361,6 +361,25 @@ fn a_note_is_for_a_packet_or_a_permission_question_and_never_closes_either() {
 }
 
 #[test]
+fn the_meeting_filter_tool_applies_johns_hours_and_settings_can_change_them() {
+    let _env = ENV.lock().unwrap_or_else(|e| e.into_inner());
+    let (d, db) = board();
+    std::env::set_var("AGENTDESK_DATA", d.path());
+    let c = caller("s1");
+    let slots = json!([{"start": "2026-10-20T13:00", "end": "2026-10-20T13:30"}, {"start": "2026-10-20T10:30", "end": "2026-10-20T11:00"}]);
+    let r = call(&db, &c, "filter_meeting_slots", json!({"slots": slots.clone()}));
+    assert_eq!(r["ok"], true, "{r}");
+    assert_eq!(r["allowed"].as_array().unwrap().len(), 1);
+    assert_eq!(r["dropped"][0]["why"], "it overlaps lunch, 13:00 to 14:00");
+    assert_eq!(r["rules"]["meetings"], "10:00 to 16:30");
+    std::fs::write(d.path().join("settings.json"), r#"{"lunch_start": null}"#).unwrap();
+    let r = call(&db, &c, "filter_meeting_slots", json!({"slots": slots, "limit": 1}));
+    assert_eq!(r["allowed"].as_array().unwrap().len(), 1, "with lunch off both fit, and the limit shows one");
+    assert_eq!(r["not_shown_over_limit"], 1);
+    assert!(call(&db, &c, "filter_meeting_slots", json!({}))["error"].as_str().unwrap().contains("slots is required"));
+}
+
+#[test]
 fn tags_and_limits_by_kind() {
     assert_eq!([kinds::tag("ask"), kinds::tag("run"), kinds::tag("permission"), kinds::tag("packet"), kinds::tag("anything")], ["ASK", "RUN", "PERM", "PKT", "ASK"]);
     assert!(!kinds::exempt_from_limits("ask") && kinds::exempt_from_limits("run") && kinds::exempt_from_limits("permission") && kinds::exempt_from_limits("packet"));

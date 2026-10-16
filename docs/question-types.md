@@ -30,9 +30,16 @@ version with mock-ups drawn from real board threads is the private "Work Packets
 - **Links** (`src/links.rs`): Safe Links and similar wrappers are unwrapped, tracking parameters and fragments stripped, non-default
   ports kept, credentials dropped, duplicates merged (with a count), unknown domains flagged, at most 12 shown. Pure string work.
 
-**Not built:** link steps 3 and 6 (resolving short links, opening pages in a headless browser) and the headless browser itself; meeting
-scheduling and the working-hours filter (the prompt tells the agent to find free times, but there is no code that enforces 10:00 to
-16:30 and the lunch hour yet); calendar holds and nudges; "verified by the agent" as a state; AI-drafted blocks (agent-side work).
+- **Meeting hours** (`src/schedule.rs`, tool `filter_meeting_slots`): John's rules are enforced in code, because Outlook's availability
+  search is not limited to working hours. An agent passes the slots it found through the tool and offers only what comes back: the
+  earliest three that start no earlier than 10:00, end no later than 16:30, miss 13:00 to 14:00 and fall on a weekday, with every
+  dropped slot and the reason. The rules are `meeting_start`, `meeting_end`, `lunch_start`, `lunch_end` and `meeting_weekdays_only` in
+  `settings.json` (those are the defaults; an unreadable value falls back to them, a null `lunch_start` turns lunch off). Times are
+  wall-clock in his mailbox zone; one with a `Z` or an offset is refused, not guessed.
+
+**Not built:** link steps 3 and 6 (resolving short links, opening pages in a headless browser) and the headless browser itself;
+creating the calendar event or hold (the agent still does that through the Microsoft 365 connection, and an invite is sent only on
+John's click); calendar holds and nudges; "verified by the agent" as a state; AI-drafted blocks (agent-side work).
 **Not verified:** how any of it looks in a real terminal and against real Claude sessions (everything is tested against the window's
 test backend and a scratch board); that the wake path delivers a tick to a waiting agent (inferred from how replies work, covered
 by a test that a tick is a message from John after the agent's baseline).

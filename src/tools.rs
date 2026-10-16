@@ -112,6 +112,13 @@ fn dispatch(db: &Db, c: &Caller, tool: &str, a: &Args) -> Result<Value> {
         "ask_human" => ask_human(db, c, a),
         "update_question" => update_question(db, c, a),
         "question_help" => Ok(Value::String(kinds::HELP.to_string())),
+        "filter_meeting_slots" => {
+            let Some(slots) = a.0.get("slots").and_then(|s| s.as_array()).cloned() else {
+                return err("slots is required: a list of {start, end} meeting times, as Outlook's availability search returns them");
+            };
+            let limit = a.int_or("limit", 3).clamp(1, 10) as usize;
+            Ok(ok(crate::schedule::filter(&crate::schedule::Rules::load(), &slots, limit)))
+        }
         "list_threads" => Ok(json!({"threads": db.list_threads(
             a.opt("channel").as_deref(), a.opt("status").as_deref(), a.int_or("limit", 50), a.bool_or("include_archived", true), true)?})),
         "read_thread" => {
