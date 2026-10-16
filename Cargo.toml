@@ -16,8 +16,8 @@ native-dictation = ["dep:cpal", "dep:sherpa-onnx"]
 [dependencies]
 anyhow = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
-cpal = { version = "=0.18.2", optional = true }
 clap = { version = "4", features = ["derive"] }
+cpal = { version = "=0.18.2", optional = true }
 dirs = "5"
 fancy-regex = "0.13"
 notify-rust = "4"
