@@ -1208,7 +1208,7 @@ impl App {
                         l.push(vec![plain("       "), s(format!("> {n}"), "fa")]);
                     }
                 }
-                l.push(vec![s(" Alt+↑↓ step · Alt+T tick (what is in the reply box becomes its note) · Alt+V choose · Alt+D finish · Ctrl+S sends a note", "fa")]);
+                l.push(vec![s(" Alt+↑↓ step · Alt+T tick (reply box = its note) · Alt+V choose · Alt+D finish", "fa")]);
             }
             kinds::PERMISSION => {
                 if let Some(r) = self.st.rules.iter().find(|r| Some(r.thread_id) == Some(self.read_tid)) {

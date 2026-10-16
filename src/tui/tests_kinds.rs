@@ -220,6 +220,18 @@ fn a_run_question_shows_its_script_at_once_and_does_not_run_it() {
 }
 
 #[test]
+fn the_packet_key_hint_fits_the_default_window_width() {
+    let (_d, mut a) = app();
+    ask(&a, packet_args());
+    a.reload();
+    press(&mut a, 'q');
+    a.on_key(key(KeyCode::Enter));
+    let s = screen(&mut a, 110, 40);
+    let hint = s.lines().find(|l| l.contains("Alt+T tick")).unwrap_or_else(|| panic!("no hint line in:\n{s}"));
+    assert!(hint.trim_end().ends_with("Alt+D finish"), "the hint is cut off at 110 columns: '{hint}'");
+}
+
+#[test]
 fn the_reader_key_legend_follows_the_kind() {
     let (_d, mut a) = app();
     ask(&a, packet_args());
