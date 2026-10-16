@@ -43,13 +43,8 @@ pub fn open_terminal(args: &[String]) -> Result<()> {
     let Some(cmd) = model::terminal_command_args(model::Os::current(), &exe, over.as_deref(), &model::which, args) else {
         anyhow::bail!("no terminal found (set AGENTDESK_TERMINAL to a terminal command line)");
     };
-    let mut c = std::process::Command::new(&cmd[0]);
+    let mut c = crate::paths::new_command(&cmd[0]); // no console flash on Windows
     c.args(&cmd[1..]).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        c.creation_flags(0x0800_0000); // CREATE_NO_WINDOW: no flash of the cmd that runs `start`
-    }
     c.spawn().map_err(|e| anyhow::anyhow!("could not start {}: {e}", cmd[0]))?;
     Ok(())
 }
