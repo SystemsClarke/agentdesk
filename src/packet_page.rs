@@ -361,7 +361,7 @@ fn run_panel(id: i64, hash: &str) -> String {
 // ---- colours: the window's theme
 
 /// The colour as `#rrggbb`: the window's palettes hold true colours, or 256-colour indexes when the terminal is not true-colour.
-fn hex(c: Color) -> String {
+pub(crate) fn rgb_of(c: Color) -> (u8, u8, u8) {
     const BASIC: [(u8, u8, u8); 16] = [
         (0, 0, 0),
         (205, 49, 49),
@@ -380,7 +380,7 @@ fn hex(c: Color) -> String {
         (41, 184, 219),
         (255, 255, 255),
     ];
-    let (r, g, b) = match c {
+    match c {
         Color::Rgb(r, g, b) => (r, g, b),
         Color::Indexed(i @ 0..=15) => BASIC[i as usize],
         Color::Indexed(i @ 16..=231) => {
@@ -393,7 +393,11 @@ fn hex(c: Color) -> String {
             (v, v, v)
         }
         _ => (128, 128, 128),
-    };
+    }
+}
+
+fn hex(c: Color) -> String {
+    let (r, g, b) = rgb_of(c);
     format!("#{r:02x}{g:02x}{b:02x}")
 }
 
