@@ -161,7 +161,7 @@ fn a_valid_packet_is_stored_rendered_and_has_its_links_cleaned() {
         "data-step=\"run-1\"",
         "data-choose=\"agent retries\"",
         "2026-10-17",
-        "Show my work",
+        "Agent's working",
         "Run both today.",
     ] {
         assert!(page.contains(part), "'{part}' not in:\n{page}");

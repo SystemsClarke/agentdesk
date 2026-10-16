@@ -14,7 +14,7 @@ mod screens;
 pub(crate) mod seg;
 mod state;
 mod term;
-mod vscode_themes;
+pub(crate) mod vscode_themes;
 
 use crate::db::{anyhow_msg, Db};
 use crate::{jobs, kinds, paths, permissions, prs, update};

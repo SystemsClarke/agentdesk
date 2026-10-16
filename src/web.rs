@@ -295,6 +295,12 @@ fn route(r: &Request, port: u16, key: &str, started: &str) -> Reply {
     (404, vec![], vec![])
 }
 
+/// `?block=<16 hex digits>`: which command of a packet a poll is about.
+fn block_of(r: &Request) -> Option<String> {
+    let v = r.query.split('&').filter_map(|p| p.split_once('=')).find(|(k, _)| *k == "block").map(|(_, v)| v.to_string())?;
+    (v.len() == 16 && v.bytes().all(|c| c.is_ascii_hexdigit())).then_some(v)
+}
+
 fn json_reply(status: u16, v: Value) -> Reply {
     (status, vec![("Cache-Control".into(), "no-store".into()), ("Content-Type".into(), "application/json; charset=utf-8".into())], v.to_string().into_bytes())
 }
@@ -330,11 +336,15 @@ fn packet_route(r: &Request, rest: &str) -> Reply {
             ),
             Err(e) => json_reply(500, json!({"error": crate::db::anyhow_msg(&e)})),
         },
+        ("GET", "run") => match block_of(r) {
+            Some(h) => json_reply(200, packet_page::run_poll(id, &h)),
+            None => json_reply(400, json!({"error": "block is required"})),
+        },
         ("GET", "version") => match packet_page::version(&db, id) {
             Ok(v) => json_reply(200, json!({"v": v})),
             Err(e) => json_reply(500, json!({"error": crate::db::anyhow_msg(&e)})),
         },
-        ("POST", "step" | "note" | "finish") => {
+        ("POST", "step" | "note" | "finish" | "run" | "stop" | "share") => {
             if !r.header("Content-Type").unwrap_or("").starts_with("application/json") {
                 return json_reply(400, json!({"error": "a post must be JSON"}));
             }
@@ -348,6 +358,14 @@ fn packet_route(r: &Request, rest: &str) -> Reply {
                 "note" => match text("body").filter(|b| !b.trim().is_empty()) {
                     Some(b) => kinds::note(&db, id, &b).map(|_| ()),
                     None => Err(anyhow::anyhow!("body is required")),
+                },
+                "run" | "stop" | "share" => match text("block").filter(|b| b.len() == 16 && b.bytes().all(|c| c.is_ascii_hexdigit())) {
+                    Some(b) => match action {
+                        "run" => packet_page::run_start(&db, id, &b),
+                        "stop" => packet_page::run_stop(id, &b),
+                        _ => packet_page::run_share(&db, id, &b),
+                    },
+                    None => Err(anyhow::anyhow!("block is required")),
                 },
                 _ => kinds::finish(&db, id),
             };
@@ -447,6 +465,52 @@ mod tests {
         let (_, html) = go(&req("GET", &page, None, json!(null), true));
         assert!(html.contains("class=\"closed\"") && html.contains("data-finish data-left=\"2\" disabled"), "{html}");
         assert_eq!(go(&req("POST", &format!("{page}/step"), Some("application/json"), json!({"step": "run-1", "done": false}), true)).0, 400, "a finished packet is not changed");
+        drop(e);
+    }
+    #[test]
+    fn a_command_in_a_packet_runs_from_the_page_shows_its_output_and_only_the_packets_own_commands_run() {
+        let e = Env::new();
+        let db = Db::open(&paths::db_path()).unwrap();
+        db.init().unwrap();
+        let c = Caller { session_id: Some("s".into()), env_author: None, cwd: None, harness: Some("claude-code".into()), pid: 1 };
+        let lang = if cfg!(windows) { "cmd" } else { "sh" };
+        let mut spec = crate::tests_kinds::spec();
+        spec["steps"][0]["detail"] = json!(format!("Run it:\n```{lang}\necho hello-from-packet\n```"));
+        let made = crate::tests::call(&db, &c, "ask_human", json!({"subject": "Runs", "body": "Waiting.", "author": "builder", "meta": {"type": "packet", "packet": spec}}));
+        let id = made["thread_id"].as_i64().unwrap();
+        let page = format!("/packet/{id}");
+        let (_, html) = go(&req("GET", &page, None, json!(null), true));
+        let at = html.find("data-block=\"").expect("a run panel") + "data-block=\"".len();
+        let hash = html[at..at + 16].to_string();
+        let post = |action: &str, body: Value| go(&req("POST", &format!("{page}/{action}"), Some("application/json"), body, true));
+
+        assert_eq!(post("run", json!({"block": "0000000000000000"})).0, 400, "a block that is not in the packet does not run");
+        assert_eq!(post("run", json!({"block": "echo hi"})).0, 400, "the browser names a block; it cannot send a script");
+        assert_eq!(post("run", json!({"block": hash})).0, 200);
+        let mut out = Value::Null;
+        for _ in 0..200 {
+            let r = req("GET", &format!("{page}/run"), None, json!(null), true);
+            let mut r = r;
+            r.query = format!("block={hash}");
+            out = serde_json::from_str(&go(&r).1).unwrap();
+            if out["state"] == "done" {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert_eq!(out["state"], "done", "{out}");
+        assert_eq!(out["code"], 0);
+        assert!(out["lines"].as_array().unwrap().iter().any(|l| l.as_str().unwrap().contains("hello-from-packet")), "{out}");
+        let (_, html) = go(&req("GET", &page, None, json!(null), true));
+        assert!(html.contains("data-state=\"done\"") && html.contains("hello-from-packet"), "a reload keeps the output");
+
+        assert_eq!(post("share", json!({"block": hash})).0, 200);
+        let msgs = db.get_thread(id).unwrap();
+        let last = msgs["messages"].as_array().unwrap().last().unwrap();
+        assert!(last["author"] == "john" && last["body"].as_str().unwrap().contains("hello-from-packet"), "{last}");
+
+        assert_eq!(post("finish", json!({})).0, 200);
+        assert_eq!(post("run", json!({"block": hash})).0, 400, "a finished packet runs nothing");
         drop(e);
     }
 }
