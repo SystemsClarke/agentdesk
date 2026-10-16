@@ -22,8 +22,12 @@ version with mock-ups drawn from real board threads is the private "Work Packets
   step, or to the agent) and finishes it there; each is the same `kinds::step`/`note`/`finish` call the window makes, so the agent is
   woken as before. The page polls `/packet/<id>/version` and reloads itself when the agent revises the packet (it keeps what John is
   typing and shows a bar instead). Opening a packet in the window opens the page once; `Alt+O` opens it again, and `agentdesk packet <id>`
-  does the same from a shell (`--print` shows the address). Commands in steps have a Copy button on the page; running one from inside
-  AgentDesk stays in the window (`Alt+R`). The page needs the core running (it serves the console): after an upgrade, restart the core.
+  does the same from a shell (`--print` shows the address). Commands in the packet have a copy button and a run button: Run (after a confirm) runs it on the
+  core's machine as John, with the script runner the window uses, and the output streams under the command; a reload keeps it, Stop ends it, and
+  "send output to the agent" posts the tail as a note (nothing is sent unless he asks). The browser never sends a script: it names a block
+  by a hash of its text and the server finds that block in the packet (so a revised packet cannot run an old command, and a finished one
+  runs nothing). At most four run at once. The page's colours are the window's saved theme (the same palette, as CSS variables). The page
+  needs the core running (it serves the console): after an upgrade, restart the core.
 - **Packet in the window** (`src/tui/`): the reader still draws the packet's steps live at the bottom, above the reply box (where the reader
   opens, so they stay in view as ticks add messages). `Alt+Up/Down` move the cursor, `Alt+T` ticks or un-ticks the step (what is in
   the reply box becomes its note), `Alt+V` cycles a choice step's options (and ticks it), `Alt+D` finishes the packet (it asks first and
