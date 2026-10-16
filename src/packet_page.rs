@@ -212,10 +212,10 @@ fn email_card(text: &str) -> String {
     let mut url = format!("{OUTLOOK_COMPOSE}?");
     let mut parts: Vec<String> = vec![];
     if !to.is_empty() {
-        parts.push(format!("to={}", pct(&to.join(";"))));
+        parts.push(format!("to={}", pct(&to.join(","))));
     }
     if !cc.is_empty() {
-        parts.push(format!("cc={}", pct(&cc.join(";"))));
+        parts.push(format!("cc={}", pct(&cc.join(","))));
     }
     if !subject.is_empty() {
         parts.push(format!("subject={}", pct(&subject)));
@@ -225,10 +225,12 @@ fn email_card(text: &str) -> String {
     url.push_str(&if paste || body.is_empty() { parts.join("&") } else { with_body.trim_start_matches('&').to_string() });
     let field = |k: &str, v: &str| if v.is_empty() { String::new() } else { format!("<dt>{k}</dt><dd>{}</dd>", esc(v)) };
     format!(
-        "<div class=\"code mail\"><div class=\"codebar\"><span>draft email · not sent</span><span class=\"acts\"><a class=\"open\" href=\"{}\" target=\"_blank\" rel=\"noopener noreferrer\"{}>open in Outlook</a><button type=\"button\" data-copy>copy</button></span></div>\
+        "<div class=\"code mail\"><div class=\"codebar\"><span>draft email · not sent</span><span class=\"acts\"><a class=\"open\" href=\"{}\" target=\"_blank\" rel=\"noopener noreferrer\"{}>open in Outlook</a>{}<button type=\"button\" data-copy>copy</button></span></div>\
 <dl class=\"hdr\">{}{}{}</dl><pre class=\"mailbody\"><code>{}</code></pre></div>",
         esc(&url),
         if paste { " data-paste" } else { "" },
+        // Outlook on the web does not reliably take a Cc from the address, so the Cc is one click from the clipboard
+        if cc.is_empty() { String::new() } else { format!("<button type=\"button\" data-copycc=\"{}\">copy Cc</button>", esc(&cc.join(", "))) },
         field("To", &to.join(", ")),
         field("Cc", &cc.join(", ")),
         field("Subject", &subject),
@@ -830,6 +832,7 @@ document.addEventListener('click',async e=>{
   const t=e.target,step=t.closest('[data-step]'),box=t.closest('.run');
   const open=t.closest&&t.closest('a[data-paste]');
   if(open){const code=$('code',open.closest('.code'));try{await navigator.clipboard.writeText(code.textContent);toast('The message is long, so it is copied: paste it into the Outlook message.')}catch(x){}}
+  if(t.matches('[data-copycc]')){try{await navigator.clipboard.writeText(t.dataset.copycc);t.textContent='Cc copied'}catch(x){t.textContent='select the Cc, then copy'}setTimeout(()=>t.textContent='copy Cc',1500);return}
   if(t.matches('[data-copy]')){const code=$('code',t.closest('.code'));try{await navigator.clipboard.writeText(code.textContent);t.textContent='copied'}catch(x){t.textContent='select it, then copy'}setTimeout(()=>t.textContent='copy',1500);return}
   if(box&&t.matches('[data-run]')){
     if(!confirm('Run this command on this computer, as you?\n\n'+$('code',t.closest('.code')).textContent.slice(0,600)))return;
@@ -903,12 +906,13 @@ mod tests {
         let href = h.split("href=\"").nth(1).unwrap().split('"').next().unwrap().replace("&amp;", "&");
         assert!(
             href.starts_with(
-                "https://outlook.office.com/mail/deeplink/compose?to=kscott%40example.com%3Ba%40b.org&cc=carl%40example.com&subject=Re%3A%20build%20%26%20more&body=Hi%20Karl%2C"
+                "https://outlook.office.com/mail/deeplink/compose?to=kscott%40example.com%2Ca%40b.org&cc=carl%40example.com&subject=Re%3A%20build%20%26%20more&body=Hi%20Karl%2C"
             ),
             "{href}"
         );
         assert!(href.contains("%0D%0A%0D%0Ait%27s%20fine%20%3Cb%3E."), "{href}");
         assert!(h.contains("open in Outlook") && h.contains("draft email · not sent") && h.contains("data-copy"), "{h}");
+        assert!(h.contains("data-copycc=\"carl@example.com\">copy Cc</button>"), "the Cc is one click from the clipboard: {h}");
         assert!(h.contains("<dt>To</dt><dd>kscott@example.com, a@b.org</dd>") && !h.contains("bad address") && !h.contains("<script>"), "{h}");
         assert!(h.contains("it&#39;s fine &lt;b&gt;."), "{h}");
         assert!(!h.contains("data-run>"), "a draft is not a command");
