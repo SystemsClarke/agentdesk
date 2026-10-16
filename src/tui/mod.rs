@@ -14,6 +14,7 @@ mod screens;
 pub(crate) mod seg;
 mod state;
 mod term;
+mod vscode_themes;
 
 use crate::db::{anyhow_msg, Db};
 use crate::{jobs, paths, permissions, prs, update};
@@ -80,6 +81,8 @@ pub enum Confirm {
     ConciergeOff,
 }
 
+const DEFAULT_THEME: &str = "monokai-pro";
+
 pub struct App {
     pub db: Db,
     pub st: State,
@@ -117,6 +120,8 @@ pub struct App {
     pub ask: Option<AskSpec>,
     pub answers: Vec<String>,
     pub theme: String,
+    /// The saved theme is a VS Code one and the scan has not finished, so it cannot be resolved yet.
+    theme_pending: bool,
     pub prefs: serde_json::Map<String, Value>,
     pub update: Option<String>,
     pub quit_at: Option<Instant>,
@@ -229,7 +234,11 @@ impl App {
             .and_then(|t| serde_json::from_str::<Value>(&t).ok())
             .and_then(|v| v.as_object().cloned())
             .unwrap_or_default();
-        let theme = prefs.get("theme").and_then(|t| t.as_str()).filter(|t| palettes().iter().any(|(k, _)| k == t)).unwrap_or("monokai-pro").to_string();
+        vscode_themes::start_scan();
+        let saved = prefs.get("theme").and_then(|t| t.as_str()).map(String::from);
+        // A saved VS Code theme can only be found once the background scan is done; until then it is kept, not judged.
+        let theme_pending = saved.as_deref().is_some_and(|t| t.starts_with(vscode_themes::ID_PREFIX)) && vscode_themes::scanned().is_none();
+        let theme = saved.filter(|t| theme_pending || palettes().iter().any(|(k, _)| k == t)).unwrap_or_else(|| DEFAULT_THEME.to_string());
         let mut app = App {
             st: State::load(&db, false, false),
             db,
@@ -264,6 +273,7 @@ impl App {
             ask: None,
             answers: vec![],
             theme,
+            theme_pending,
             prefs,
             update: update::pending(),
             quit_at: None,
@@ -284,7 +294,7 @@ impl App {
             reader_key: None,
             scroll_end: false,
             dirty: true,
-            pal: palettes().remove(0).1,
+            pal: palettes()[0].1.clone(),
             memo: state::Memo::default(),
             refresher: None,
             md_cache: RefCell::new(MdCache::default()),
@@ -304,7 +314,8 @@ impl App {
     }
 
     fn palette_for(&self, theme: &str) -> Palette {
-        palettes().into_iter().find(|(k, _)| *k == theme).map(|(_, p)| p).unwrap_or_else(|| palettes().remove(0).1)
+        let all = palettes();
+        all.iter().find(|(k, _)| k == theme).unwrap_or(&all[0]).1.clone()
     }
 
     /// The current theme's palette, built when the theme was chosen rather than on every frame.
@@ -513,6 +524,15 @@ impl App {
     /// and the things that change the screen by themselves (a flash message ending, the clock moving on a minute). Returns
     /// whether the screen needs drawing; an unchanged screen costs no frame at all.
     pub fn tick(&mut self) -> bool {
+        if self.theme_pending && vscode_themes::scanned().is_some() {
+            self.theme_pending = false;
+            // Still saved in settings.json; an unknown one just shows the default until the user picks another.
+            if !palettes().iter().any(|(k, _)| *k == self.theme) {
+                self.theme = DEFAULT_THEME.to_string();
+            }
+            self.pal = self.palette_for(&self.theme);
+            self.dirty = true;
+        }
         if self.dictating && self.last_dictation.elapsed() >= Duration::from_millis(250) {
             self.last_dictation = Instant::now();
             self.dictation_tick();
@@ -880,7 +900,8 @@ impl App {
     fn next_theme(&mut self, step: i64) {
         let all = palettes();
         let i = (self.theme_index() as i64 + step).rem_euclid(all.len() as i64) as usize;
-        self.theme = all[i].0.to_string();
+        self.theme = all[i].0.clone();
+        self.theme_pending = false;
         self.pal = self.palette_for(&self.theme);
         self.dirty = true;
         let t = self.theme.clone();

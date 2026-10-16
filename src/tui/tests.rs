@@ -409,4 +409,30 @@ fn open_and_tui_thread_arguments_parse() {
     for bad in [&["open"][..], &["open", "abc"], &["open", "0"], &["open", "-1"], &["tui", "--thread"], &["tui", "--thread", "x"]] {
         assert!(p(bad).is_err(), "{bad:?}");
     }
+
+fn a_saved_vscode_theme_is_resolved_when_the_scan_lands_and_an_unknown_one_falls_back_silently() {
+    use super::vscode_themes::set_scanned_for_test;
+    static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let (_d, mut a) = app();
+    let mut p = super::seg::palettes()[0].1.clone();
+    p.label = "Fixture Night".into();
+    set_scanned_for_test(None);
+
+    a.theme = "vscode:acme.x/Night".into();
+    a.theme_pending = true;
+    a.tick();
+    assert_eq!(a.theme, "vscode:acme.x/Night", "still waiting for the scan, so not judged");
+
+    set_scanned_for_test(Some(vec![("vscode:acme.x/Night".into(), p)]));
+    a.tick();
+    assert_eq!(a.palette().label, "Fixture Night");
+    assert_eq!(super::seg::palettes().len(), 5);
+
+    a.theme = "vscode:gone.ext/Missing".into();
+    a.theme_pending = true;
+    a.tick();
+    assert_eq!(a.theme, "monokai-pro");
+    assert_eq!(a.palette().label, "Monokai Pro");
+    set_scanned_for_test(None);
 }

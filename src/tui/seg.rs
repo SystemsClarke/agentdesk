@@ -3,6 +3,7 @@
 
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
+use std::sync::{Arc, Mutex};
 use unicode_width::UnicodeWidthStr;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -98,7 +99,7 @@ pub fn hue(author: &str) -> &'static str {
 
 #[derive(Clone)]
 pub struct Palette {
-    pub label: &'static str,
+    pub label: String,
     pub mono: bool,
     pub colors: [Color; 15],
 }
@@ -110,12 +111,15 @@ fn hex(h: &str) -> Color {
 
 fn pal(label: &'static str, mono: bool, colors: &str) -> Palette {
     let v: Vec<Color> = colors.split(' ').map(hex).collect();
-    Palette { label, mono, colors: v.try_into().unwrap() }
+    Palette { label: label.to_string(), mono, colors: v.try_into().unwrap() }
 }
 
 /// bg panel line fg mu fa rule pk or ye gr cy pu on_bar textsel: the original's four themes.
-pub fn palettes() -> Vec<(&'static str, Palette)> {
-    vec![
+/// Theme ids with their palettes, shared rather than copied.
+pub type ThemeList = Arc<Vec<(String, Palette)>>;
+
+fn builtin_palettes() -> Vec<(String, Palette)> {
+    let all = vec![
         ("monokai-pro", pal("Monokai Pro", false, "#221f22 #2d2a2e #403e41 #fcfcfa #939293 #727072 #5b595c #ff6188 #fc9867 #ffd866 #a9dc76 #78dce8 #ab9df2 #221f22 #5b595c")),
         (
             "monokai-pro-light",
@@ -123,7 +127,33 @@ pub fn palettes() -> Vec<(&'static str, Palette)> {
         ),
         ("grayscale", pal("Grayscale (paper)", true, "#ffffff #eeeeee #d4d4d4 #000000 #3a3a3a #595959 #8c8c8c #000000 #000000 #000000 #000000 #000000 #000000 #ffffff #b8b8b8")),
         ("grayscale-dark", pal("Grayscale (ink)", true, "#000000 #121212 #2e2e2e #ffffff #c4c4c4 #9e9e9e #6e6e6e #ffffff #ffffff #ffffff #ffffff #ffffff #ffffff #000000 #5c5c5c")),
-    ]
+    ];
+    all.into_iter().map(|(k, p)| (k.to_string(), p)).collect()
+}
+
+/// The four built-in themes, then every dark VS Code theme once the background scan has found them (see `vscode_themes`).
+/// Cheap to call repeatedly: the combined list is rebuilt only when the scan result changes.
+pub fn palettes() -> ThemeList {
+    static CACHE: Mutex<Option<(Option<ThemeList>, ThemeList)>> = Mutex::new(None);
+    let scanned = super::vscode_themes::scanned();
+    let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((key, list)) = cache.as_ref() {
+        let same = match (key, &scanned) {
+            (None, None) => true,
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            _ => false,
+        };
+        if same {
+            return list.clone();
+        }
+    }
+    let mut list = builtin_palettes();
+    if let Some(found) = &scanned {
+        list.extend(found.iter().cloned());
+    }
+    let list = Arc::new(list);
+    *cache = Some((scanned, list.clone()));
+    list
 }
 
 const KEYS: [&str; 15] = ["bg", "panel", "line", "fg", "mu", "fa", "rule", "pk", "or", "ye", "gr", "cy", "pu", "on_bar", "textsel"];
