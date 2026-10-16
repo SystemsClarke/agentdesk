@@ -9,10 +9,14 @@ license = "MIT"
 default = ["tray"]
 # The system tray / menu-bar icon (`agentdesk tray`). A headless server builds with --no-default-features.
 tray = ["dep:tray-icon", "dep:tao"]
+# Dictation without Python: the microphone through cpal and the speech model through sherpa-onnx (src/dictation.rs). OFF by default: the
+# sherpa-onnx build script downloads its native libraries, and CI and release builds do not need them.
+native-dictation = ["dep:cpal", "dep:sherpa-onnx"]
 
 [dependencies]
 anyhow = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+cpal = { version = "=0.18.2", optional = true }
 clap = { version = "4", features = ["derive"] }
 dirs = "5"
 fancy-regex = "0.13"
@@ -25,6 +29,7 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 self_update = { version = "0.41", default-features = false, features = ["rustls", "archive-tar", "archive-zip", "compression-flate2", "compression-zip-deflate"] }
 tao = { version = "0.30", optional = true }
 tray-icon = { version = "0.19", optional = true }
+sherpa-onnx = { version = "=1.13.8", optional = true }
 serde_json = { version = "1", features = ["preserve_order"] }
 tungstenite = { version = "0.24", default-features = false, features = ["handshake"] }
 unicode-width = "0.2"

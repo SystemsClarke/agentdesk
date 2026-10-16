@@ -714,7 +714,7 @@ impl App {
         }
         if self.dictating && matches!(k.code, KeyCode::Esc | KeyCode::Enter) {
             if k.code == KeyCode::Esc {
-                let _ = crate::pyhost::call("dictate.stop", json!({}));
+                let _ = crate::dictation::call("stop");
                 self.dictating = false;
                 self.say("Dictation cancelled.", "mu");
             } else {
@@ -1206,7 +1206,7 @@ impl App {
         }
     }
 
-    // ---- dictation: local speech-to-text through the Python plugin
+    // ---- dictation: local speech-to-text (the Python plugin, or the native backend; see dictation.rs)
 
     fn insert_dictated(&mut self, text: &str) {
         let text = text.trim();
@@ -1228,11 +1228,11 @@ impl App {
             return self.say("Ctrl+D dictates into a text box: open a reply or a new post first.", "ye");
         }
         if self.dictating {
-            let _ = crate::pyhost::call("dictate.stop", json!({}));
+            let _ = crate::dictation::call("stop");
             let end = std::time::Instant::now() + Duration::from_secs(8);
             let mut said = String::new();
             while std::time::Instant::now() < end {
-                match crate::pyhost::call("dictate.poll", json!({})) {
+                match crate::dictation::call("poll") {
                     Ok(v) => {
                         said = v["text"].as_str().unwrap_or("").to_string();
                         if v["state"].as_str() == Some("done") {
@@ -1247,7 +1247,7 @@ impl App {
             self.insert_dictated(&said);
             return self.say(if said.trim().is_empty() { "Dictation: nothing heard.".to_string() } else { "Dictation: done. Ctrl+D again to add more.".to_string() }, "gr");
         }
-        match crate::pyhost::call("dictate.start", json!({})) {
+        match crate::dictation::call("start") {
             Ok(v) if v["state"].as_str() != Some("done") => {
                 self.dictating = true;
                 let what = match v["state"].as_str() {
@@ -1268,7 +1268,7 @@ impl App {
         if !self.dictating {
             return;
         }
-        match crate::pyhost::call("dictate.poll", json!({})) {
+        match crate::dictation::call("poll") {
             Ok(v) => {
                 if v["state"].as_str() == Some("done") {
                     self.dictating = false;
