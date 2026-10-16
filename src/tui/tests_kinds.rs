@@ -219,6 +219,59 @@ fn a_run_question_shows_its_script_at_once_and_does_not_run_it() {
     assert!(a.runner.is_none(), "leaving the reader closes the pane");
 }
 
+fn script(word: &str) -> String {
+    let lang = if cfg!(windows) { "cmd" } else { "sh" };
+    format!("Please run this and tell me what you see.\n```{lang}\necho {word}\n```")
+}
+
+fn wait_for_runner(a: &mut App) {
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while a.runner.as_ref().is_some_and(|r| r.state == runner::State::Running) && std::time::Instant::now() < end {
+        a.tick();
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    a.tick();
+}
+
+#[test]
+fn a_run_question_sends_its_result_to_the_agent_when_the_script_finishes() {
+    let (_d, mut a) = app();
+    let tid = ask(&a, json!({"subject": "Run this", "body": script("from-the-run"), "author": "builder", "meta": {"type": "run"}}));
+    a.reload();
+    press(&mut a, 'q');
+    a.on_key(key(KeyCode::Enter));
+    assert_eq!(status_of(&a, tid), "open");
+    a.on_key(alt('r')); // the pane is already open with the script shown: one press runs it
+    wait_for_runner(&mut a);
+    assert_eq!(status_of(&a, tid), "answered", "the result went back by itself");
+    let last = last_message(&a, tid);
+    let body = last["body"].as_str().unwrap();
+    assert_eq!(last["author"], "john");
+    assert!(body.contains("it finished (exit 0)") && body.contains("from-the-run"), "{body}");
+    assert!(a.flash.as_ref().is_some_and(|f| f.0.contains("Result sent")), "{:?}", a.flash);
+    let count = a.db.get_thread(tid).unwrap()["messages"].as_array().unwrap().len();
+    for _ in 0..5 {
+        a.tick();
+    }
+    assert_eq!(a.db.get_thread(tid).unwrap()["messages"].as_array().unwrap().len(), count, "a finished script reports once");
+}
+
+#[test]
+fn a_question_with_a_script_says_so_and_does_not_send_the_output_by_itself() {
+    let (_d, mut a) = app();
+    let tid = ask(&a, json!({"subject": "A script for you", "body": format!("{} ok?", script("from-an-ask")), "author": "builder"}));
+    a.reload();
+    press(&mut a, 'q');
+    a.on_key(key(KeyCode::Enter));
+    let s = screen(&mut a, 120, 40);
+    assert!(s.contains("▶ RUN") && s.contains("a script is in this thread") && s.contains("Alt+R"), "{s}");
+    a.on_key(alt('r'));
+    assert!(!screen(&mut a, 120, 40).contains("a script is in this thread"), "the hint goes once the pane is open");
+    a.on_key(alt('r'));
+    wait_for_runner(&mut a);
+    assert_eq!(status_of(&a, tid), "open", "on an ask the output stays John's to send");
+}
+
 #[test]
 fn the_packet_key_hint_fits_the_default_window_width() {
     let (_d, mut a) = app();

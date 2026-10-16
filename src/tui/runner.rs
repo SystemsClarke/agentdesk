@@ -115,10 +115,12 @@ pub fn command_for(shell: Shell, script: &str) -> (String, Vec<String>, String) 
         }
         Shell::Bash => ("bash".into(), args(&["-s"]), format!("{script}\n")),
         Shell::Sh => ("sh".into(), args(&["-s"]), format!("{script}\n")),
-        // cmd reads a script on stdin with prompts and echo; run the lines as one command line instead
+        // cmd reads a script on stdin with prompts and echo; run the lines as one command line instead. The line is wrapped in one pair
+        // of quotes that `/S` strips, so quotes inside the script (`--comment "two words"`) reach the program as typed; `run` hands the
+        // last argument to Windows exactly as written (Rust would otherwise escape those quotes with backslashes, which cmd ignores).
         Shell::Cmd => {
             let line = script.lines().map(str::trim).filter(|l| !l.is_empty() && !l.to_lowercase().starts_with("rem ")).collect::<Vec<_>>().join(" & ");
-            ("cmd.exe".into(), vec!["/Q".into(), "/D".into(), "/C".into(), line], String::new())
+            ("cmd.exe".into(), vec!["/Q".into(), "/D".into(), "/S".into(), "/C".into(), format!("\"{line}\"")], String::new())
         }
     }
 }
@@ -184,7 +186,19 @@ impl Runner {
         let pid = self.pid.clone();
         std::thread::spawn(move || {
             let mut cmd = crate::paths::new_command(&prog);
-            cmd.args(&args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).current_dir(crate::paths::home_dir());
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                if prog == "cmd.exe" {
+                    let (flags, line) = args.split_at(args.len() - 1);
+                    cmd.args(flags).raw_arg(&line[0]);
+                } else {
+                    cmd.args(&args);
+                }
+            }
+            #[cfg(not(windows))]
+            cmd.args(&args);
+            cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).current_dir(crate::paths::home_dir());
             let mut child = match cmd.spawn() {
                 Ok(c) => c,
                 Err(e) => return drop(tx.send(Msg::Error(format!("could not start {prog}: {e}")))),
@@ -305,7 +319,8 @@ mod tests {
         let (p, a, stdin) = command_for(Shell::Pwsh, "Get-Date");
         assert!(p.contains("pwsh") || p.contains("powershell") && a.last().map(String::as_str) == Some("-") && stdin == "Get-Date\n");
         let (p, a, stdin) = command_for(Shell::Cmd, "rem note\necho a\n\n  dir  ");
-        assert_eq!((p.as_str(), a.last().map(String::as_str), stdin.as_str()), ("cmd.exe", Some("echo a & dir"), ""));
+        assert_eq!((p.as_str(), a.last().map(String::as_str), stdin.as_str()), ("cmd.exe", Some("\"echo a & dir\""), ""));
+        assert_eq!(&a[..4], ["/Q", "/D", "/S", "/C"], "/S strips the one outer pair of quotes");
         assert_eq!(shell_for("PS1"), Some(Shell::Pwsh));
         assert_eq!(shell_for("python"), None);
     }
@@ -331,6 +346,21 @@ mod tests {
 #[cfg(all(test, windows))]
 mod windows_tests {
     use super::*;
+
+    #[test]
+    fn quotes_in_a_cmd_script_reach_the_program_as_typed() {
+        // `gh pr close 123 --comment "Included in #124."` failed with "too many arguments": the quotes arrived as \" and split the words.
+        let mut r = Runner::new(vec![Block { lang: "cmd".into(), script: "echo \"two words\" \"x y\" && echo after".into(), from: "x".into() }]);
+        assert!(r.run());
+        let end = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while r.state == State::Running && std::time::Instant::now() < end {
+            r.pump();
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert_eq!(r.state, State::Done(0), "{:?} {:?}", r.state, r.out);
+        assert!(r.out.iter().any(|l| l.trim() == "\"two words\" \"x y\""), "the quotes arrive as typed: {:?}", r.out);
+        assert!(r.out.iter().any(|l| l.trim() == "after"), "&& still chains: {:?}", r.out);
+    }
 
     #[test]
     fn a_powershell_script_runs_from_stdin_and_stderr_is_shown_too() {

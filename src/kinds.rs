@@ -466,7 +466,7 @@ fn refresh_body(db: &Db, thread_id: i64, meta: &Value) -> Result<()> {
 pub const HELP: &str = r#"Questions have a kind. Pass it as meta.type to ask_human.
 
 ask (the default): you are stuck and need a short answer. Must contain a '?', at most 500 words, closes on John's first answer.
-run: John must run a script. Put it in a fenced ```powershell, ```bash, ```sh or ```cmd block in the body. He sees it in full in the reader, presses Alt+R twice to run it as himself, and the output goes back to you. Nothing runs on its own.
+run: John must run a script. Put it in a fenced ```powershell, ```bash, ```sh or ```cmd block in the body; the fence needs its language, or the window cannot run it. He sees it in full in the reader, presses Alt+R to run it as himself, and the result goes back to you by itself when it finishes. Nothing runs on its own. Use run, not ask, for anything he should just run.
 permission: do not ask for it with ask_human. Call propose_permission_rule; it appears in the same Questions list with Approve and Reject.
 packet: work for John, with steps and context. Pass meta.packet with all seven parts; ask_human refuses it, and says what is missing, if any is absent. It stays open while John ticks steps; each tick wakes you through the wait command. Revise it with update_question. John finishes it; you never close it.
 
