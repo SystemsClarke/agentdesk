@@ -87,15 +87,7 @@ fn screens(app: &mut App, w: u16, h: u16, runs: usize, long_thread: Option<i64>)
     for ch in state::CHANNELS {
         list.push((format!("list-{ch}"), Screen::List, ch));
     }
-    for (n, s) in [
-        ("prs", Screen::Prs),
-        ("jobs", Screen::Jobs),
-        ("rules", Screen::Rules),
-        ("sysop", Screen::Sysop),
-        ("who", Screen::Who),
-        ("options", Screen::Options),
-        ("agents", Screen::Agents),
-    ] {
+    for (n, s) in [("prs", Screen::Prs), ("jobs", Screen::Jobs), ("sysop", Screen::Sysop), ("who", Screen::Who), ("options", Screen::Options), ("agents", Screen::Agents)] {
         list.push((n.into(), s, "question"));
     }
     for (name, screen, ch) in list {
@@ -118,13 +110,13 @@ fn screens(app: &mut App, w: u16, h: u16, runs: usize, long_thread: Option<i64>)
 }
 
 fn reload_steps(app: &mut App, runs: usize) -> Value {
-    let (db_archived, db_decided) = (app.show_archived, app.show_decided);
+    let db_archived = app.show_archived;
     let mut by_name: Vec<(&'static str, Vec<f64>)> = Vec::new();
     let mut totals = Vec::new();
     for i in 0..=runs {
         state::probe_start();
         let t = Instant::now();
-        let _ = State::load(&app.db, db_archived, db_decided);
+        let _ = State::load(&app.db, db_archived);
         let total = ms(t);
         let steps = state::probe_take();
         if i == 0 {

@@ -25,6 +25,8 @@ mod identity;
 mod install;
 mod install_dotnet;
 mod jobs;
+mod kinds;
+mod links;
 mod mcp;
 mod migrate;
 mod notify;
@@ -35,6 +37,7 @@ mod permissions;
 mod plain;
 mod prs;
 mod pyhost;
+mod schedule;
 mod service;
 mod sessions;
 mod slack;
@@ -54,9 +57,13 @@ mod tests_governor;
 #[cfg(test)]
 mod tests_identities;
 #[cfg(test)]
+mod tests_kinds;
+#[cfg(test)]
 mod tests_slack;
 #[cfg(test)]
 mod tests_slack_http;
+#[cfg(test)]
+mod tests_slack_kinds;
 #[cfg(test)]
 mod tests_swarm;
 mod tools;

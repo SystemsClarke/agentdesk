@@ -2,7 +2,7 @@
 //! Who's On and Options screens show besides them.
 
 use crate::db::{Db, RECEIPT_KINDS};
-use crate::{jobs, paths, permissions, usage};
+use crate::{jobs, kinds, paths, permissions, usage};
 use chrono::{DateTime, Local};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -37,6 +37,10 @@ pub struct ThreadRow {
     pub waiting: bool,
     pub follow_up: Option<String>,
     pub holder: Option<String>,
+    /// ask, run, permission or packet (docs/question-types.md); a thread with no `type` is an ask.
+    pub kind: String,
+    /// Steps ticked and steps in all, for a packet.
+    pub progress: Option<(usize, usize)>,
 }
 
 impl ThreadRow {
@@ -56,6 +60,8 @@ impl ThreadRow {
             waiting: v["waiting"].as_i64() == Some(1),
             follow_up: v["follow_up"].as_str().map(String::from),
             holder: meta["assignee"].as_str().map(String::from),
+            kind: kinds::kind_in(Some(&meta)).to_string(),
+            progress: (kinds::kind_in(Some(&meta)) == kinds::PACKET).then(|| kinds::progress(&meta)),
         }
     }
 }
@@ -75,6 +81,10 @@ pub struct Msg {
 pub struct Detail {
     pub thread: ThreadRow,
     pub messages: Vec<Msg>,
+    /// The thread's kind (a permission proposal made before kinds existed is found through its row in `permission_proposals`).
+    pub kind: String,
+    /// The thread's meta: a packet's spec and John's progress live here.
+    pub meta: Value,
 }
 
 impl Detail {
@@ -82,12 +92,19 @@ impl Detail {
         let doc = db.get_thread(id).ok()?;
         let mut thread = ThreadRow::from(&doc["thread"]);
         thread.waiting = doc["thread"]["waiting"].as_i64() == Some(1);
+        let tmeta = meta_of(&doc["thread"]["meta"]);
+        let tkind = kinds::kind_of(db, id).unwrap_or(kinds::ASK).to_string();
         let messages = doc["messages"]
             .as_array()?
             .iter()
-            .map(|m| {
+            .enumerate()
+            .map(|(i, m)| {
                 let meta = meta_of(&m["meta"]);
-                let body: String = m["body"].as_str().unwrap_or("").into();
+                let mut body: String = m["body"].as_str().unwrap_or("").into();
+                // The window draws a packet's steps live from its state, so they are cut out of the rendered first message.
+                if i == 0 && tkind == kinds::PACKET {
+                    body = kinds::without_steps(&body);
+                }
                 let kind = kind_of(&m["meta"]);
                 let rev = {
                     use std::hash::{Hash, Hasher};
@@ -98,7 +115,7 @@ impl Detail {
                 Msg { author: m["author"].as_str().unwrap_or("").into(), kind, ts: ts(&m["ts"]), body, via: meta["via"].as_str().unwrap_or("").into(), rev }
             })
             .collect();
-        Some(Detail { thread, messages })
+        Some(Detail { thread, messages, kind: tkind, meta: tmeta })
     }
 }
 
@@ -150,14 +167,9 @@ pub struct Rule {
     pub id: i64,
     pub rule: String,
     pub scope: String,
-    pub reason: String,
-    pub blocked: Option<String>,
     pub requested_by: String,
     pub thread_id: Option<i64>,
     pub status: String,
-    pub created: Option<DateTime<Local>>,
-    pub decided: Option<DateTime<Local>>,
-    pub path: Option<String>,
     pub broad: bool,
 }
 
@@ -374,8 +386,8 @@ impl State {
         st
     }
 
-    pub fn load(db: &Db, show_archived: bool, show_decided: bool) -> State {
-        State::load_for(db, &Want { archived: show_archived, decided: show_decided, rows: [true; 4], read: None, goal: None }, None)
+    pub fn load(db: &Db, show_archived: bool) -> State {
+        State::load_for(db, &Want { archived: show_archived, rows: [true; 4], read: None, goal: None }, None)
     }
 
     fn load_rows(&mut self, db: &Db, want: &Want) {
@@ -484,14 +496,9 @@ impl State {
                             id: r["id"].as_i64().unwrap_or(0),
                             rule: r["rule"].as_str().unwrap_or("").into(),
                             scope: r["scope"].as_str().unwrap_or("").into(),
-                            reason: r["reason"].as_str().unwrap_or("").into(),
-                            blocked: r["blocked"].as_str().map(String::from),
                             requested_by: r["requested_by"].as_str().unwrap_or("").into(),
                             thread_id: r["thread_id"].as_i64(),
                             status: r["status"].as_str().unwrap_or("").into(),
-                            created: ts(&r["created_ts"]),
-                            decided: ts(&r["decided_ts"]),
-                            path: r["settings_path"].as_str().map(String::from),
                             broad: r["broad"].as_bool().unwrap_or(false),
                         })
                         .collect()
@@ -537,7 +544,6 @@ const BUDGET_TTL: std::time::Duration = std::time::Duration::from_secs(10);
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Want {
     pub archived: bool,
-    pub decided: bool,
     pub rows: [bool; 4],
     pub read: Option<i64>,
     pub goal: Option<String>,

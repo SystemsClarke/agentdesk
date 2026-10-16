@@ -61,7 +61,7 @@ def main():
             holes.append("command `agentdesk %s`  -> %s" % (verb, fid))
 
     # 4. every screen of the window (TopLine's titles) and every documented key, by the original's footer hints
-    screens = {"main": "screen.main", "list": "screen.list.questions", "read": "screen.reader", "prs": "screen.prs", "jobs": "screen.jobs", "rules": "screen.rules",
+    screens = {"main": "screen.main", "list": "screen.list.questions", "read": "screen.reader", "prs": "screen.prs", "jobs": "screen.jobs",
                "sysop": "screen.sysop", "who": "screen.who", "options": "screen.options", "compose": "screen.compose", "agents": "screen.agents",
                "adopt": "screen.adopt", "goal": "screen.goal", "ask": "key.jobs.new"}
     hints = json.load(open(os.path.join(ORIG, "hints.json"), encoding="utf-8"))

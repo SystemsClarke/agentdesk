@@ -44,9 +44,9 @@ def _main(b):
     seed(b, perms=True)
     s = b.snap("")
     has(s, "█▀█", "ATDT AGENTDESK", "CONNECT", "Since then:", "Recent callers", "Main menu [Q,D,W,J,P,S,B,O,A,G]")
-    for item in ("[Q] Questions", "[J] Work to Hire", "[D] Discussion", "[P] Pull Requests", "[W] Wiki", "[S] SysOp console", "[R] Recurring jobs", "[X] Permission rules", "[B] Who's on", "[O] Options", "[A] Agents & goals", "[G] Hang up"):
+    for item in ("[Q] Questions", "[J] Work to Hire", "[D] Discussion", "[P] Pull Requests", "[W] Wiki", "[S] SysOp console", "[R] Recurring jobs", "[B] Who's on", "[O] Options", "[A] Agents & goals", "[G] Hang up"):
         has(s, item)
-    has(s, "2 ringing", "1 to merge", "1 to approve")
+    has(s, "2 ringing", "1 to merge")
 
 
 @feature("screen.top-line", "screens", "Top line: title, Concierge state, ringing count, SlackNet up/down, the week's % left", SRC)
@@ -57,7 +57,7 @@ def _top(b):
 
 @feature("key.menu-letters", "screens", "Q D W J P S B A R X O open their screens; Esc returns to the menu; M is the menu", SRC)
 def _letters(b):
-    for k, title in (("q", "Questions"), ("d", "Discussion"), ("w", "Wiki"), ("j", "Work to Hire"), ("p", "Pull Requests"), ("s", "SysOp console"), ("b", "Who's on"), ("o", "Options"), ("a", "Agents"), ("r", "Recurring jobs"), ("x", "Permission rules")):
+    for k, title in (("q", "Questions"), ("d", "Discussion"), ("w", "Wiki"), ("j", "Work to Hire"), ("p", "Pull Requests"), ("s", "SysOp console"), ("b", "Who's on"), ("o", "Options"), ("a", "Agents"), ("r", "Recurring jobs")):
         s = b.snap(k)
         assert title in s["lines"][0], (k, s["lines"][0])
         assert b.snap(k + " esc")["screen"] == "main"
@@ -273,17 +273,49 @@ def _jobrun(b):
     assert os.path.exists(out)
 
 
-@feature("screen.rules", "screens", "Permission rules: STATUS RULE ASKED BY WHEN; the selected one's why/blocked/BROAD/in; A approves, R rejects, V reverts, H history, Enter reads its thread", SRC)
-def _rules(b):
-    seed(b, perms=True)
-    s = b.snap("x")
-    has(s, "PERMISSION RULES", "pending", "Bash(cargo test:*)", "why: tests", "Allowed now")
-    assert "Allow Bash(cargo test:*)" in b.snap("x a")["confirm"]
-    b.snap("x a y")
+KINDS_PACKET = {
+    "outcome": "Done when the run has finished.",
+    "why": "Only John can trigger GoCD.",
+    "happened": ["The PR merged."],
+    "found": [],
+    "steps": [{"id": "run", "title": "Start a new run"}, {"id": "note", "title": "Anything to add", "input": "note"}],
+    "next": "I read the console.",
+    "deadline": {"date": "2999-01-01", "reason": "Closes the sprint item."},
+}
+
+
+@feature("question.kinds", "screens", "A question has a kind (meta.type: ask, run, permission, packet). ask_human refuses an incomplete packet naming each missing part; a packet stays open while John ticks steps (Alt+T), the list tags it PKT with [done/total], the agent revises it with update_question, and Alt+D finishes it", "src/kinds.rs")
+def _kinds(b):
+    bad = b.tool("ask_human", {"subject": "x", "body": "Please do this.", "author": "builder", "meta": {"type": "packet", "packet": {"outcome": "Fix it"}}}, session="s1")
+    for part in ("outcome must start with", "why is missing", "steps is missing", "deadline is missing"):
+        assert part in bad.get("error", ""), bad
+    tid = b.tool("ask_human", {"subject": "One run", "body": "A run is waiting on you.", "author": "builder", "meta": {"type": "packet", "packet": KINDS_PACKET}}, session="s1")["thread_id"]
+    has(b.snap("q"), "KIND", "PKT", "[0/2] One run")
+    has(b.snap("q enter"), "Kind: PKT", "0 of 2 steps", "[ ] Start a new run", "Alt+T tick")
+    has(b.snap("q enter alt+t"), "1 of 2 steps", "[x] Start a new run")
+    assert b.sql("SELECT status FROM threads WHERE id=?", (tid,))[0]["status"] == "open", "a tick is not an answer"
+    has(b.snap("q"), "[1/2] One run")
+    up = b.tool("update_question", {"thread_id": tid, "author": "builder", "packet": {"next": "I wait for the second step."}, "summary": "Changed what I do next."}, session="s1")
+    assert up.get("version") == 2, up
+    has(b.snap("q enter"), "1 of 2 steps", "revised, version 2")
+    b.snap("q enter alt+d y")
+    assert b.sql("SELECT status FROM threads WHERE id=?", (tid,))[0]["status"] == "answered"
+    run = b.tool("ask_human", {"subject": "r", "body": "Run this.\n```sh\necho hi\n```", "author": "builder", "meta": {"type": "run"}}, session="s2")
+    assert run.get("type") == "run", run
+
+
+@feature("question.permission", "screens", "A permission proposal is a question of kind PERM: in the reader Alt+A approves it (after a confirm) and writes the rule; there is no separate Permission rules screen", "src/tui/mod.rs permission_key")
+def _permission_question(b):
+    b.tool("propose_permission_rule", {"rule": "Bash(cargo test:*)", "reason": "tests", "author": "builder", "scope": "project", "project_dir": b.work}, session="s1")
+    has(b.snap("q"), "PERM", "permission rule: Bash(cargo test:*)")
+    has(b.snap("q enter"), "Kind: PERM", "PERMISSION", "waiting for you", "Alt+A approves")
+    assert "Allow Bash(cargo test:*)" in b.snap("q enter alt+a")["confirm"]
+    settings = os.path.join(b.work, ".claude", "settings.json")
+    assert not os.path.exists(settings), "it asks first"
+    b.snap("q enter alt+a y")
     assert b.sql("SELECT status FROM permission_proposals")[0]["status"] == "approved"
-    has(b.snap("x h"), "approved")
-    assert "Take Bash(cargo test:*) back" in b.snap("x h v")["confirm"]
-    assert b.snap("x h enter")["screen"] == "read"
+    assert "Bash(cargo test:*)" in open(settings, encoding="utf-8").read()
+    assert "PERMISSION RULES" not in b.snap("x")["text"], "there is no separate Permission rules screen"
 
 
 @feature("screen.agents", "screens", "Agents & goals: one list (goals then agents), the budget panel, running/queued/stopped counts; N new, S start/stop, F forget, A adopt/approve, X stop goal, G new goal", SRC)

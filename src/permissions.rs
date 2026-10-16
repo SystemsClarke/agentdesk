@@ -67,12 +67,12 @@ pub fn propose(db: &Db, c: &Caller, a: &Value) -> Result<Value> {
     }
     let blocked = a["blocked_action"].as_str().filter(|b| !b.trim().is_empty());
     let body = format!(
-        "**Rule:** `{rule}` ({scope})\n**Asked by:** {who}\n**Why:** {}{}{}\n\nApprove it? Permission rules (X in the AgentDesk window) has Approve and Reject; nothing is written until you do.",
+        "**Rule:** `{rule}` ({scope})\n**Asked by:** {who}\n**Why:** {}{}{}\n\nApprove it? In AgentDesk, Alt+A approves and Alt+D rejects, right here in this question; nothing is written until you do.",
         cut(&reason, 500),
         blocked.map(|b| format!("\n**Blocked action:** `{}`", cut(b, 300))).unwrap_or_default(),
         if is_broad(&rule) { "\n**Careful: this rule is broad, it allows every use of the tool.**" } else { "" }
     );
-    let tid = db.start_thread("question", &format!("permission rule: {rule}"), &who, AGENT, &body, None, None)?;
+    let tid = db.start_thread("question", &format!("permission rule: {rule}"), &who, AGENT, &body, Some(&json!({"type": "permission"})), None)?;
     db.exec(
         "INSERT INTO permission_proposals (rule, scope, project_dir, reason, blocked, requested_by, thread_id, status, created_ts) VALUES (:r,:s,:d,:why,:b,:w,:t,'pending',:ts)",
         &[(":r", &rule), (":s", &scope), (":d", &dir), (":why", &reason), (":b", &blocked), (":w", &who), (":t", &tid), (":ts", &now_iso())],
@@ -168,15 +168,10 @@ pub fn decide(db: &Db, id: i64, approve: bool) -> Result<Value> {
             "UPDATE permission_proposals SET status='approved', decided_ts=:ts, settings_path=:p, backup=:b WHERE id=:id",
             &[(":ts", &now_iso()), (":p", &path.to_string_lossy().into_owned()), (":b", &backup), (":id", &id)],
         )?;
-        tell(
-            db,
-            &p,
-            &format!("Approved in AgentDesk: `{rule}` is now in `permissions.allow` of {}. Retry the action.", path.display()),
-            Some("Approved in the Permission rules screen."),
-        )?;
+        tell(db, &p, &format!("Approved in AgentDesk: `{rule}` is now in `permissions.allow` of {}. Retry the action.", path.display()), Some("Approved in AgentDesk."))?;
     } else {
         db.exec("UPDATE permission_proposals SET status='rejected', decided_ts=:ts WHERE id=:id", &[(":ts", &now_iso()), (":id", &id)])?;
-        tell(db, &p, &format!("Rejected in AgentDesk: `{rule}` was not added. Do not retry the action; ask John another way."), Some("Rejected in the Permission rules screen."))?;
+        tell(db, &p, &format!("Rejected in AgentDesk: `{rule}` was not added. Do not retry the action; ask John another way."), Some("Rejected in AgentDesk."))?;
     }
     need(db, id)
 }
