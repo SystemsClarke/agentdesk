@@ -330,3 +330,16 @@ fn the_options_screen_toggles_the_mouse_and_says_how_to_copy_text() {
     assert_eq!(a.mouse_request, Some(false), "the loop is asked to stop reporting it");
     assert!(!a.pref_b("mouse", true));
 }
+
+#[test]
+fn a_click_after_a_key_in_the_same_batch_is_ignored_until_the_next_draw() {
+    let (_d, mut a) = three_questions();
+    let s = screen(&mut a, 110, 30);
+    let (x, y) = find(&s, "Third one");
+    handle(&mut a, Event::Key(key(KeyCode::Down)));
+    a.click(x, y + 2, Instant::now());
+    assert_eq!(a.sel_now(), 1, "the key moved the selection; the stale click did nothing");
+    screen(&mut a, 110, 30);
+    a.click(x, y + 2, Instant::now());
+    assert_eq!(a.sel_now(), 2);
+}

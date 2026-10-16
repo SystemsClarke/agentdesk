@@ -180,10 +180,12 @@ impl App {
         match t {
             Target::Hint(k) => {
                 self.clicks.forget();
+                self.hits.clear();
                 self.on_key(k);
             }
             Target::Menu(c) => {
                 self.clicks.forget();
+                self.hits.clear();
                 if self.confirm.is_none() {
                     self.letter(c);
                 }
@@ -195,6 +197,7 @@ impl App {
                 let id = format!("{}:{i}", self.sel_key());
                 self.sel.insert(self.sel_key(), i);
                 if self.clicks.click(now, &id) {
+                    self.hits.clear(); // what was drawn is about to change
                     self.activate();
                 }
             }

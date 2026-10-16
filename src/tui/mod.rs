@@ -1849,6 +1849,9 @@ fn handle(app: &mut App, ev: Event) {
     match ev {
         Event::Key(k) => {
             app.dirty |= k.kind != KeyEventKind::Release;
+            if k.kind != KeyEventKind::Release {
+                app.hits.clear(); // the frame on screen is out of date until the next draw; a click in this batch must not trust it
+            }
             app.on_key(k)
         }
         Event::Paste(s) => {
