@@ -44,32 +44,11 @@ wrapping it the same way.
 
 To read the plan of the list query, and what its covering index buys: `python scripts/ui_explain.py <copy of the board>`.
 
-## What it found (a board of 765 threads, 5,834 messages, 4,519 usage samples; Windows 11, release build)
+## What it found
 
-The lag was not the terminal and not SQLite. It was a process started inside the frame.
-
-| | before | after |
-|---|---|---|
-| a frame, any screen (`draw_ms`) | **281 to 668 ms** | **0.2 to 1.4 ms** |
-| `bridge::running()` (called by the top line on every frame, twice on SysOp) | 298 to 349 ms: it starts `tasklist` to see whether the heartbeat's pid is alive | 0.01 ms (`OpenProcess`), and once per refresh instead of once per frame |
-| the real window under ConPTY (`tests_pty`, release builds): first frame | 329 to 340 ms | 62 to 69 ms |
-| ... a key to bytes on the console | 324 to 528 ms | 5 to 8 ms |
-| ... thirteen keys typed at once, until the last frame is out | **8.1 s** (one event per 600 ms frame) | **49 ms** |
-| arrow key in a list, to the frame | 396 ms | 0.9 ms |
-| typing a letter in the reader | 524 ms | 0.5 ms |
-| scrolling a page in the reader | 1,068 ms | 1.1 ms |
-| the longest thread (841 messages, 761 KB) drawn | 795 ms, every frame | 0.5 ms (rendered once, then cached) |
-| the Markdown of that thread rendered cold | 214 to 290 ms | 39 to 50 ms (`inline` copied the rest of the line at every character: quadratic) |
-| frames while nothing changes | 4 a second (the loop drew on every 250 ms poll), each 300 ms or more | none |
-| bytes to the console for an idle screen | one cursor update, four times a second | 0 |
-| `write` calls for a full frame | 7 (`stdout` is a 1 KiB `LineWriter`) | 1 |
-| a board change (27 agents write all the time) | `reload()` on the window's thread: 60 to 100 ms each time | a worker thread loads it; the window's thread spends under 5 ms taking it in, at most four times a second |
-| `list_threads` (the biggest query) | 6.6 ms for the discussion list | 2.4 ms (`idx_messages_thread_kind`) |
-
-The bytes a frame sends were never the problem (7 KB for a full screen, 300 bytes for a changed row: ratatui already sends only
-changed cells). A process spawn costs a lot on this machine whatever the process is (`cmd /c exit` 132 ms, `whoami` 94 ms,
-`tasklist` 356 ms: an endpoint-security agent scans every new process), which is why a spawn per frame was so expensive.
-What the fix does not touch: the daemon (`bridge::heartbeat()` calls the same `tasklist` check each time it looks at the bridge).
+The lag was a process started inside the frame (`bridge::running()` ran `tasklist` on every frame: about 300 ms each, an endpoint-security
+agent scans every new process). Fixed: a frame is now 0.2 to 1.4 ms on any screen, an idle screen draws nothing, a full frame is one
+`write`, and board changes load on a worker thread. The daemon's `bridge::heartbeat()` still makes the same `tasklist` check.
 
 ## The tests that keep it fast
 
