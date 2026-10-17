@@ -48,14 +48,6 @@ fn mirror(db: &crate::db::Db, thread_id: i64) -> Result<PathBuf> {
     Ok(path)
 }
 
-/// One linked note per thread: `agentdesk/threads/thread-N.md`.
-pub fn write_thread_note(db: &crate::db::Db, thread_id: i64) -> Result<PathBuf> {
-    let doc = db.get_thread(thread_id)?;
-    let path = paths::vault_dir().join("agentdesk").join("threads").join(format!("thread-{thread_id}.md"));
-    paths::write_atomic(&path, render(&doc))?;
-    Ok(path)
-}
-
 fn render(doc: &Value) -> String {
     let t = &doc["thread"];
     let mut out = format!(
@@ -72,7 +64,12 @@ fn render(doc: &Value) -> String {
         if crate::db::RECEIPT_KINDS.contains(&kind.as_str()) {
             continue;
         }
-        out.push_str(&format!("\n## {} ({})\n\n{}\n", m["author"].as_str().unwrap_or(""), m["ts"].as_str().unwrap_or(""), m["body"].as_str().unwrap_or("")));
+        out.push_str(&format!(
+            "\n## {} ({})\n\n{}\n",
+            m["author"].as_str().unwrap_or(""),
+            m["ts"].as_str().unwrap_or(""),
+            crate::vault_threads::redact(m["body"].as_str().unwrap_or(""))
+        ));
     }
     out
 }

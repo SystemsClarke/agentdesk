@@ -15,9 +15,11 @@ pub fn db_path() -> PathBuf {
     data_dir().join("agentdesk.db")
 }
 
-/// The memory vault: a folder of Markdown notes (`AGENTDESK_VAULT` overrides it).
+/// The memory vault: a folder of Markdown notes. `AGENTDESK_VAULT`, else settings.json's `vault_dir` (point it at an existing notes vault,
+/// such as an Obsidian one, and the board's history lands in its `agentdesk/` folder), else a folder in the data directory.
 pub fn vault_dir() -> PathBuf {
-    std::env::var_os("AGENTDESK_VAULT").filter(|d| !d.is_empty()).map(PathBuf::from).unwrap_or_else(|| data_dir().join("vault"))
+    let set = std::env::var_os("AGENTDESK_VAULT").filter(|d| !d.is_empty()).map(PathBuf::from);
+    set.or_else(|| setting("vault_dir").as_str().filter(|d| !d.is_empty()).map(PathBuf::from)).unwrap_or_else(|| data_dir().join("vault"))
 }
 
 pub fn backup_dir() -> PathBuf {

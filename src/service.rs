@@ -4,7 +4,7 @@
 //! once: each claims its work with a conditional UPDATE.
 
 use crate::db::Db;
-use crate::{jobs, notify, paths, prs, usage, vault};
+use crate::{jobs, notify, paths, prs, usage};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -140,7 +140,7 @@ pub fn sweep(db: &Db) {
         .unwrap_or_default();
     for r in rows {
         let id = r["id"].as_i64().unwrap_or(0);
-        if vault::write_thread_note(db, id).is_ok() {
+        if crate::vault_threads::write_thread(db, id).is_ok() {
             let _ = db.archive(id);
         }
     }
