@@ -62,8 +62,7 @@ pub fn mode() -> Mode {
             return parse_mode(&v);
         }
     }
-    let settings = std::fs::read_to_string(paths::data_dir().join("settings.json")).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok());
-    settings.as_ref().and_then(|v| v["vault_search"].as_str()).map(parse_mode).unwrap_or(Mode::Auto)
+    paths::setting("vault_search").as_str().map(parse_mode).unwrap_or(Mode::Auto)
 }
 
 /// Whether the Python half has an embedding index to use: an interpreter, and the vectors it built (under the vault's `_meta`).

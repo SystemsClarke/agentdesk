@@ -706,7 +706,7 @@ impl Host for SysHost {
         let db = crate::db::Db::open(&paths::db_path())?;
         let n = |sql: &str| db.scalar_i64(sql, &[]).map(|v| v.unwrap_or(0));
         let running = db.rows("SELECT name FROM identities WHERE state='running' ORDER BY name", &[])?.iter().filter_map(|r| r["name"].as_str().map(String::from)).collect();
-        let integrity = db.rows("PRAGMA quick_check", &[])?.first().map(|r| r.to_string().contains("ok")).unwrap_or(false);
+        let integrity = db.rows("PRAGMA quick_check", &[])?.first().is_some_and(|r| r["quick_check"].as_str() == Some("ok"));
         Ok(Summary {
             messages: n("SELECT COUNT(*) FROM messages")?,
             threads: n("SELECT COUNT(*) FROM threads")?,

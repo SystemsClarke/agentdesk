@@ -99,13 +99,7 @@ pub fn report() -> Value {
 }
 
 fn write_feed(d: &Map<String, Value>) {
-    let _ = std::fs::create_dir_all(paths::data_dir());
-    let file = paths::usage_file();
-    let tmp = file.with_extension(format!("json.{}.tmp", std::process::id()));
-    if std::fs::write(&tmp, serde_json::to_string_pretty(&Value::Object(d.clone())).unwrap_or_default()).is_ok() {
-        let _ = std::fs::rename(&tmp, &file);
-    }
-    let _ = std::fs::remove_file(&tmp);
+    let _ = paths::write_atomic(&paths::usage_file(), serde_json::to_string_pretty(&Value::Object(d.clone())).unwrap_or_default());
 }
 
 fn find<'a>(v: &'a Value, names: &[&str]) -> Option<&'a Value> {
@@ -147,7 +141,7 @@ pub fn feed(input: &str) -> String {
     if five.is_some() || week.is_some() {
         let mut out = load().unwrap_or_default();
         out.insert("source".into(), json!("claude code status line"));
-        out.insert("captured_ts".into(), json!(Utc::now().format("%Y-%m-%dT%H:%M:%S+00:00").to_string()));
+        out.insert("captured_ts".into(), json!(crate::db::iso(Utc::now())));
         out.insert("five_hour".into(), five.unwrap_or(Value::Null));
         out.insert("seven_day".into(), week.unwrap_or(Value::Null));
         write_feed(&out);
@@ -172,7 +166,7 @@ fn parse_reset(text: &str, now: DateTime<Utc>) -> Value {
         // "Jan 2" read in late December
         local = mk(local_now.year() + 1).unwrap_or(local);
     }
-    json!(local.with_timezone(&Utc).format("%Y-%m-%dT%H:%M:%S+00:00").to_string())
+    json!(crate::db::iso(local.with_timezone(&Utc)))
 }
 
 /// Folds `claude -p /usage` output into the feed, keeping what else it holds (the spend). False if it named no window.
@@ -190,7 +184,7 @@ pub fn apply(output: &str, now: DateTime<Utc>) -> bool {
         return false;
     }
     d.insert("source".into(), json!("claude -p /usage"));
-    d.insert("captured_ts".into(), json!(now.format("%Y-%m-%dT%H:%M:%S+00:00").to_string()));
+    d.insert("captured_ts".into(), json!(crate::db::iso(now)));
     write_feed(&d);
     true
 }

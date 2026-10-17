@@ -97,7 +97,7 @@ pub fn adoptable() -> Vec<Convo> {
 }
 
 pub fn adoptable_json() -> Value {
-    json!({"sessions": adoptable().iter().map(|c| json!({"session_id": c.session_id, "folder": c.folder, "last_activity": c.modified.format("%Y-%m-%dT%H:%M:%S+00:00").to_string(), "first_message": c.first_message})).collect::<Vec<_>>()})
+    json!({"sessions": adoptable().iter().map(|c| json!({"session_id": c.session_id, "folder": c.folder, "last_activity": crate::db::iso(c.modified), "first_message": c.first_message})).collect::<Vec<_>>()})
 }
 
 /// An identity in the conversation's own folder with that `claude_session_id`, started.

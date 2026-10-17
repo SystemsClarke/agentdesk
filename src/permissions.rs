@@ -145,12 +145,7 @@ fn edit(path: &PathBuf, rule: &str, add: bool) -> Result<Option<String>> {
     } else if !add {
         list.retain(|x| x.as_str() != Some(rule));
     }
-    if let Some(d) = path.parent() {
-        std::fs::create_dir_all(d)?;
-    }
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, serde_json::to_string_pretty(&root)? + "\n")?;
-    std::fs::rename(&tmp, path)?;
+    crate::paths::write_atomic(path, serde_json::to_string_pretty(&root)? + "\n")?;
     Ok(backup)
 }
 

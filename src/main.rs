@@ -110,13 +110,10 @@ enum Cmd {
         #[arg(long)]
         self_test: bool,
     },
-    /// The core: the one background process that owns sessions, jobs, the governor, the Concierge, Slack and toasts. Exits if one already runs.
+    /// Run the core in this terminal (it owns sessions, jobs, the governor, the Concierge, Slack and toasts). `core start` runs it in the background.
     Daemon,
-    /// The core: `core status` (default), `core start`, `core stop`, `core restart`.
-    Core {
-        /// status, start, stop or restart
-        action: Option<String>,
-    },
+    /// Manage the background core: `status` (default), `start`, `stop`, `restart`.
+    Core { action: Option<String> },
     /// Claude Code hook: session-start | context | stop (stdin JSON in, hook JSON out).
     Hook { event: String },
     /// Block until John replies on the thread, then print his reply.
@@ -144,7 +141,7 @@ enum Cmd {
         #[arg(long)]
         folder: Option<String>,
     },
-    /// The headless sessions the daemon hosts (`ui:session_list`).
+    /// The headless sessions the core runs.
     Sessions,
     /// `start <name>` runs the identity; `start <name> <folder> [command...]` runs a plain headless session (default command: claude).
     Start {
@@ -226,7 +223,7 @@ enum Cmd {
     UsageFeed,
     /// Refresh the usage feed now with `claude -p /usage` (the original does this every 5 minutes).
     UsageProbe,
-    /// Runs a Python script or module of the embedded Python half with its packages importable: `python scripts/slack_bridge.py`, `python -m agentdesk.backup`.
+    /// Run the embedded Python with its packages importable: `python scripts/slack_bridge.py`, `python -m agentdesk.backup`.
     Python {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
@@ -239,7 +236,7 @@ enum Cmd {
     },
     /// Print where things live and the Claude Code configuration to add.
     Setup,
-    /// Run one of the original's `ui:*` requests (or an agent tool) against the board and print its JSON: `agentdesk ui ui:thread '{"thread_id":1}'`.
+    /// Run a `ui:*` request (or an agent tool) against the board and print its JSON: `agentdesk ui ui:thread '{"thread_id":1}'`.
     Ui { request: String, args: Option<String> },
     /// Render the window headlessly after some keys and print the screen (for tests): `agentdesk ui-snapshot --keys "q enter"`.
     UiSnapshot {
@@ -637,7 +634,7 @@ fn identity(cmd: IdentityCmd) -> Result<()> {
     };
     println!("{}", serde_json::to_string_pretty(&row)?);
     if note && !supervisor::running() {
-        eprintln!("note: no supervisor is running, so nothing will act on this yet. Start `agentdesk daemon` (or the window).");
+        eprintln!("note: {} Nothing acts on this until it runs.", attach::NOT_RUNNING);
     }
     Ok(())
 }
@@ -657,7 +654,7 @@ fn concierge_cmd(action: Option<&str>, folder: Option<String>) -> Result<()> {
     let out = concierge::toggle(&d, &identity::Caller::from_env(), &folder, on)?;
     println!("{}", serde_json::to_string_pretty(&out)?);
     if on.is_some() && !supervisor::running() {
-        eprintln!("note: no supervisor is running, so nothing will act on this yet. Start `agentdesk daemon` (or the window).");
+        eprintln!("note: {} Nothing acts on this until it runs.", attach::NOT_RUNNING);
     }
     Ok(())
 }
@@ -670,7 +667,7 @@ fn core_cmd(action: Option<&str>) -> Result<()> {
         }
         Some("stop") => {
             if !daemon::stop(wait)? {
-                println!("no core is running");
+                println!("The core is not running.");
                 return Ok(());
             }
         }
@@ -728,7 +725,7 @@ fn goal(cmd: GoalCmd) -> Result<()> {
     };
     println!("{}", serde_json::to_string_pretty(&out)?);
     if !supervisor::running() {
-        eprintln!("note: no supervisor is running, so nothing will act on this yet. Start `agentdesk daemon` (or the window).");
+        eprintln!("note: {} Nothing acts on this until it runs.", attach::NOT_RUNNING);
     }
     Ok(())
 }

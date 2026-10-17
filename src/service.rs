@@ -130,7 +130,7 @@ fn toasts(db: &Db, known: &mut HashSet<i64>, last_msg: &mut i64) {
 
 /// Files settled questions: a note per thread in the vault, then status `archived`.
 pub fn sweep(db: &Db) {
-    let cutoff = (chrono::Utc::now() - chrono::Duration::minutes(SWEEP_AFTER_MINUTES)).format("%Y-%m-%dT%H:%M:%S+00:00").to_string();
+    let cutoff = crate::db::iso(chrono::Utc::now() - chrono::Duration::minutes(SWEEP_AFTER_MINUTES));
     let rows = db
         .rows(
             "SELECT id FROM threads WHERE channel='question' AND status IN ('answered','closed') AND updated_ts < :c \

@@ -40,20 +40,7 @@ pub fn packet_url(id: i64) -> Option<String> {
 }
 
 fn b64url(bytes: &[u8]) -> String {
-    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-    let mut out = String::new();
-    for c in bytes.chunks(3) {
-        let n = (c[0] as u32) << 16 | (*c.get(1).unwrap_or(&0) as u32) << 8 | *c.get(2).unwrap_or(&0) as u32;
-        out.push(T[(n >> 18) as usize & 63] as char);
-        out.push(T[(n >> 12) as usize & 63] as char);
-        if c.len() > 1 {
-            out.push(T[(n >> 6) as usize & 63] as char);
-        }
-        if c.len() > 2 {
-            out.push(T[n as usize & 63] as char);
-        }
-    }
-    out
+    crate::attach::base64_encode(bytes).trim_end_matches('=').replace('+', "-").replace('/', "_")
 }
 
 /// The key in `web.key`, made (32 random bytes, 43 characters) the first time.
@@ -197,28 +184,6 @@ fn read_request(conn: &mut TcpStream) -> Option<Request> {
     Some(Request { method, path, query, headers, body })
 }
 
-fn unescape(s: &str) -> String {
-    let b = s.as_bytes();
-    let (mut out, mut i) = (Vec::new(), 0);
-    while i < b.len() {
-        match b[i] {
-            b'%' if s.get(i + 1..i + 3).and_then(|h| u8::from_str_radix(h, 16).ok()).is_some() => {
-                out.push(u8::from_str_radix(&s[i + 1..i + 3], 16).unwrap());
-                i += 3;
-            }
-            b'+' => {
-                out.push(b' ');
-                i += 1;
-            }
-            c => {
-                out.push(c);
-                i += 1;
-            }
-        }
-    }
-    String::from_utf8_lossy(&out).into_owned()
-}
-
 fn reason(status: u16) -> &'static str {
     match status {
         200 => "OK",
@@ -254,7 +219,7 @@ fn route(r: &Request, port: u16, key: &str, started: &str) -> Reply {
     if r.header("Host") != Some(host.as_str()) || (!origin.is_empty() && origin != format!("http://{host}")) {
         return (400, vec![], vec![]);
     }
-    let query_k = r.query.split('&').filter_map(|p| p.split_once('=')).find(|(k, _)| unescape(k) == "k").map(|(_, v)| unescape(v));
+    let query_k = r.query.split('&').filter_map(|p| p.split_once('=')).find(|(k, _)| crate::links::percent_decode(k) == "k").map(|(_, v)| crate::links::percent_decode(v));
     if query_k.as_deref().map(|k| same(k, key)).unwrap_or(false) {
         return (302, vec![("Location".into(), r.path.clone()), ("Set-Cookie".into(), format!("k={key}; max-age={}; path=/; samesite=strict; httponly", 400 * 86400))], vec![]);
     }
@@ -292,7 +257,7 @@ fn route(r: &Request, port: u16, key: &str, started: &str) -> Reply {
             return (405, vec![("Allow".into(), "POST".into())], vec![]);
         }
         let args: Value = if r.body.is_empty() { json!({}) } else { serde_json::from_slice(&r.body).unwrap_or_else(|_| json!({})) };
-        let text = call(&unescape(op), &args, started);
+        let text = call(&crate::links::percent_decode(op), &args, started);
         return (200, vec![("Cache-Control".into(), "no-store".into()), ("Content-Type".into(), "application/json; charset=utf-8".into())], text.into_bytes());
     }
     (404, vec![], vec![])
@@ -409,7 +374,7 @@ fn call(op: &str, args: &Value, started: &str) -> String {
         match op {
             "core" => Ok(
                 json!({"pid": std::process::id(), "started": started, "update": {"installed": true, "current": update::CURRENT, "pending": update::pending(), "latest": update::pending()},
-                "theme": std::fs::read_to_string(paths::data_dir().join("settings.json")).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()).and_then(|v| v["theme"].as_str().map(String::from))}),
+                "theme": paths::setting("theme").as_str()}),
             ),
             "update" => ui_api::call(&db, &c, "ui:update", args),
             "open_questions" => ui_api::call(&db, &c, "open_questions", &json!({})),

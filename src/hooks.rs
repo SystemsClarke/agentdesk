@@ -76,7 +76,7 @@ fn replies(db: &Db, sid: &str) -> String {
     if sid.is_empty() {
         return String::new();
     }
-    let since = (chrono::Utc::now() - chrono::Duration::days(3)).format("%Y-%m-%dT%H:%M:%S+00:00").to_string();
+    let since = crate::db::iso(chrono::Utc::now() - chrono::Duration::days(3));
     let rows = db
         .rows(
             "SELECT m.id, m.thread_id, m.body, t.subject, m.author_kind = 'human' AS john FROM messages m INDEXED BY idx_messages_ts JOIN threads t ON t.id = m.thread_id \
