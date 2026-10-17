@@ -1,12 +1,11 @@
 //! The terminal window: a port of the original's BBS screens (main menu, message bases, reader, merge desk, SysOp
-//! console, Who's on, options, recurring jobs, permission rules, agents) with the same letter keys and wording.
+//! console, Who's on, options, recurring jobs, agents) with the same letter keys and wording.
 //! `screens.rs` builds each screen as lines of tagged segments; this file is state, keys and drawing.
 
 mod bench;
 pub(crate) mod charts; // the Slack bridge draws charts and diagrams with it
 mod editor;
 mod folders;
-mod live;
 mod md;
 mod mouse;
 pub(crate) mod runner;
@@ -206,19 +205,8 @@ fn concierge_folder() -> String {
         .unwrap_or_else(|| std::env::current_dir().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default())
 }
 
-fn n_word_(n: i64) -> String {
-    format!("{n} member{}", if n == 1 { "" } else { "s" })
-}
-
 pub fn open_url(url: &str) {
-    let (prog, args): (&str, Vec<&str>) = if cfg!(target_os = "macos") {
-        ("open", vec![url])
-    } else if cfg!(target_os = "windows") {
-        ("cmd", vec!["/c", "start", "", url])
-    } else {
-        ("xdg-open", vec![url])
-    };
-    let _ = crate::paths::new_command(prog).args(args).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn();
+    let _ = crate::tray::launch(&crate::tray::model::open_command(crate::tray::model::Os::current(), url));
 }
 
 /// `08:00`, `08:00 weekdays`, `08:00 mon,thu`, `every 120`.
@@ -878,16 +866,16 @@ impl App {
             }
             (Screen::Prs, 'o') => self.activate(),
             (Screen::Who, 'p') => self.page(),
-            (Screen::Agents | Screen::Goal, '+' | '=') => self.members_delta(1),
-            (Screen::Agents | Screen::Goal, '-' | '_') => self.members_delta(-1),
-            (Screen::Agents | Screen::Goal, ']') => self.members_delta(10),
-            (Screen::Agents | Screen::Goal, '[') => self.members_delta(-10),
+            (Screen::Agents | Screen::Goal, c @ ('+' | '=' | '-' | '_' | ']' | '[')) => self.members_delta(match c {
+                '+' | '=' => 1,
+                '-' | '_' => -1,
+                ']' => 10,
+                _ => -10,
+            }),
             (Screen::Agents, 'n') => self.new_agent(),
             (Screen::Agents, 'g') => self.new_goal(),
             (Screen::Agents, 'f') => self.forget_selected(),
-            (Screen::Agents, 'a') if !self.sel_goal().is_some_and(|g| !g.standing && !matches!(g.state.as_str(), "running" | "succeeded" | "stopped")) => {
-                self.goto(Screen::Adopt, None)
-            }
+            (Screen::Agents, 'a') if self.sel_goal().is_none() => self.goto(Screen::Adopt, None),
             (Screen::Agents | Screen::Goal, 'a') => self.approve_selected(),
             (Screen::Agents | Screen::Goal, 'x') => self.stop_goal_selected(),
             (Screen::Agents | Screen::Goal, 's') => self.start_stop_selected(),
@@ -1451,23 +1439,7 @@ impl App {
         }
         if self.dictating {
             let _ = crate::dictation::call("stop");
-            let end = std::time::Instant::now() + Duration::from_secs(8);
-            let mut said = String::new();
-            while std::time::Instant::now() < end {
-                match crate::dictation::call("poll") {
-                    Ok(v) => {
-                        said = v["text"].as_str().unwrap_or("").to_string();
-                        if v["state"].as_str() == Some("done") {
-                            break;
-                        }
-                    }
-                    Err(_) => break,
-                }
-                std::thread::sleep(Duration::from_millis(150));
-            }
-            self.dictating = false;
-            self.insert_dictated(&said);
-            return self.say(if said.trim().is_empty() { "Dictation: nothing heard.".to_string() } else { "Dictation: done. Ctrl+D again to add more.".to_string() }, "gr");
+            return self.say("Dictation: finishing...", "cy");
         }
         match crate::dictation::call("start") {
             Ok(v) if v["state"].as_str() != Some("done") => {
@@ -1496,8 +1468,11 @@ impl App {
                     self.dictating = false;
                     let said = v["text"].as_str().unwrap_or("").to_string();
                     self.insert_dictated(&said);
-                    let msg = v["error"].as_str().map(|e| format!("Dictation: {e}")).unwrap_or_else(|| "Dictation: done.".to_string());
-                    self.say(msg, "ye");
+                    match v["error"].as_str() {
+                        Some(e) => self.say(format!("Dictation: {e}"), "ye"),
+                        None if said.trim().is_empty() => self.say("Dictation: nothing heard.", "gr"),
+                        None => self.say("Dictation: done. Ctrl+D again to add more.", "gr"),
+                    }
                 } else if let Some(t) = v["text"].as_str().filter(|t| !t.is_empty()) {
                     let tail: String = t.chars().rev().take(80).collect::<Vec<_>>().into_iter().rev().collect();
                     self.say(format!("Dictation: …{tail}"), "cy");
@@ -1515,10 +1490,7 @@ impl App {
             return;
         }
         match crate::concierge::toggle(&self.db, &john(), &concierge_folder(), Some(true)) {
-            Ok(_) => {
-                self.reload();
-                self.say("Turning the Concierge on...", "ye");
-            }
+            Ok(_) => self.say("Turning the Concierge on...", "ye"),
             Err(e) => self.fail("", e),
         }
         self.reload();
@@ -1597,7 +1569,7 @@ impl App {
         }
         let n = (g.max_members + delta).max(1);
         match crate::goals::set_budget(&self.db, &john(), &g.name, Some(n), None, None) {
-            Ok(_) => self.say(format!("{} may now run {} at once. The total is still capped by Sessions at once (Options).", g.name, n_word_(n)), "gr"),
+            Ok(_) => self.say(format!("{} may now run {} at once. The total is still capped by Sessions at once (Options).", g.name, seg::n_word(n as usize, "member")), "gr"),
             Err(e) => self.fail("Not changed: ", e),
         }
         self.reload();
