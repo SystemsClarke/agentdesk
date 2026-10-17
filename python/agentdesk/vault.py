@@ -31,7 +31,7 @@ WHAT WAS REJECTED (work item #26 asked for this to be written down):
     last-writer-wins merge would silently eat a human edit. A one-way mirror has
     one writer on each side, which is why it cannot conflict.
   - **A git commit on each mirror.** Rejected: the vault's commits carry an
-    authorship convention that is John's to make, and `backup.py` already
+    authorship convention that is John's to make, and the backup
     refuses for the same reason. This module contains no git call at all.
 
 A mirror run is idempotent: re-mirroring a thread rewrites the note it owns and
@@ -52,8 +52,6 @@ not memory -- edit the opening post and re-mirror if the note needs to change.
 
 from __future__ import annotations
 
-import argparse
-import json
 import re
 import sqlite3
 from datetime import date, datetime
@@ -298,9 +296,7 @@ def _park(thread_id: int, subject: str, author: str, body: str,
     the vault too, which is a git repo John pushes, so quoting the post "to
     explain why we refused it" would put the credential in the vault by the back
     door -- the check would have refused the note and leaked the secret in the
-    same run. `_park_transcript` below makes exactly this decision for the same
-    reason; this is that reasoning applied to the wiki side, where the body was
-    previously reproduced unconditionally.
+    same run.
     """
     paths.ensure_dirs()
     name = note_name(subject) or f"thread-{thread_id}"
@@ -319,10 +315,9 @@ def _park(thread_id: int, subject: str, author: str, body: str,
         "",
         "## What to do",
         "",
-        "Fix the opening post on the board and re-run the mirror "
-        "(`python -m agentdesk.vault --thread "
-        f"{thread_id}`). This file is rewritten or removed by that run; the "
-        "board thread is the source.",
+        "Fix the opening post on the board and mirror the thread again. "
+        "This file is rewritten or removed by that run; the board thread "
+        "is the source.",
         "",
     ]
     if redact:
@@ -448,329 +443,7 @@ def mirror_thread(conn: sqlite3.Connection, thread_id: int,
             "note": str(note_path), "moc": moc, "reasons": []}
 
 
-def mirror_all(conn: sqlite3.Connection, dry_run: bool = False) -> list[dict]:
-    """Mirror every wiki thread. Idempotent, so this is the backfill."""
-    ids = [r["id"] for r in conn.execute(
-        "SELECT id FROM threads WHERE channel='wiki' ORDER BY id")]
-    return [mirror_thread(conn, tid, dry_run=dry_run) for tid in ids]
-
-
-# --- a settled question into the vault ------------------------------------------
-#
-# The other direction, and a different KIND of thing from the mirror above. A
-# wiki post is a CANDIDATE for a note and is judged by the memory protocol; a
-# settled question is a RECORD, and it is not judged: it goes in whole, because
-# the point is that the reasoning survives -- why the question was asked and how
-# it was settled. So it lands under agentdesk/questions/, which is the app's own
-# folder for raw text, and never in notes/, for exactly the reason the daily
-# transcript does not.
-#
-# WHY IT IS A SWEEP AND NOT PART OF REPLYING. Nothing here is triggered by the
-# act of answering. The window runs archive_due() on every poll and the CLI can
-# run it by hand, so the rule is "a settled question ends up in the vault",
-# which holds for a question John answered in another instance, or before this
-# window started. An archive wired into the reply path would be the narrower
-# rule "a question John answered while this window was open ends up in the
-# vault", and the difference only shows up as work that quietly did not happen.
-#
-# ORDER OF OPERATIONS, which is the load-bearing part: the transcript is written
-# FIRST and the status flips to 'archived' only after it has actually landed. A
-# vault that is unreachable, unwritable or full therefore leaves the question
-# answered and still on the tab. That is the true state -- it is settled but not
-# recorded -- and it is recoverable, where a question marked archived with no
-# transcript behind it is not: it would have left the tab and be in no vault.
-#
-# IDEMPOTENT, and the status is what makes it so. A second call on an archived
-# thread returns 'already-archived' without writing anything, and the filename
-# is keyed to the thread id rather than to the subject, so even a re-run that
-# somehow got past that check would rewrite the one file rather than leave a
-# second one behind under the question's new wording.
-
-def question_filename(thread_id: int) -> str:
-    """The transcript's name, keyed to the thread id alone.
-
-    Not to the subject, which is editable: a subject-keyed name would strand the
-    old file as an orphan the first time somebody reworded a question, and
-    "archiving twice writes nothing new" would quietly stop being true. The
-    subject is the H1 inside the file, where it can change without moving it.
-    """
-    return f"question-{thread_id}.md"
-
-
 def _secret_problems(text: str) -> list[str]:
-    """Credential shapes found in a transcript about to be written to the vault.
-
-    The same check the wiki mirror makes, and it is not hypothetical here: this
-    board has already leaked a credential into a transcript once, and a
-    question's transcript is the whole conversation rather than a curated note,
-    so it is the more likely of the two to contain one. The vault is a git repo
-    that John pushes, which makes a leaked key in it a leaked key on a remote.
-    """
-    return [f"the transcript looks like it contains {what}"
+    """Credential shapes found in a post about to be written to the vault."""
+    return [f"the post looks like it contains {what}"
             for pattern, what in SECRET_PATTERNS if pattern.search(text)]
-
-
-def _park_transcript(thread_id: int, subject: str, reasons: list[str],
-                     today: date) -> tuple[Path, bool]:
-    """Leave a readable refusal where a human will find it. Returns (path, was_new).
-
-    Deliberately does NOT reproduce the transcript, which is the one place this
-    differs from the wiki mirror's _park(): there the body is a candidate note
-    and showing it is the whole point, here the body is what the check just
-    flagged as possibly secret, and copying it into the vault to complain about
-    it would put the credential in the vault anyway.
-    """
-    paths.ensure_dirs()
-    park_file = paths.VAULT_PARKED / f"{question_filename(thread_id)}"
-    was_new = not park_file.exists()
-    lines = [
-        f"# Parked question transcript - thread {thread_id}",
-        "",
-        f"Not archived on {today.isoformat()}. The question is on the board as",
-        f"**{subject}**, and remains on the Questions tab.",
-        "",
-        "## Why it was not written to the vault",
-        "",
-    ]
-    lines += [f"- {r}" for r in reasons]
-    lines += [
-        "",
-        "## What to do",
-        "",
-        "The transcript is not reproduced here on purpose: the check above says",
-        "it may contain a credential, and copying it in to complain about it",
-        "would put the credential in the vault anyway. Read the thread on the",
-        "board instead, remove or rotate whatever the check found, and the next",
-        "archive pass will file it.",
-        "",
-    ]
-    park_file.write_text("\n".join(lines), encoding="utf-8", newline="\n")
-    return park_file, was_new
-
-
-def _append_log_pointer(pointer: str, today: date) -> None:
-    """Add one line to the vault's log for today, if it is not there already.
-
-    The same shape as backup.py's pointer for the daily transcript, including
-    the newline guard: a plain append onto a file whose last line has no
-    terminator would weld the new line onto it. Duplicated rather than shared
-    because backup.py is a different part of the app with its own file and this
-    is eight lines; if a third caller ever appears, it belongs in one place.
-    """
-    log_file = paths.VAULT_LOG / f"{today.isoformat()}.md"
-    if log_file.exists():
-        existing = log_file.read_text(encoding="utf-8")
-        if pointer not in existing.splitlines():
-            prefix = "" if (not existing or existing.endswith("\n")) else "\n"
-            with log_file.open("a", encoding="utf-8", newline="\n") as f:
-                f.write(prefix + pointer + "\n")
-    else:
-        with log_file.open("w", encoding="utf-8", newline="\n") as f:
-            f.write(pointer + "\n")
-
-
-def render_question(conn: sqlite3.Connection, thread_id: int,
-                    today: date) -> tuple[str, int]:
-    """The full transaction: every message, in order, verbatim.
-
-    Not a summary and not the last message. Author, author_kind, timestamp and
-    the complete body of each -- the entire value of the archive is that the
-    reasoning is recoverable later, and a summary would be somebody's reading of
-    the reasoning rather than the reasoning.
-    """
-    thread = conn.execute(
-        "SELECT id, subject, opened_by, created_ts, status FROM threads WHERE id=?",
-        (thread_id,)).fetchone()
-    msgs = conn.execute(
-        "SELECT author, author_kind, ts, body FROM messages"
-        " WHERE thread_id=? ORDER BY id", (thread_id,)).fetchall()
-    lines = [
-        f"# Question #{thread_id} - {thread['subject']}",
-        "",
-        f"Archived from the AgentDesk board on {today.isoformat()}. Opened by "
-        f"{thread['opened_by']} on {thread['created_ts']}. Status at archive: "
-        f"{thread['status']}.",
-        "",
-        f"Every message in the thread, in order, verbatim. {len(msgs)} in total.",
-        "",
-    ]
-    for n, m in enumerate(msgs, 1):
-        lines += [
-            f"## {n}. {m['author']} ({m['author_kind']}) - {m['ts']}",
-            "",
-            m["body"].rstrip("\n"),
-            "",
-        ]
-    return "\n".join(lines).rstrip("\n") + "\n", len(msgs)
-
-
-def archive_question(conn: sqlite3.Connection, thread_id: int,
-                     dry_run: bool = False) -> dict:
-    """Write a settled question's transcript to the vault, then mark it archived.
-
-    Returns a result row: status is one of
-
-        'archived'         written, and the thread is now STATUS_ARCHIVED
-        'already-archived' nothing written; this is the idempotent second call
-        'not-ready'        the question is still open, or an agent has the
-                           last word in it, so nothing may be filed
-        'refused'          a credential shape was found; nothing was written
-        'skipped'          not a question thread, or no such thread
-
-    Only 'archived' means the thread left the Questions tab.
-    """
-    row = conn.execute(
-        "SELECT t.id, t.channel, t.status, t.subject,"
-        " (CASE WHEN " + db.WAITING_SQL + " THEN 1 ELSE 0 END) AS waiting"
-        " FROM threads t WHERE t.id=?", (thread_id,)).fetchone()
-    if row is None:
-        return {"thread_id": thread_id, "status": "skipped",
-                "reason": f"no such thread: {thread_id}", "reasons": []}
-    if row["channel"] != "question":
-        return {"thread_id": thread_id, "status": "skipped",
-                "reason": f"channel is {row['channel']!r}, not 'question'",
-                "reasons": []}
-
-    target = paths.VAULT_QUESTIONS / question_filename(thread_id)
-    if row["status"] == paths.STATUS_ARCHIVED:
-        return {"thread_id": thread_id, "status": "already-archived",
-                "subject": row["subject"], "file": str(target), "reasons": []}
-    if row["status"] not in (paths.STATUS_ANSWERED, paths.STATUS_CLOSED):
-        return {"thread_id": thread_id, "status": "not-ready",
-                "subject": row["subject"], "status_now": row["status"],
-                "reasons": [f"a question is archived once it is answered or "
-                            f"closed; this one is {row['status']!r}"]}
-    # Settled by status is not settled. A question John answered once whose
-    # newest message is an agent's asking again carries the settled status and
-    # is NOT settled, and filing it here would take it off his tab while it is
-    # the one thing on the board he still owes an answer to. db.WAITING_SQL's
-    # other user, questions_to_archive, filters on the same thing; this is the
-    # explicit `--archive-question N` path, and the rule is only a rule if it
-    # holds on the paths nobody takes by accident too.
-    if row["waiting"]:
-        return {"thread_id": thread_id, "status": "not-ready",
-                "subject": row["subject"], "status_now": row["status"],
-                "reasons": [f"an agent has the last word in this question, so "
-                            f"it is waiting on John rather than settled; it is "
-                            f"archived once he replies or closes it"]}
-
-    today = datetime.now().astimezone().date()
-    text, count = render_question(conn, thread_id, today)
-
-    problems = _secret_problems(text)
-    if problems:
-        parked_at, was_new = None, False
-        if not dry_run:
-            park_file, was_new = _park_transcript(thread_id, row["subject"],
-                                                  problems, today)
-            parked_at = str(park_file)
-        return {"thread_id": thread_id, "status": "refused",
-                "subject": row["subject"], "parked_at": parked_at,
-                "parked_new": was_new, "reasons": problems}
-
-    if dry_run:
-        return {"thread_id": thread_id, "status": "archived",
-                "subject": row["subject"], "file": str(target),
-                "messages": count, "reasons": []}
-
-    paths.ensure_dirs()
-    target.write_text(text, encoding="utf-8", newline="\n")
-    # Checked rather than assumed. The contract this function exists to keep is
-    # "no thread is marked archived unless its transcript landed", and a write
-    # that reported success without producing a file would break it silently.
-    if not target.exists():
-        return {"thread_id": thread_id, "status": "skipped",
-                "subject": row["subject"],
-                "reason": (f"the transcript did not land at {target}; the "
-                           f"thread is left as it was"),
-                "reasons": []}
-
-    _append_log_pointer(
-        f"- [[agentdesk/questions/question-{thread_id}]] - AgentDesk question "
-        f"#{thread_id} archived: {row['subject']}", today)
-    # `archived_from` is what makes the archive reversible without guessing:
-    # restoring the thread needs the status it was settled with, and 'answered'
-    # is the wrong answer for a question John explicitly CLOSED. It is written
-    # in the same UPDATE as the status, so the two cannot disagree.
-    #
-    # Any hold is dropped here rather than being honoured, because reaching this
-    # line means the transcript has landed: a hold says "do not sweep this", and
-    # this question has just been swept. It is also the path the explicit
-    # Close & archive button takes, which has to be able to re-file a question
-    # that was brought back.
-    db.set_thread_status(conn, thread_id, paths.STATUS_ARCHIVED,
-                         meta_updates={"archived_from": row["status"],
-                                       "archive_hold": None})
-    return {"thread_id": thread_id, "status": "archived",
-            "subject": row["subject"], "file": str(target),
-            "messages": count, "reasons": []}
-
-
-def archive_due(conn: sqlite3.Connection, dry_run: bool = False) -> list[dict]:
-    """Archive every settled question that is not in the vault yet.
-
-    Idempotent, so this is safe to call every poll tick: the questions it has
-    already filed report 'already-archived' and write nothing.
-    """
-    return [archive_question(conn, r["id"], dry_run=dry_run)
-            for r in db.questions_to_archive(conn)]
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Mirror AgentDesk wiki posts into the memory vault.")
-    parser.add_argument("--thread", type=int, action="append",
-                        help="mirror one thread id (repeatable)")
-    parser.add_argument("--all", action="store_true",
-                        help="mirror every wiki thread")
-    parser.add_argument("--archive-question", type=int, action="append",
-                        help="archive one settled question id (repeatable)")
-    parser.add_argument("--archive-due", action="store_true",
-                        help="archive every settled question not yet in the "
-                             "vault; this is the backstop for a question "
-                             "answered while no window was running")
-    parser.add_argument("--dry-run", action="store_true",
-                        help="report what would happen; write nothing")
-    parser.add_argument("--json", action="store_true",
-                        help="print the results as JSON")
-    args = parser.parse_args()
-
-    conn = db.connect()
-    try:
-        if args.archive_due:
-            results = archive_due(conn, dry_run=args.dry_run)
-        elif args.archive_question:
-            results = [archive_question(conn, t, dry_run=args.dry_run)
-                       for t in args.archive_question]
-        elif args.all:
-            results = mirror_all(conn, dry_run=args.dry_run)
-        elif args.thread:
-            results = [mirror_thread(conn, t, dry_run=args.dry_run)
-                       for t in args.thread]
-        else:
-            parser.error("give --thread N (repeatable), --all, "
-                         "--archive-question N (repeatable) or --archive-due")
-    finally:
-        conn.close()
-
-    if args.json:
-        print(json.dumps(results, indent=2, ensure_ascii=False))
-        return
-    for r in results:
-        # One printer for two result shapes: the mirror's keys are note/parked_at
-        # and the archive's are file/parked_at, and every one of them is a path
-        # worth showing. 'reason' is the single-line "why not", 'reasons' is the
-        # list a refusal or a park carries.
-        where = r.get("note") or r.get("file") or r.get("parked_at")
-        line = f"thread {r['thread_id']}: {r['status']}"
-        if where:
-            line += f" -> {where}"
-        if r.get("reason"):
-            line += f" ({r['reason']})"
-        print(line)
-        for reason in r.get("reasons", []):
-            print(f"    - {reason}")
-
-
-if __name__ == "__main__":
-    main()

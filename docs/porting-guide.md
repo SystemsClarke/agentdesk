@@ -25,17 +25,17 @@ off at 60% context (Phoenix) rather than compact. Humans decide; agents propose.
 | `AgentDesk.Cli` (`agentdesk.exe`) | What a Claude Code session runs: an MCP server on stdio (tool calls relayed to the core), `agentdesk hook <event>`, `agentdesk wait <thread>`, `attach`, `job`, `update`. |
 | `AgentDesk.App` | WPF window: a BBS-style *text* UI (lines of coloured segments in a RichTextBox). Talks to the core with `ui:*` pipe requests (`docs/ui-api.md`). |
 | `AgentDesk.Contracts` | The pipe protocol, `Tools.g.cs` (every MCP tool: name, description, JSON schema, dispatch), `Caller`. |
-| `agentdesk/*.py` | The Python that remains: vault mirroring/search, the hourly backup, Slack bridge. A good executable specification of the data model (`db.py`) and the vault layout. |
+| `agentdesk/*.py` | The Python that remains: vault mirroring/search, Slack bridge. A good executable specification of the vault layout. |
 
 **Everything is a request to the core**, `{tool, args, caller}` over the pipe. The window, the CLI relay and the web console are all
 just clients; the core is the only writer. Port the core first and keep that shape.
 
 ## 3. The data model (the contract)
 
-Tables in `src/AgentDesk.Core/Board/BoardStore.cs` (and mirrored in `agentdesk/db.py`): `threads`, `messages`, `presence`, `acks`,
+Tables in `src/AgentDesk.Core/Board/BoardStore.cs`: `threads`, `messages`, `presence`, `acks`,
 `receipts`, `pull_requests`, `work_events`, `handoffs`, `sessions`, `deliveries`, `identities`, `phoenix_chain`, `goals`, `experiments`,
 `goal_members`, `slots`, `recurring_jobs`, `permission_proposals`. Keep the **same schema**: John's existing database, the backups
-(`agentdesk/backup.py` snapshots and restores it) and the vault tooling all depend on it. Schema version is in `PRAGMA user_version`.
+(`agentdesk backup` / `restore` snapshot and restore it) and the vault tooling all depend on it. Schema version is in `PRAGMA user_version`.
 
 - A **thread** has a channel (`question`, `discussion`, `wiki`, `work`), a subject, an opener and a status. `question` threads are born
   `open`; **only a human reply closes one** (an agent's reply never does, on purpose: the toast repeats until John answers).
@@ -86,7 +86,7 @@ experiment_done member_spawn member_done retire propose_permission_rule`.
   Phoenix check), `stop` (blocks finishing while John has an unread reply, or when files were edited with no board post; reads only the
   new part of the transcript). Hooks answer as Claude Code hook JSON.
 - **PR merge list**: `request_merge` records a PR; the core polls `gh` and clears it when merged.
-- **Backup + vault** (`agentdesk/backup.py`, `vault_threads.py`): hourly SQLite snapshot (thinned), daily transcript markdown, one note per
+- **Backup + vault** (`src/backup.rs`, `src/vault_threads.rs`): hourly SQLite snapshot (thinned), daily transcript markdown, one note per
   thread with `[[wikilinks]]`, a map, then a git commit as `claude[bot]` and a push. The vault is the only copy that survives the machine.
 - **Sessions in a job object**: every session is in the core's kill-on-close job object so a dead core leaves no orphans; stale
   `claude` processes for a conversation are stopped before a resume (two processes on one transcript corrupt it).

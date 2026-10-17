@@ -1,6 +1,6 @@
 """The Python half of AgentDesk.Core: a JSON-RPC 2.0 loop over stdin/stdout, one request per line.
 
-The C# core starts `python -m agentdesk.plugin`, restarts it if it dies, and calls the methods
+The Rust core starts `python -m agentdesk.plugin`, restarts it if it dies, and calls the methods
 below for the jobs Python does best. Logs go to stderr; stdout is the protocol.
 """
 
