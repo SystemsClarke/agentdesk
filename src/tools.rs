@@ -207,7 +207,7 @@ fn dispatch(db: &Db, c: &Caller, tool: &str, a: &Args) -> Result<Value> {
         "retire" => match (std::env::var("AGENTDESK_IDENTITY").ok().filter(|n| !n.is_empty()), c.session_id.as_deref()) {
             (Some(name), Some(_)) if crate::goals::is_member(db, &name) => crate::goals::member_done(db, c, "Retired: its task is done."), // a goal member is retired for good
             (Some(name), Some(_)) => crate::identities::retire(db, &name),
-            _ => err("retire is for sessions the daemon runs: an identity's own"),
+            _ => err("retire only works in a session the core runs for an agent."),
         },
         _ => err(format!("no such tool: {tool}")),
     }

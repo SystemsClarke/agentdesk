@@ -106,9 +106,7 @@ fn edit_json(path: &Path, apply: bool, tag: &str, patch: impl Fn(&mut Value) -> 
     }
     if apply {
         match backup_file(path, tag).and_then(|b| {
-            let tmp = path.with_extension("agentdesk-tmp");
-            std::fs::write(&tmp, serde_json::to_string_pretty(&v)? + "\n")?;
-            std::fs::rename(&tmp, path)?;
+            crate::paths::write_atomic(path, serde_json::to_string_pretty(&v)? + "\n")?;
             Ok(b)
         }) {
             Ok(b) => report.push(format!("  backup: {}", b.display())),

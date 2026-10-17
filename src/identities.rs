@@ -34,22 +34,18 @@ true; never just append a log), kept short and structured: DECISIONS (each with 
 TRIED and UNTRIED (ideas, with what happened), KEY FACTS to keep verbatim (ids, paths, exact commands and strings, numbers), and WHO
 owns what. Update it after each decision and before pass_the_torch. Your successor is given it verbatim along with your handoff.";
 
-fn settings() -> Value {
-    std::fs::read_to_string(paths::data_dir().join("settings.json")).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(Value::Null)
-}
-
 /// `settings.json`'s `max_sessions`: how many identities may run at once (default 5).
 pub fn max_sessions() -> usize {
-    settings()["max_sessions"].as_u64().map(|n| n as usize).unwrap_or(5).max(1)
+    paths::setting("max_sessions").as_u64().map(|n| n as usize).unwrap_or(5).max(1)
 }
 
 fn state_file_on() -> bool {
-    !settings()["phoenix_state_file"].as_bool().map(|b| !b).unwrap_or(false)
+    !paths::setting("phoenix_state_file").as_bool().map(|b| !b).unwrap_or(false)
 }
 
 /// How much of the state file goes inline into a successor's prompt: `phoenix_state_chars` (500 to 20,000), default 12,000.
 fn state_limit() -> usize {
-    settings()["phoenix_state_chars"].as_u64().map(|n| (n as usize).clamp(500, 20_000)).unwrap_or(12_000)
+    paths::setting("phoenix_state_chars").as_u64().map(|n| (n as usize).clamp(500, 20_000)).unwrap_or(12_000)
 }
 
 /// An identity's state file: its working memory across generations, in the data folder.

@@ -1,8 +1,10 @@
 //! Hourly snapshot of the board (`VACUUM INTO`), thinned: all of them for 2 days, then one a day up to 14 days,
 //! plus a note per answered thread in the vault. Run it from cron / Task Scheduler / launchd: `agentdesk backup`.
 
-use crate::{db::Db, paths, vault, vault_threads};
+use crate::{db::Db, paths, vault_threads};
 use anyhow::Result;
+use chrono::Timelike;
+use serde_json::json;
 use std::collections::HashSet;
 
 /// One backup cycle. `skip_vault`: the snapshot only (an ad hoc run against a real board must not rewrite the vault).
@@ -24,28 +26,35 @@ pub fn run_with(db: &Db, skip_vault: bool) -> Result<String> {
     if skip_vault {
         return Ok(format!("snapshot {} (integrity {integrity}, {thinned} older removed), vault skipped", path.display()));
     }
-    let mut notes = 0;
-    for r in db.rows("SELECT id FROM threads WHERE channel='question' AND status IN ('answered','closed','archived')", &[])? {
-        if vault::write_thread_note(db, r["id"].as_i64().unwrap_or(0)).is_ok() {
-            notes += 1;
-        }
-    }
     // The vault as the board's history: a transcript for today, a linked note per thread, a map, then a commit and push.
     let today = chrono::Local::now().date_naive();
-    vault_threads::write_day(db, today)?;
+    for back in 0..3 {
+        vault_threads::write_day(db, today - chrono::Duration::days(back))?; // the last three days, so a day the core was down is caught up
+    }
     let threads = vault_threads::write_threads(db)?;
     vault_threads::write_moc(db)?;
-    let git = vault_threads::sync(&paths::vault_dir());
-    write_state(&git, threads);
+    let vault = paths::vault_dir();
+    let mut git = vault_threads::sync(&vault, &vault_threads::DAILY, "board backup");
+    // Once a day, in the small hours, the notes other sessions wrote are committed too: not hourly, so a note someone is still writing is not caught half done.
+    let (day, now) = (today.to_string(), chrono::Local::now());
+    let swept = if now.hour() == 3 && last_sweep().as_deref() != Some(&day) {
+        let s = vault_threads::sync(&vault, &vault_threads::SWEEP, "notes sweep");
+        if git["error"].is_null() {
+            git["error"] = s["error"].clone();
+        }
+        git["committed"] = json!(git["committed"] == true || s["committed"] == true);
+        git["pushed"] = json!(git["pushed"] == true || s["pushed"] == true);
+        git["unpushed"] = s["unpushed"].clone();
+        Some(day)
+    } else {
+        last_sweep()
+    };
+    write_state(&git, threads, swept);
     let git_note = match (git["committed"].as_bool(), git["pushed"].as_bool(), git["error"].as_str()) {
         (_, _, Some(e)) => format!(", GIT ERROR: {e}"),
         (c, p, None) => format!(", {}{}", if c == Some(true) { "committed" } else { "no change" }, if p == Some(true) { ", pushed" } else { "" }),
     };
-    Ok(format!(
-        "snapshot {} (integrity {integrity}, {thinned} older removed), {notes} question notes, {threads} thread notes in {}{git_note}",
-        path.display(),
-        paths::vault_dir().display()
-    ))
+    Ok(format!("snapshot {} (integrity {integrity}, {thinned} older removed), {threads} thread notes changed in {}{git_note}", path.display(), paths::vault_dir().display()))
 }
 
 /// `PRAGMA integrity_check` on a snapshot: "ok", or what SQLite complained about. A snapshot that fails is renamed `<name>.corrupt`, so it
@@ -67,16 +76,19 @@ pub(crate) fn verify(path: &std::path::Path) -> String {
 }
 
 /// `vault_state.json` in the data folder: how the vault's git backup went this run, for the window's header and the status screens.
-fn write_state(git: &serde_json::Value, threads: usize) {
+fn write_state(git: &serde_json::Value, threads: usize, last_sweep: Option<String>) {
     let state = serde_json::json!({
-        "ts": chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S+00:00").to_string(),
+        "ts": crate::db::iso(chrono::Utc::now()),
         "committed": git["committed"], "pushed": git["pushed"], "unpushed": git["unpushed"], "error": git["error"], "threads_written": threads,
+        "last_sweep": last_sweep,
     });
-    let target = paths::data_dir().join("vault_state.json");
-    let tmp = target.with_extension("json.tmp");
-    if std::fs::write(&tmp, state.to_string()).is_ok() {
-        let _ = std::fs::rename(&tmp, &target);
-    }
+    let _ = paths::write_atomic(&paths::data_dir().join("vault_state.json"), state.to_string());
+}
+
+/// The day the notes were last committed (`vault_state.json`).
+fn last_sweep() -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(paths::data_dir().join("vault_state.json")).ok()?).ok()?;
+    v["last_sweep"].as_str().map(String::from)
 }
 
 fn thin(dir: &std::path::Path) -> usize {

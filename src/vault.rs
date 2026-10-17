@@ -4,22 +4,12 @@
 use crate::paths;
 use anyhow::Result;
 use serde_json::{json, Value};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 fn slug(subject: &str) -> String {
     let s: String = subject.chars().map(|c| if c.is_alphanumeric() { c.to_ascii_lowercase() } else { '-' }).collect();
     let s = s.split('-').filter(|p| !p.is_empty()).collect::<Vec<_>>().join("-");
     s.chars().take(60).collect()
-}
-
-fn atomic_write(path: &Path, text: &str) -> Result<()> {
-    if let Some(d) = path.parent() {
-        std::fs::create_dir_all(d)?;
-    }
-    let tmp = path.with_extension("md.tmp");
-    std::fs::write(&tmp, text)?;
-    std::fs::rename(&tmp, path)?;
-    Ok(())
 }
 
 #[cfg(test)]
@@ -54,15 +44,7 @@ fn mirror(db: &crate::db::Db, thread_id: i64) -> Result<PathBuf> {
     let doc = db.get_thread(thread_id)?;
     let subject = doc["thread"]["subject"].as_str().unwrap_or("untitled");
     let path = paths::vault_dir().join("agentdesk").join("wiki").join(format!("{thread_id}-{}.md", slug(subject)));
-    atomic_write(&path, &render(&doc))?;
-    Ok(path)
-}
-
-/// One linked note per thread: `agentdesk/threads/thread-N.md`.
-pub fn write_thread_note(db: &crate::db::Db, thread_id: i64) -> Result<PathBuf> {
-    let doc = db.get_thread(thread_id)?;
-    let path = paths::vault_dir().join("agentdesk").join("threads").join(format!("thread-{thread_id}.md"));
-    atomic_write(&path, &render(&doc))?;
+    paths::write_atomic(&path, render(&doc))?;
     Ok(path)
 }
 
@@ -82,7 +64,12 @@ fn render(doc: &Value) -> String {
         if crate::db::RECEIPT_KINDS.contains(&kind.as_str()) {
             continue;
         }
-        out.push_str(&format!("\n## {} ({})\n\n{}\n", m["author"].as_str().unwrap_or(""), m["ts"].as_str().unwrap_or(""), m["body"].as_str().unwrap_or("")));
+        out.push_str(&format!(
+            "\n## {} ({})\n\n{}\n",
+            m["author"].as_str().unwrap_or(""),
+            m["ts"].as_str().unwrap_or(""),
+            crate::vault_threads::redact(m["body"].as_str().unwrap_or(""))
+        ));
     }
     out
 }
