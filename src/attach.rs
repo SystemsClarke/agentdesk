@@ -405,7 +405,7 @@ pub fn switch_key(code: ratatui::crossterm::event::KeyCode, ctrl: bool) -> Switc
         Char('p') | Char('P') | Left | Up | BackTab => Switch::Prev,
         Char(d) if d.is_ascii_digit() && d != '0' => Switch::Jump(d as usize - '1' as usize),
         Char(']') if ctrl => Switch::Window,
-        Char('d') | Char('D') | Char('w') | Char('W') | Char(']') | Char('l') | Char('L') | Enter | Esc => Switch::Window,
+        Char('d') | Char('D') | Char('w') | Char('W') | Char(']') | Char('l') | Char('L') | Enter => Switch::Window,
         _ => Switch::Cancel,
     }
 }
@@ -569,7 +569,7 @@ fn repaint(link: &mut Link, cols: u16, rows: u16) {
 /// `agentdesk attach <name>`: uses a session the supervisor hosts from this console.
 ///
 /// Ctrl+] is the prefix. After it: `n`/`p` (or the arrow keys, Tab) switch to the next or previous running session without going back to
-/// the window, `1`-`9` jump, `d` (or Ctrl+] again, Enter, Esc, or waiting a moment) detaches to the window. The sessions keep running.
+/// the window, `1`-`9` jump, `d` (or Ctrl+] again, Enter, or waiting a moment) detaches to the window, and Esc stays. The sessions keep running.
 pub fn client(name: &str) -> Result<()> {
     use ratatui::crossterm::{
         event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
@@ -735,6 +735,7 @@ mod client_tests {
         assert_eq!(switch_key(KeyCode::Char(']'), true), Switch::Window);
         assert_eq!(switch_key(KeyCode::Char('d'), false), Switch::Window);
         assert_eq!(switch_key(KeyCode::Char('x'), false), Switch::Cancel);
+        assert_eq!(switch_key(KeyCode::Esc, false), Switch::Cancel, "the bar says Esc stays");
     }
 
     #[test]
