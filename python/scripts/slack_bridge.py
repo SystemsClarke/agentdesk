@@ -193,7 +193,7 @@ def poll_loop() -> None:
                 state = load_state()
             conn = db.connect()
             try:
-                waiting = db.open_questions(conn, include_archived=False)
+                waiting = db.open_questions(conn)
             finally:
                 conn.close()
             for q in waiting:

@@ -283,9 +283,6 @@ def _prune(b):
     d = os.path.join(b.data, "backups")
     os.makedirs(d)
     now = datetime.datetime.now(datetime.timezone.utc)
-    keep, drop = [], []
-    for h in (1, 5, 30):
-        keep.append(h)
     # three snapshots on one calendar day, three days back (always past the 2 days, whatever the hour the suite runs): one is kept.
     # (A fixed "50 and 52 hours ago" straddled midnight when the suite ran in the first two hours of the day.)
     day = (now - datetime.timedelta(days=3)).replace(hour=0, minute=0, second=0, microsecond=0)

@@ -226,7 +226,7 @@ enum Cmd {
     UsageFeed,
     /// Refresh the usage feed now with `claude -p /usage` (the original does this every 5 minutes).
     UsageProbe,
-    /// Runs a Python script or module of the embedded Python half with its packages importable: `python scripts/slack_bridge.py`, `python -m agentdesk.backup`.
+    /// Runs a Python script or module of the embedded Python half with its packages importable: `python scripts/slack_bridge.py`.
     Python {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
