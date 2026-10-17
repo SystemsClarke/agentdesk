@@ -406,8 +406,9 @@ fn the_backup_writes_linked_thread_notes_a_map_and_pushes_the_vault() {
     assert!(note.contains("thread 999") && !note.contains("thread-999"), "a mention of no thread stays text");
     let moc = std::fs::read_to_string(vault.join("maps/AgentDesk MOC.md")).unwrap();
     assert!(moc.contains(&format!("[[agentdesk/threads/thread-{t}|")));
-    let day = std::fs::read_dir(vault.join("agentdesk")).unwrap().flatten().find(|e| e.file_name().to_string_lossy().starts_with("20")).unwrap();
-    assert!(std::fs::read_to_string(day.path()).unwrap().contains(&format!("[[agentdesk/threads/thread-{t}|thread {t}]]")));
+    let today = chrono::Local::now().date_naive();
+    assert!(std::fs::read_to_string(vault.join("agentdesk").join(format!("{today}.md"))).unwrap().contains(&format!("[[agentdesk/threads/thread-{t}|thread {t}]]")));
+    assert!(vault.join("agentdesk").join(format!("{}.md", today - chrono::Duration::days(2))).exists(), "the last three days are written, so an outage is caught up");
     assert_eq!(git_ok(&remote, &["log", "-1", "--format=%an %s", "Main"]).split(' ').next(), Some("agentdesk-test"));
     assert!(!git_ok(&vault, &["show", "--stat", "--format=", "HEAD"]).contains("someone-elses-draft"), "only our paths are committed");
     let state: Value = serde_json::from_str(&std::fs::read_to_string(data.join("vault_state.json")).unwrap()).unwrap();

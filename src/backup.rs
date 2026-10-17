@@ -28,7 +28,9 @@ pub fn run_with(db: &Db, skip_vault: bool) -> Result<String> {
     }
     // The vault as the board's history: a transcript for today, a linked note per thread, a map, then a commit and push.
     let today = chrono::Local::now().date_naive();
-    vault_threads::write_day(db, today)?;
+    for back in 0..3 {
+        vault_threads::write_day(db, today - chrono::Duration::days(back))?; // the last three days, so a day the core was down is caught up
+    }
     let threads = vault_threads::write_threads(db)?;
     vault_threads::write_moc(db)?;
     let vault = paths::vault_dir();

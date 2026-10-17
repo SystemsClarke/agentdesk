@@ -265,10 +265,16 @@ fn text(o: &std::process::Output) -> String {
     t.chars().take(300).collect()
 }
 
+/// A setting of the automated commits: the environment variable, else settings.json (`vault_git_author_name`, `vault_git_author_email`,
+/// `vault_git_signing_key`: an OpenPGP key id; none means unsigned).
+fn conf(env: &str, key: &str) -> Option<String> {
+    std::env::var(env).ok().filter(|v| !v.is_empty()).or_else(|| paths::setting(key).as_str().filter(|v| !v.is_empty()).map(String::from))
+}
+
 /// Commits `paths` of the vault (the ones that exist) and pushes. Never fails the backup: the problem is in the result, and the next run retries.
 ///
-/// Commit identity comes from `AGENTDESK_GIT_AUTHOR_NAME` / `AGENTDESK_GIT_AUTHOR_EMAIL` (default: the repository's own config), signing
-/// from `AGENTDESK_GIT_SIGNING_KEY` (an OpenPGP key id; unset means the repository's config; a failing signature falls back to unsigned).
+/// Commit author comes from `AGENTDESK_GIT_AUTHOR_NAME` / `_EMAIL` or settings.json (default: the repository's own config); signing from
+/// `AGENTDESK_GIT_SIGNING_KEY` or settings.json (an OpenPGP key id; none means unsigned; a failing signature falls back to unsigned).
 pub fn sync(vault: &Path, paths: &[&str], what: &str) -> Value {
     let mut out = json!({"committed": false, "pushed": false, "unpushed": null, "error": null});
     if !vault.join(".git").exists() {
@@ -276,10 +282,10 @@ pub fn sync(vault: &Path, paths: &[&str], what: &str) -> Value {
         return out;
     }
     let mut env: Vec<(&str, String)> = vec![];
-    if let Ok(n) = std::env::var("AGENTDESK_GIT_AUTHOR_NAME") {
+    if let Some(n) = conf("AGENTDESK_GIT_AUTHOR_NAME", "vault_git_author_name") {
         env.push(("GIT_AUTHOR_NAME", n));
     }
-    if let Ok(e) = std::env::var("AGENTDESK_GIT_AUTHOR_EMAIL") {
+    if let Some(e) = conf("AGENTDESK_GIT_AUTHOR_EMAIL", "vault_git_author_email") {
         env.push(("GIT_AUTHOR_EMAIL", e));
     }
     let paths: Vec<&str> = paths.iter().copied().filter(|p| vault.join(p).exists()).collect();
@@ -290,10 +296,13 @@ pub fn sync(vault: &Path, paths: &[&str], what: &str) -> Value {
     diff.extend(&paths);
     if git(vault, &diff, &[]).map(|o| !o.status.success()).unwrap_or(false) {
         let msg = format!("AgentDesk {what} {}", Local::now().format("%Y-%m-%d %H:%M"));
-        let mut signed = vec![];
-        if let Ok(k) = std::env::var("AGENTDESK_GIT_SIGNING_KEY") {
+        // An automated commit must not wait for a person: signed with the configured key, else not signed at all (the repository's own
+        // signing, such as a password manager's prompt, would stop every hourly backup).
+        let unsigned = ["-c".to_string(), "commit.gpgsign=false".to_string()];
+        let mut signed = unsigned.to_vec();
+        if let Some(k) = conf("AGENTDESK_GIT_SIGNING_KEY", "vault_git_signing_key") {
             let key = format!("user.signingkey={k}");
-            signed.extend(["-c".to_string(), "gpg.format=openpgp".to_string(), "-c".to_string(), key, "-c".to_string(), "commit.gpgsign=true".to_string()]);
+            signed = ["-c".to_string(), "gpg.format=openpgp".to_string(), "-c".to_string(), key, "-c".to_string(), "commit.gpgsign=true".to_string()].to_vec();
         }
         let commit = |extra: &[String]| {
             let mut args: Vec<&str> = extra.iter().map(String::as_str).collect();
@@ -302,8 +311,8 @@ pub fn sync(vault: &Path, paths: &[&str], what: &str) -> Value {
             git(vault, &args, &env)
         };
         let mut r = commit(&signed);
-        if r.as_ref().map(|o| !o.status.success()).unwrap_or(true) && !signed.is_empty() {
-            r = commit(&["-c".to_string(), "commit.gpgsign=false".to_string()]);
+        if r.as_ref().map(|o| !o.status.success()).unwrap_or(true) && signed != unsigned {
+            r = commit(&unsigned);
         }
         match r {
             Some(o) if o.status.success() => out["committed"] = json!(true),
