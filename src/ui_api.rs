@@ -246,7 +246,7 @@ fn sessions_api(db: &Db, name: &str, a: &Value) -> Result<Value> {
     };
     let n = text(a, "name");
     if matches!(name, "session_start" | "session_stop" | "input" | "resize" | "attach") && !supervisor::running() {
-        return crate::db::err("no supervisor is running: start `agentdesk daemon` (or the window), which owns the sessions");
+        return crate::db::err(crate::attach::NOT_RUNNING);
     }
     match name {
         "session_list" => Ok(json!({"sessions": plain::list(db)?})),
@@ -279,7 +279,7 @@ fn sessions_api(db: &Db, name: &str, a: &Value) -> Result<Value> {
 /// `ui:attach` over the supervisor's TCP endpoint: makes sure the session exists and reports whether output was replayed.
 fn attach_probe(n: &str, a: &Value) -> Result<Value> {
     use std::io::{BufRead, BufReader, Read, Write};
-    let Some((port, key)) = crate::attach::read_addr() else { return crate::db::err("the supervisor has no attach endpoint") };
+    let Some((port, key)) = crate::attach::read_addr() else { return crate::db::err("The core has no attach endpoint: restart it with `agentdesk core restart`.") };
     let mut conn = std::net::TcpStream::connect(("127.0.0.1", port))?;
     conn.set_read_timeout(Some(std::time::Duration::from_secs(3)))?;
     let (cols, rows) = (a.get("cols").and_then(|v| v.as_i64()).unwrap_or(120), a.get("rows").and_then(|v| v.as_i64()).unwrap_or(30));

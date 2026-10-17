@@ -147,13 +147,8 @@ fn load(path: &Path) -> Value {
 }
 
 fn save(path: &Path, state: &Value) {
-    if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir); // credentials from the environment: the folder may not be there
-    }
-    let tmp = path.with_extension("tmp");
-    if std::fs::write(&tmp, serde_json::to_string_pretty(state).unwrap_or_default()).is_ok() {
-        let _ = std::fs::rename(&tmp, path); // a crash mid-write must not lose every mapping
-    }
+    let _ = paths::write_atomic(path, serde_json::to_string_pretty(state).unwrap_or_default());
+    // a crash mid-write must not lose every mapping
 }
 
 fn epoch(iso: &str) -> f64 {
@@ -263,8 +258,8 @@ impl Bridge {
         };
         let mut blocks = vec![json!({"type": "section", "text": {"type": "mrkdwn", "text": head}}), json!({"type": "divider"})];
         blocks.extend(slackfmt::md_to_slack(&body));
+        blocks.truncate(slackfmt::BLOCKS_MAX - 1); // the reply hint must survive a long body
         blocks.push(json!({"type": "context", "elements": [{"type": "mrkdwn", "text": hint}]}));
-        blocks.truncate(50);
         let text = format!("{noun} #{tid} from {asker}: {subject} · {}", slackfmt::fallback_text(&body, 200));
         let prev_ts = prev.and_then(|p| p["ts"].as_str());
         let ts = self.chat.post(&self.dm, prev_ts, Some(blocks), &text, prev.is_some())?;
@@ -456,14 +451,9 @@ fn env_token(name: &str) -> Option<String> {
     std::env::var(name).ok().map(|t| t.trim().to_string()).filter(|t| !t.is_empty())
 }
 
-/// A key of `settings.json` in the data folder.
-pub fn setting(key: &str) -> Value {
-    std::fs::read_to_string(paths::data_dir().join("settings.json")).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()).map(|v| v[key].clone()).unwrap_or(Value::Null)
-}
-
 /// The DM and John's user id: the environment, then settings.json, then the defaults the Python bridge has.
 fn dm_and_john() -> (String, String) {
-    let pick = |env: &str, key: &str, default: &str| env_token(env).or_else(|| setting(key).as_str().map(String::from)).unwrap_or_else(|| default.to_string());
+    let pick = |env: &str, key: &str, default: &str| env_token(env).or_else(|| paths::setting(key).as_str().map(String::from)).unwrap_or_else(|| default.to_string());
     (pick("AGENTDESK_SLACK_DM", "slack_dm", DEFAULT_DM), pick("AGENTDESK_SLACK_USER", "slack_user", DEFAULT_JOHN))
 }
 
@@ -646,7 +636,7 @@ pub fn registry_input(registry: Registry) -> Arc<Input> {
 pub fn attach_input() -> Arc<Input> {
     Arc::new(|name, text| {
         use std::io::{BufRead, BufReader};
-        let (port, key) = crate::attach::read_addr().ok_or_else(|| anyhow!("no supervisor is running: start `agentdesk daemon`, which owns the sessions"))?;
+        let (port, key) = crate::attach::read_addr().ok_or_else(|| anyhow!(crate::attach::NOT_RUNNING))?;
         let mut conn = std::net::TcpStream::connect(("127.0.0.1", port))?;
         conn.set_read_timeout(Some(Duration::from_secs(5)))?;
         writeln!(conn, "ATTACH {key} {name} 160 40")?;
@@ -673,11 +663,7 @@ pub fn attach_input() -> Arc<Input> {
 
 fn heartbeat(last_relay: Option<Value>) {
     let doc = json!({"pid": std::process::id(), "ts": crate::db::now_iso(), "poll_s": poll().as_secs(), "last_relay": last_relay});
-    let path = paths::data_dir().join("slack_bridge.state");
-    let tmp = path.with_extension("tmp");
-    if std::fs::write(&tmp, doc.to_string()).is_ok() {
-        let _ = std::fs::rename(&tmp, &path);
-    }
+    let _ = paths::write_atomic(&paths::data_dir().join("slack_bridge.state"), doc.to_string());
 }
 
 /// One bot, running.
@@ -743,7 +729,7 @@ pub fn run_once(input: Arc<Input>) -> Result<()> {
 pub fn run(stop: Arc<AtomicBool>, input: Arc<Input>) -> Result<()> {
     let bots = Arc::new(build(&input)?);
     if bots.is_empty() {
-        return Err(anyhow!("no Slack credentials"));
+        return Err(anyhow!("no Slack credentials: set SLACK_BOT_TOKEN, or put bot-token.txt in {}", creds_dir().display()));
     }
     Db::open(&paths::db_path())?.init()?; // a bridge run by hand may be the first to touch the board
     let mut threads = vec![];

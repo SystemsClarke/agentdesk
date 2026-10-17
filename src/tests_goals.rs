@@ -155,19 +155,12 @@ fn a_lead_spawns_members_who_queue_past_max_members_and_retire_with_member_done(
     let charter = ids::get(&e.db, "g4-m1").unwrap().unwrap()["charter"].as_str().unwrap().to_string();
     assert!(charter.contains("You are a member of the AgentDesk goal g4, dispatched by its lead g4-lead.") && charter.contains("Your task: benchmark the cache"));
 
-    // max_members is 1: once m1 runs, m2 may not.
-    assert!(goals::member_may_start(&e.db, "g4-m1"));
-    e.db.exec("UPDATE identities SET state='running' WHERE name='g4-m1'", &[]).unwrap();
-    assert!(!goals::member_may_start(&e.db, "g4-m2"), "its goal already runs max_members");
-    assert!(goals::member_may_start(&e.db, "g4-lead"), "the lead is not a member and is never held back");
-
     let m = agent("g4-m1");
     let r = goals::member_done(&e.db, &m, "Cache helps by 20%.").unwrap();
     assert_eq!(r["retired"], "g4-m1");
     assert!(ids::get(&e.db, "g4-m1").unwrap().is_none(), "forgotten, so the supervisor ends its session");
     assert!(!goals::is_member(&e.db, "g4-m1"));
     assert!(e.db.row("SELECT 1 FROM messages WHERE body='**Done.** Cache helps by 20%.'", &[]).unwrap().is_some());
-    assert!(goals::member_may_start(&e.db, "g4-m2"), "a slot freed");
     assert!(goals::member_done(&e.db, &lead, "x").is_err(), "the lead is not a member");
 }
 

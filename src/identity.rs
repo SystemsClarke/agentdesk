@@ -1,4 +1,4 @@
-//! The author a post is stored under is resolved, never taken blank. A real requested name wins, then the
+//! Who is calling (not the long-lived sessions: see `identities.rs`). The author a post is stored under is resolved, never taken blank. A real requested name wins, then the
 //! stamped `AGENTDESK_AUTHOR`, then `harness:project#tag` derived from the session.
 
 /// Who is calling: read from the environment of the process that Claude Code started.

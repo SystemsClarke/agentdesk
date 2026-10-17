@@ -34,7 +34,7 @@ fn is_tracking(name: &str) -> bool {
     n.starts_with("utm_") || ["fbclid", "gclid", "mc_cid", "mc_eid", "msclkid", "ocid", "ref_src", "_hsenc", "_hsmi"].contains(&n.as_str())
 }
 
-fn percent_decode(s: &str) -> String {
+pub(crate) fn percent_decode(s: &str) -> String {
     let b = s.as_bytes();
     let (mut out, mut i) = (Vec::with_capacity(b.len()), 0);
     while i < b.len() {

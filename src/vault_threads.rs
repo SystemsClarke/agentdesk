@@ -53,7 +53,7 @@ fn write_if_changed(path: &Path, text: &str) -> Result<bool> {
 fn day_bounds(d: NaiveDate) -> (String, String) {
     let at = |day: NaiveDate| {
         let naive = day.and_hms_opt(0, 0, 0).unwrap();
-        Local.from_local_datetime(&naive).earliest().unwrap_or_else(|| Local.from_utc_datetime(&naive)).with_timezone(&Utc).format("%Y-%m-%dT%H:%M:%S+00:00").to_string()
+        crate::db::iso(Local.from_local_datetime(&naive).earliest().unwrap_or_else(|| Local.from_utc_datetime(&naive)).with_timezone(&Utc))
     };
     (at(d), at(d.succ_opt().unwrap()))
 }

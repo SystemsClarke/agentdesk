@@ -69,14 +69,10 @@ pub(crate) fn verify(path: &std::path::Path) -> String {
 /// `vault_state.json` in the data folder: how the vault's git backup went this run, for the window's header and the status screens.
 fn write_state(git: &serde_json::Value, threads: usize) {
     let state = serde_json::json!({
-        "ts": chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S+00:00").to_string(),
+        "ts": crate::db::iso(chrono::Utc::now()),
         "committed": git["committed"], "pushed": git["pushed"], "unpushed": git["unpushed"], "error": git["error"], "threads_written": threads,
     });
-    let target = paths::data_dir().join("vault_state.json");
-    let tmp = target.with_extension("json.tmp");
-    if std::fs::write(&tmp, state.to_string()).is_ok() {
-        let _ = std::fs::rename(&tmp, &target);
-    }
+    let _ = paths::write_atomic(&paths::data_dir().join("vault_state.json"), state.to_string());
 }
 
 fn thin(dir: &std::path::Path) -> usize {

@@ -135,23 +135,7 @@ fn form(body: &str) -> Vec<(String, String)> {
         .filter(|p| !p.is_empty())
         .map(|p| {
             let (k, v) = p.split_once('=').unwrap_or((p, ""));
-            let dec = |s: &str| {
-                let s = s.replace('+', " ");
-                let mut out = vec![];
-                let b = s.as_bytes();
-                let mut i = 0;
-                while i < b.len() {
-                    if b[i] == b'%' && i + 2 < b.len() {
-                        out.push(u8::from_str_radix(&s[i + 1..i + 3], 16).unwrap_or(b'?'));
-                        i += 3;
-                    } else {
-                        out.push(b[i]);
-                        i += 1;
-                    }
-                }
-                String::from_utf8_lossy(&out).to_string()
-            };
-            (dec(k), dec(v))
+            (crate::links::percent_decode(k), crate::links::percent_decode(v))
         })
         .collect()
 }

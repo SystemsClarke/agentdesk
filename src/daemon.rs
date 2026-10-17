@@ -43,7 +43,16 @@ fn open_lock() -> std::io::Result<File> {
 /// Takes the single-instance lock for this process, or None when a core already runs. Keep the file alive as long as the core is.
 pub fn claim() -> Result<Option<File>> {
     let f = open_lock()?;
-    match f.try_lock() {
+    let mut locked = f.try_lock();
+    for _ in 0..5 {
+        // a status probe holds the lock for an instant: do not mistake it for a running core
+        if locked.is_ok() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(40));
+        locked = f.try_lock();
+    }
+    match locked {
         Ok(()) => {
             let me = json!({
                 "pid": std::process::id(),
@@ -51,9 +60,7 @@ pub fn claim() -> Result<Option<File>> {
                 "started": crate::db::now_iso(),
                 "exe": std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_default(),
             });
-            let tmp = info_path().with_extension("tmp");
-            std::fs::write(&tmp, me.to_string())?;
-            std::fs::rename(&tmp, info_path())?;
+            crate::paths::write_atomic(&info_path(), me.to_string())?;
             let _ = std::fs::remove_file(stop_path()); // a stop asked of the previous core is not for this one
             Ok(Some(f))
         }

@@ -14,7 +14,7 @@ use std::sync::OnceLock;
 
 const SECTION_MAX: usize = 2900; // Slack's hard limit is 3000 characters per section
 const HEADER_MAX: usize = 150;
-const BLOCKS_MAX: usize = 50;
+pub const BLOCKS_MAX: usize = 50;
 /// Slack wraps code blocks at the screen's width, and a phone fits about this many columns.
 const PHONE_COLS: usize = 44;
 
@@ -450,8 +450,9 @@ pub fn fallback_text(md: &str, limit: usize) -> String {
     }
 }
 
-fn unescape(s: &str) -> String {
-    s.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
+/// Python's `html.unescape` for what Slack sends.
+pub fn unescape(s: &str) -> String {
+    s.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&#39;", "'").replace("&amp;", "&")
 }
 
 /// A reply typed in Slack, as Markdown.
