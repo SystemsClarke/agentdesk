@@ -554,20 +554,6 @@ pub fn member_done(db: &Db, c: &Caller, summary: &str) -> Result<Value> {
     Ok(json!({"retired": id}))
 }
 
-/// Whether a queued goal member may take a slot now: its goal runs at most `max_members` at once. Identities that are not members always may.
-#[cfg_attr(not(test), allow(dead_code))] // the session pool (governor::Budget) enforces max_members now
-pub fn member_may_start(db: &Db, identity: &str) -> bool {
-    let Ok(Some(m)) = db.row("SELECT goal FROM goal_members WHERE identity=:i", &[(":i", &identity)]) else { return true };
-    let goal = st(&m, "goal");
-    let max = db.scalar_i64("SELECT max_members FROM goals WHERE name=:g", &[(":g", &goal)]).ok().flatten().unwrap_or(3);
-    let running = db
-        .scalar_i64("SELECT COUNT(*) FROM identities i JOIN goal_members m ON m.identity=i.name WHERE m.goal=:g AND i.state='running'", &[(":g", &goal)])
-        .ok()
-        .flatten()
-        .unwrap_or(0);
-    running < max
-}
-
 /// For a Phoenix successor's first prompt: the status of the goal its identity leads or works on.
 pub fn context(db: &Db, identity: &str) -> Option<String> {
     let goal = db.scalar_str("SELECT name FROM goals WHERE lead=:i UNION SELECT goal FROM goal_members WHERE identity=:i LIMIT 1", &[(":i", &identity)]).ok().flatten()?;

@@ -10,7 +10,7 @@ use crate::goals;
 use crate::governor;
 use crate::paths;
 use anyhow::Result;
-use chrono::{DateTime, Duration, Local, NaiveTime, SecondsFormat, TimeZone, Utc};
+use chrono::{DateTime, Duration, Local, NaiveTime, SecondsFormat, Utc};
 use serde_json::{json, Map, Value};
 
 const MAX_ATTEMPTS: i64 = 3;
@@ -38,27 +38,12 @@ pub mod recur {
         (n >= 1.0).then(|| Every::After(Duration::seconds((n * unit * 60.0) as i64)))
     }
 
-    #[allow(dead_code)] // post_work validates with it once that tool is ported
-    pub fn valid(recur: &str) -> bool {
-        parse(recur).is_some()
-    }
-
-    /// The first run: a daily time waits for its next occurrence; an interval starts at once.
-    #[allow(dead_code)] // post_work validates and schedules with it once that tool is ported
-    pub fn first(recur: &str, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
-        next_from(recur, now, true)
-    }
-
     pub fn next(recur: &str, from: DateTime<Utc>) -> Option<DateTime<Utc>> {
-        next_from(recur, from, false)
-    }
-
-    fn next_from(recur: &str, from: DateTime<Utc>, first: bool) -> Option<DateTime<Utc>> {
         match parse(recur)? {
-            Every::After(e) => Some(if first { from } else { from + e }),
+            Every::After(e) => Some(from + e),
             Every::Daily(at) => {
                 let local = from.with_timezone(&Local);
-                let day = |d: chrono::NaiveDate| Local.from_local_datetime(&d.and_time(at)).earliest();
+                let day = |d: chrono::NaiveDate| crate::jobs::local_at(d.and_time(at));
                 let due = day(local.date_naive())?;
                 let due = if due > local { due } else { day(local.date_naive() + Duration::days(1))? };
                 Some(due.with_timezone(&Utc))

@@ -279,7 +279,7 @@ impl Supervisor {
     }
 
     /// Why the identity is waiting in the queue, when the pool or the governor is holding it.
-    #[allow(dead_code)] // the Agents screen shows it
+    #[cfg_attr(not(test), allow(dead_code))] // only tests read it
     pub fn held(&self, name: &str) -> Option<&str> {
         self.held.get(name).map(String::as_str)
     }
@@ -288,7 +288,7 @@ impl Supervisor {
     /// a running one gets the reply typed into its session, a stopped or queued one is started with it, conversation intact. Only identities
     /// are woken, only for replies at least 5 seconds old (so a polling `wait` gets there first), and each reply once.
     fn wake(&mut self, db: &Db) -> Result<()> {
-        let cutoff = (chrono::Utc::now() - chrono::Duration::seconds(5)).format("%Y-%m-%dT%H:%M:%S+00:00").to_string();
+        let cutoff = crate::db::iso(chrono::Utc::now() - chrono::Duration::seconds(5));
         let replies = db.rows(
             "SELECT m.id, m.thread_id, m.body, t.subject, t.opened_by FROM messages m JOIN threads t ON t.id = m.thread_id \
              WHERE m.author_kind='human' AND m.id > :last AND m.ts <= :cutoff AND t.channel='question' ORDER BY m.id",

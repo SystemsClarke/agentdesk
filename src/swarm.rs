@@ -105,10 +105,7 @@ impl Swarms {
 
     fn save(&self) {
         let text = self.with_state(|s| serde_json::to_string_pretty(s).unwrap_or_default());
-        let tmp = self.state_path.with_extension("tmp");
-        if std::fs::write(&tmp, text).is_ok() {
-            let _ = std::fs::rename(&tmp, &self.state_path);
-        }
+        let _ = crate::paths::write_atomic(&self.state_path, text);
     }
 
     fn log(&self, msg: &str) {
@@ -132,8 +129,7 @@ impl Swarms {
         let icon = slot["persona_icon"].as_str().filter(|p| !p.is_empty()).map(String::from).unwrap_or_else(|| ICONS[((n - 1).rem_euclid(10)) as usize].to_string());
         let customize = self.customize.load(Ordering::Relaxed);
         let md = if customize { md.to_string() } else { format!("**{persona}:** {md}") };
-        let mut blocks = slackfmt::md_to_slack(&md);
-        blocks.truncate(50);
+        let blocks = slackfmt::md_to_slack(&md);
         let mut body =
             json!({"channel": slot["channel_id"], "text": slackfmt::fallback_text(&md.replace("**", ""), 200), "blocks": blocks, "unfurl_links": false, "unfurl_media": false});
         if let Some(t) = thread_ts {

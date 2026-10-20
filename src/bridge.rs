@@ -130,17 +130,13 @@ pub fn status() -> Value {
 
 /// `settings.json`'s `"slack_bridge": false` switches it off.
 fn settings_on() -> bool {
-    std::fs::read_to_string(paths::data_dir().join("settings.json"))
-        .ok()
-        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
-        .and_then(|v| v["slack_bridge"].as_bool())
-        .unwrap_or(true)
+    paths::setting("slack_bridge").as_bool().unwrap_or(true)
 }
 
 /// Whether the bridge runs natively (see the module comment): `slack_native` in settings.json, else when there is no Python to run.
 /// `AGENTDESK_BRIDGE_CMD` (a stand-in command) is a Python-style child, so it keeps the supervised path unless the setting says otherwise.
 pub fn use_native() -> bool {
-    match slack::setting("slack_native").as_bool() {
+    match paths::setting("slack_native").as_bool() {
         Some(b) => b,
         None => std::env::var("AGENTDESK_BRIDGE_CMD").map_or(true, |c| c.trim().is_empty()) && pyhost::interpreter().is_none(),
     }
@@ -275,7 +271,7 @@ pub fn run(stop: Arc<std::sync::atomic::AtomicBool>, registry: Registry) {
         };
         info.pid = None;
         info.last_exit = code;
-        info.last_exit_ts = Some(Utc::now().format("%Y-%m-%dT%H:%M:%S+00:00").to_string());
+        info.last_exit_ts = Some(crate::db::iso(Utc::now()));
         if began.elapsed() >= Duration::from_secs(600) {
             delay = first;
         }
@@ -321,7 +317,7 @@ fn run_native(stop: &Arc<std::sync::atomic::AtomicBool>, info: &mut Info, regist
         };
         info.pid = None;
         info.last_exit = Some(code);
-        info.last_exit_ts = Some(Utc::now().format("%Y-%m-%dT%H:%M:%S+00:00").to_string());
+        info.last_exit_ts = Some(crate::db::iso(Utc::now()));
         if stop.load(Relaxed) {
             write_status(info);
             break;

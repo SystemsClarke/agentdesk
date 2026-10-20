@@ -128,6 +128,11 @@ pub fn pin_clock(start: Option<i64>) {
     TICK.with(|t| t.set(start));
 }
 
+/// The board's timestamp shape: UTC, whole seconds, a `+00:00` offset.
+pub fn iso(t: chrono::DateTime<chrono::Utc>) -> String {
+    t.format("%Y-%m-%dT%H:%M:%S+00:00").to_string()
+}
+
 pub fn now_iso() -> String {
     let at = match TICK.with(|t| t.get()) {
         Some(n) => {
@@ -136,7 +141,7 @@ pub fn now_iso() -> String {
         }
         None => chrono::Utc::now(),
     };
-    at.format("%Y-%m-%dT%H:%M:%S+00:00").to_string()
+    iso(at)
 }
 
 /// Python's `json.dumps(ensure_ascii=False)`: `", "` and `": "` separators. The board's meta columns were written this

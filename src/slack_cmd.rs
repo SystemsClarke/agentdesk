@@ -99,11 +99,6 @@ fn ago(iso: Option<&str>) -> f64 {
     iso.and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok()).map(|t| (chrono::Utc::now() - t.with_timezone(&chrono::Utc)).num_seconds() as f64).unwrap_or(1e9)
 }
 
-/// Python's `html.unescape` for what Slack sends.
-fn unescape(s: &str) -> String {
-    s.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&#39;", "'").replace("&amp;", "&")
-}
-
 impl Commands {
     pub fn new(areas: &[String], john: &str, bot: &str) -> Commands {
         Commands { areas: areas.to_vec(), john: john.into(), bot: bot.into(), pending: Mutex::new(None), swarm: None }
@@ -129,7 +124,7 @@ impl Commands {
 
     /// The reply to post, or None when this is not one of this bot's commands (or not John's).
     pub fn handle(&self, db: &Db, text: &str, user: Option<&str>) -> Option<String> {
-        let text = unescape(text);
+        let text = crate::slackfmt::unescape(text);
         let text = text.trim();
         let w = word(text, 0);
         if w != "help" && !self.has(&w) {

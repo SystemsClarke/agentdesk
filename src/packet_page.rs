@@ -405,10 +405,7 @@ fn hex(c: Color) -> String {
 /// The window's saved theme id and palette (the default theme when none is saved or it is gone). A saved VS Code theme exists only once the
 /// background scan has found it, so it is waited for briefly.
 pub fn theme() -> (String, Palette) {
-    let saved = std::fs::read_to_string(crate::paths::data_dir().join("settings.json"))
-        .ok()
-        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
-        .and_then(|v| v["theme"].as_str().map(String::from));
+    let saved = crate::paths::setting("theme").as_str().map(String::from);
     if saved.as_deref().is_some_and(|t| t.starts_with(crate::tui::vscode_themes::ID_PREFIX)) {
         crate::tui::vscode_themes::start_scan();
         for _ in 0..30 {

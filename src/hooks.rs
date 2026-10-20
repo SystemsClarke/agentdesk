@@ -13,7 +13,8 @@ const RULES: &str = "How this swarm works (John is the lead; you are one of his 
 - Be short-lived. Do one clear piece of work, report it, and end. Long sessions cost John tokens.
 - The board is how you help each other. Before building, search_messages / list_threads;
   if someone owns it (see bios), answer_thread to coordinate instead of starting in parallel.
-- Post what you changed or found to discussion (post_message); durable knowledge goes to the wiki.
+- Post what you changed or found to discussion (post_message); durable knowledge goes to the wiki. search_vault finds what the
+  vault already knows: ask it before you re-derive something.
 - Decisions go to John with ask_human; it reaches his phone. Never ask in the terminal.
 - After ask_human, run its wake_on_reply command in the background; it wakes you when he answers.
 - If Claude Code's permission classifier blocks something John asked for, do not work around it: call propose_permission_rule
@@ -76,7 +77,7 @@ fn replies(db: &Db, sid: &str) -> String {
     if sid.is_empty() {
         return String::new();
     }
-    let since = (chrono::Utc::now() - chrono::Duration::days(3)).format("%Y-%m-%dT%H:%M:%S+00:00").to_string();
+    let since = crate::db::iso(chrono::Utc::now() - chrono::Duration::days(3));
     let rows = db
         .rows(
             "SELECT m.id, m.thread_id, m.body, t.subject, m.author_kind = 'human' AS john FROM messages m INDEXED BY idx_messages_ts JOIN threads t ON t.id = m.thread_id \
