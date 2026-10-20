@@ -63,7 +63,6 @@
  "identity.stop-forget",
  "identity.wake",
  "install.dry-run",
- "install.from-dotnet",
  "install.scripts",
  "install.status",
  "jobs.catch-up",
