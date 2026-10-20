@@ -56,13 +56,3 @@ def _status(b):
     assert {x["name"] for x in d["registered"]} >= {"core", "tray"} and all(x["state"] == "missing" for x in d["registered"]), d
     u = json.loads(verb(b, "uninstall", "--dry-run").stdout)
     assert u["dry_run"] is True and u["changes"] == [], u
-
-
-@feature("install.from-dotnet", "install", "`agentdesk install --from-dotnet`: a dry run lists the steps, and off Windows it is a clean error", SRC)
-def _dotnet(b):
-    r = verb(b, "install", "--from-dotnet", "--dry-run")
-    if os_name() == "windows":
-        assert r.returncode == 0 and "AgentDesk.App" in r.stdout and "migrate --apply" in r.stdout, r.stdout + r.stderr
-        assert r.stdout.index("AgentDesk.App") < r.stdout.index("AgentDesk.Core"), "the window is quit before the core"
-    else:
-        assert r.returncode != 0 and "only runs on Windows" in r.stderr, r.stderr

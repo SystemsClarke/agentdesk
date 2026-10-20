@@ -10,13 +10,11 @@
 //!   Linux    ~/.config/systemd/user/agentdesk.service (`systemctl --user enable --now`) and an XDG autostart .desktop for the tray
 //!            (and for the core too when `systemd --user` is not there)
 //!
-//! The move from the .NET app (`--from-dotnet`, `--rollback`) is in `install_dotnet.rs`.
 
-use crate::{daemon, migrate, paths};
+use crate::paths;
 use anyhow::{anyhow, bail, Result};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 pub const RUN_CORE: &str = "AgentDeskCore";
 pub const RUN_TRAY: &str = "AgentDeskTray";
@@ -55,12 +53,10 @@ pub struct Ctx {
     pub os: Os,
     pub exe: PathBuf,
     pub home: PathBuf,
-    /// The data folder (the macOS plists log into it, the rollback record lives in it).
+    /// The data folder (the macOS plists log into it).
     pub data: PathBuf,
     /// `$XDG_CONFIG_HOME` or `~/.config` (Linux).
     pub config: PathBuf,
-    /// `%LOCALAPPDATA%` (Windows): where the .NET app lived.
-    pub local: PathBuf,
     /// The numeric user id (macOS: `launchctl bootstrap gui/<uid>`).
     pub uid: String,
 }
@@ -74,7 +70,7 @@ impl Ctx {
         } else {
             String::new()
         };
-        Ok(Ctx { os: Os::current(), exe: std::env::current_exe()?, data: paths::data_dir(), local: dirs::data_local_dir().unwrap_or_default(), config, home, uid })
+        Ok(Ctx { os: Os::current(), exe: std::env::current_exe()?, data: paths::data_dir(), config, home, uid })
     }
 }
 
@@ -182,11 +178,6 @@ pub fn desktop_entry(name: &str, exe: &str, arg: &str) -> String {
     format!("[Desktop Entry]\nType=Application\nName={name}\nExec={} {arg}\nTerminal=false\nX-GNOME-Autostart-enabled=true\n", desktop_quote(exe))
 }
 
-/// `schtasks` arguments that point an existing scheduled task at `<exe> backup`.
-pub fn schtasks_change_args(task: &str, exe: &str) -> Vec<String> {
-    ["/Change", "/TN", task, "/TR", &format!("{} backup", win_quote(exe))].iter().map(|s| s.to_string()).collect()
-}
-
 /// Reads `name`'s data out of `reg query KEY /v NAME` output.
 pub fn parse_reg_query(out: &str, name: &str) -> Option<String> {
     for line in out.lines() {
@@ -277,64 +268,15 @@ pub struct Out {
     pub stdout: String,
 }
 
-#[derive(Clone, Debug)]
-pub struct TaskAction {
-    pub execute: String,
-    pub arguments: String,
-    pub dir: String,
-}
-
-/// What is on the board, counted: compared before and after a move so that nothing is lost on the way.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct Summary {
-    pub messages: i64,
-    pub threads: i64,
-    pub identities: i64,
-    pub goals: i64,
-    /// Identities whose state is `running` (the new core resumes exactly these).
-    pub running: Vec<String>,
-    pub integrity_ok: bool,
-}
-
 /// Everything that touches the machine. `SysHost` is the real one; the tests use `fake::Fake`.
 pub trait Host {
     fn file_read(&self, p: &Path) -> Option<String>;
     fn file_write(&self, p: &Path, content: &str) -> Result<()>;
     fn file_remove(&self, p: &Path) -> Result<()>;
-    fn exists(&self, p: &Path) -> bool;
     fn reg_get(&self, name: &str) -> Option<String>;
     fn reg_set(&self, name: &str, value: &str) -> Result<()>;
     fn reg_delete(&self, name: &str) -> Result<()>;
     fn run(&self, prog: &str, args: &[String]) -> Result<Out>;
-    // the move from the .NET app
-    fn process_running(&self, image: &str) -> bool;
-    fn kill_process(&self, image: &str);
-    fn sleep(&self, d: Duration);
-    fn user_env_get(&self, name: &str) -> Option<String>;
-    fn user_env_set(&self, name: &str, value: Option<&str>) -> Result<()>;
-    fn task_get(&self, name: &str) -> Option<TaskAction>;
-    fn task_restore(&self, name: &str, t: &TaskAction) -> Result<()>;
-    fn migrate(&self) -> Result<String>;
-    fn start_core(&self) -> Result<()>;
-    fn stop_core(&self) -> Result<()>;
-    /// Copies a file, making its folder.
-    fn copy_file(&self, from: &Path, to: &Path) -> Result<()>;
-    /// Ends every `agentdesk daemon` / `agentdesk tray` process but this one (a leftover from an older build holds no lock).
-    fn kill_stray(&self);
-    /// Runs `exe args` with this terminal and waits; true when it succeeded.
-    fn relaunch(&self, exe: &Path, args: &[String]) -> Result<bool>;
-    /// The board, counted, and whether sqlite finds it sound.
-    fn board_summary(&self) -> Result<Summary>;
-    /// A snapshot archive of the board (what `agentdesk backup` makes); its path.
-    fn backup_board(&self) -> Result<String>;
-    /// The core that holds the lock: (pid, exe).
-    fn core_info(&self) -> Option<(u32, String)>;
-    /// Renames a file or folder out of the way (best effort): false when it is not there or cannot be moved.
-    fn move_aside(&self, from: &Path, to: &Path) -> bool;
-    /// Deletes a scheduled task (not there is fine).
-    fn task_delete(&self, name: &str);
-    /// The Slack bridge (supervised by the core, reading the same token files as before) is up: (up, one line saying how).
-    fn slack_state(&self) -> (bool, String);
 }
 
 fn read_place(h: &dyn Host, p: &Place) -> Option<String> {
@@ -537,16 +479,6 @@ fn command_out(mut c: std::process::Command) -> Result<Out> {
     Ok(Out { ok: o.status.success(), stdout: String::from_utf8_lossy(&o.stdout).into_owned() })
 }
 
-/// PowerShell with the values passed as environment variables, so no quoting of a path or a PATH can go wrong.
-fn powershell(script: &str, env: &[(&str, &str)]) -> Result<Out> {
-    let mut c = crate::paths::new_command("powershell.exe");
-    c.args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script]);
-    for (k, v) in env {
-        c.env(k, v);
-    }
-    command_out(c)
-}
-
 impl Host for SysHost {
     fn file_read(&self, p: &Path) -> Option<String> {
         std::fs::read_to_string(p).ok()
@@ -562,9 +494,6 @@ impl Host for SysHost {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(anyhow!("could not remove {}: {e}", p.display())),
             _ => Ok(()),
         }
-    }
-    fn exists(&self, p: &Path) -> bool {
-        p.exists()
     }
     fn reg_get(&self, name: &str) -> Option<String> {
         let mut c = crate::paths::new_command("reg");
@@ -597,174 +526,13 @@ impl Host for SysHost {
         c.args(args);
         command_out(c)
     }
-    fn process_running(&self, image: &str) -> bool {
-        let mut c = crate::paths::new_command("tasklist");
-        c.args(["/FI", &format!("IMAGENAME eq {image}"), "/NH"]);
-        command_out(c).map(|o| o.stdout.to_lowercase().contains(&image.to_lowercase())).unwrap_or(false)
-    }
-    fn kill_process(&self, image: &str) {
-        let mut c = crate::paths::new_command("taskkill");
-        c.args(["/F", "/T", "/IM", image]);
-        let _ = command_out(c);
-    }
-    fn sleep(&self, d: Duration) {
-        std::thread::sleep(d);
-    }
-    fn user_env_get(&self, name: &str) -> Option<String> {
-        let o = powershell("[Environment]::GetEnvironmentVariable($env:AD_NAME, 'User')", &[("AD_NAME", name)]).ok().filter(|o| o.ok)?;
-        Some(o.stdout.trim_end_matches(['\r', '\n']).to_string()).filter(|v| !v.is_empty())
-    }
-    fn user_env_set(&self, name: &str, value: Option<&str>) -> Result<()> {
-        let script = "$v = if ($env:AD_UNSET -eq '1') { $null } else { $env:AD_VAL }; [Environment]::SetEnvironmentVariable($env:AD_NAME, $v, 'User')";
-        let unset = if value.is_none() { "1" } else { "0" };
-        if powershell(script, &[("AD_NAME", name), ("AD_VAL", value.unwrap_or("")), ("AD_UNSET", unset)])?.ok {
-            Ok(())
-        } else {
-            bail!("could not set the user environment variable {name}")
-        }
-    }
-    fn task_get(&self, name: &str) -> Option<TaskAction> {
-        let script = "$t = Get-ScheduledTask -TaskName $env:AD_TASK -ErrorAction SilentlyContinue; if ($t) { $a = $t.Actions | Select-Object -First 1; @{execute=[string]$a.Execute; arguments=[string]$a.Arguments; dir=[string]$a.WorkingDirectory} | ConvertTo-Json -Compress }";
-        let o = powershell(script, &[("AD_TASK", name)]).ok().filter(|o| o.ok)?;
-        let v: Value = serde_json::from_str(o.stdout.trim()).ok()?;
-        let s = |k: &str| v[k].as_str().unwrap_or("").to_string();
-        Some(TaskAction { execute: s("execute"), arguments: s("arguments"), dir: s("dir") })
-    }
-    fn task_restore(&self, name: &str, t: &TaskAction) -> Result<()> {
-        let script = "$p = @{ Execute = $env:AD_EXEC }; if ($env:AD_ARGS) { $p.Argument = $env:AD_ARGS }; if ($env:AD_DIR) { $p.WorkingDirectory = $env:AD_DIR }; $a = New-ScheduledTaskAction @p; Set-ScheduledTask -TaskName $env:AD_TASK -Action $a | Out-Null";
-        if powershell(script, &[("AD_TASK", name), ("AD_EXEC", &t.execute), ("AD_ARGS", &t.arguments), ("AD_DIR", &t.dir)])?.ok {
-            Ok(())
-        } else {
-            bail!("could not restore the scheduled task {name}")
-        }
-    }
-    fn migrate(&self) -> Result<String> {
-        migrate::run(true, &paths::home_dir().join(".claude.json"), &paths::claude_settings())
-    }
-    fn start_core(&self) -> Result<()> {
-        daemon::ensure(Duration::from_secs(15)).map(|_| ())
-    }
-    fn stop_core(&self) -> Result<()> {
-        daemon::stop(Duration::from_secs(10)).map(|_| ())
-    }
-    fn copy_file(&self, from: &Path, to: &Path) -> Result<()> {
-        if let Some(d) = to.parent() {
-            std::fs::create_dir_all(d)?;
-        }
-        std::fs::copy(from, to)?;
-        Ok(())
-    }
-    fn kill_stray(&self) {
-        let script = r#"Get-CimInstance Win32_Process -Filter "Name='agentdesk.exe'" | Where-Object { $_.ProcessId -ne [int]$env:AD_SELF -and $_.CommandLine -match '(daemon|tray)"?\s*$' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"#;
-        let _ = powershell(script, &[("AD_SELF", &std::process::id().to_string())]);
-    }
-    /// Runs `exe args` as a one-shot scheduled task (so it is not a child of whoever typed this) with its output in cutover.log, and follows
-    /// the log until it says how it ended.
-    fn relaunch(&self, exe: &Path, args: &[String]) -> Result<bool> {
-        let log = paths::data_dir().join("cutover.log");
-        std::fs::create_dir_all(paths::data_dir())?;
-        let _ = std::fs::write(&log, "");
-        // no script file: a security product may remove one a program wrote, so the whole command rides in the task's arguments
-        let args_line = format!(
-            r#"/c "set AGENTDESK_CUTOVER_CHILD=1&& "{}" {} >> "{}" 2>&1 && echo EXIT 0 >> "{}" || echo EXIT 1 >> "{}"""#,
-            exe.display(),
-            args.join(" "),
-            log.display(),
-            log.display(),
-            log.display()
-        );
-        const TASK: &str = "AgentDesk-Cutover";
-        // a trigger hours ahead (a far-off one is created disabled; the task is only ever started by hand, below, and deletes itself when the script ends)
-        let script_ps = "$a = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument $env:AD_CMD; $t = New-ScheduledTaskTrigger -Once -At (Get-Date).AddHours(12); $s = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable; Register-ScheduledTask -TaskName $env:AD_TASK -Action $a -Trigger $t -Settings $s -Force | Out-Null; Start-ScheduledTask -TaskName $env:AD_TASK";
-        let made = powershell(script_ps, &[("AD_CMD", &args_line), ("AD_TASK", TASK)])?;
-        if !made.ok {
-            bail!("could not start the one-shot task {TASK}: {}", made.stdout.trim());
-        }
-        let (mut shown, start) = (0usize, std::time::Instant::now());
-        let code = loop {
-            std::thread::sleep(Duration::from_secs(2));
-            let text = std::fs::read_to_string(&log).unwrap_or_default();
-            for l in text.lines().skip(shown) {
-                println!("{l}");
-            }
-            shown = text.lines().count();
-            if let Some(l) = text.lines().rev().find(|l| l.starts_with("EXIT ")) {
-                break l.trim_start_matches("EXIT ").trim() == "0";
-            }
-            if start.elapsed() > Duration::from_secs(20 * 60) {
-                break false;
-            }
-        };
-        let _ = command_out({
-            let mut c = crate::paths::new_command("schtasks");
-            c.args(["/Delete", "/TN", TASK, "/F"]);
-            c
-        });
-        Ok(code)
-    }
-    fn board_summary(&self) -> Result<Summary> {
-        let db = crate::db::Db::open(&paths::db_path())?;
-        let n = |sql: &str| db.scalar_i64(sql, &[]).map(|v| v.unwrap_or(0));
-        let running = db.rows("SELECT name FROM identities WHERE state='running' ORDER BY name", &[])?.iter().filter_map(|r| r["name"].as_str().map(String::from)).collect();
-        let integrity = db.rows("PRAGMA quick_check", &[])?.first().is_some_and(|r| r["quick_check"].as_str() == Some("ok"));
-        Ok(Summary {
-            messages: n("SELECT COUNT(*) FROM messages")?,
-            threads: n("SELECT COUNT(*) FROM threads")?,
-            identities: n("SELECT COUNT(*) FROM identities")?,
-            goals: n("SELECT COUNT(*) FROM goals")?,
-            running,
-            integrity_ok: integrity,
-        })
-    }
-    fn backup_board(&self) -> Result<String> {
-        crate::backup::run_with(&crate::db::Db::open(&paths::db_path())?, true)
-    }
-    fn core_info(&self) -> Option<(u32, String)> {
-        daemon::status().map(|i| (i.pid, i.exe))
-    }
-    fn move_aside(&self, from: &Path, to: &Path) -> bool {
-        if !from.exists() {
-            return false;
-        }
-        if let Some(d) = to.parent() {
-            let _ = std::fs::create_dir_all(d);
-        }
-        std::fs::rename(from, to).is_ok()
-    }
-    fn slack_state(&self) -> (bool, String) {
-        let tokens = paths::home_dir().join(".claude").join("slack-notify");
-        if !tokens.join("bot-token.txt").exists() {
-            return (false, format!("no Slack tokens in {} (Slack was not set up on this machine)", tokens.display()));
-        }
-        let up = crate::bridge::running();
-        (
-            up,
-            format!(
-                "Slack bridge {} (tokens from {}, {})",
-                if up { "is up" } else { "is NOT up yet" },
-                tokens.display(),
-                if crate::bridge::use_native() { "native" } else { "embedded Python" }
-            ),
-        )
-    }
-    fn task_delete(&self, name: &str) {
-        let _ = command_out({
-            let mut c = crate::paths::new_command("schtasks");
-            c.args(["/Delete", "/TN", name, "/F"]);
-            c
-        });
-    }
 }
 
 /// The `agentdesk install` / `uninstall` entry points.
-pub fn cmd_install(no_tray: bool, from_dotnet: bool, dry_run: bool, status_only: bool, rollback: bool) -> Result<()> {
+pub fn cmd_install(no_tray: bool, dry_run: bool, status_only: bool) -> Result<()> {
     let (h, ctx) = (SysHost, Ctx::detect()?);
     if status_only {
         println!("{}", serde_json::to_string_pretty(&status(&h, &ctx))?);
-    } else if rollback {
-        crate::install_dotnet::rollback(&h, &ctx, dry_run)?.iter().for_each(|l| println!("{l}"));
-    } else if from_dotnet {
-        crate::install_dotnet::from_dotnet(&h, &ctx, !no_tray, dry_run, std::env::var("AGENTDESK_CUTOVER_CHILD").is_ok_and(|v| v == "1"))?.iter().for_each(|l| println!("{l}"));
     } else {
         println!("{}", serde_json::to_string_pretty(&install(&h, &ctx, !no_tray, dry_run)?)?);
     }
@@ -780,28 +548,15 @@ pub fn cmd_uninstall(dry_run: bool) -> Result<()> {
 pub mod fake {
     use super::*;
     use std::cell::{Cell, RefCell};
-    use std::collections::{BTreeMap, BTreeSet, HashMap};
+    use std::collections::BTreeMap;
 
     /// A machine in memory (or, with `disk`, files in a scratch folder): records every call in `log`.
     #[derive(Default)]
     pub struct Fake {
         pub disk: bool,
         pub files: RefCell<BTreeMap<PathBuf, String>>,
-        pub present: RefCell<BTreeSet<PathBuf>>,
         pub reg: RefCell<BTreeMap<String, String>>,
-        pub env: RefCell<HashMap<String, String>>,
-        pub task: RefCell<Option<TaskAction>>,
-        pub running: RefCell<BTreeSet<String>>,
-        /// Every sleep brings the old window back, like a watchdog would.
-        pub respawn: Cell<bool>,
         pub systemd: Cell<bool>,
-        pub summary: RefCell<Summary>,
-        /// The board comes back one message short after the core starts.
-        pub lose_rows: Cell<bool>,
-        /// The core never holds its lock.
-        pub core_dead: Cell<bool>,
-        pub slack_down: Cell<bool>,
-        pub core_exe: RefCell<String>,
         pub log: RefCell<Vec<String>>,
     }
 
@@ -812,10 +567,6 @@ pub mod fake {
         /// A path built with `Path::join` on Linux has `/` where the Windows fixtures write `\`: compare them alike.
         fn norm(s: &str) -> String {
             s.replace([std::path::MAIN_SEPARATOR, '\\'], "/")
-        }
-        pub fn pos(&self, prefix: &str) -> usize {
-            let want = Self::norm(prefix);
-            self.log.borrow().iter().position(|l| Self::norm(l).starts_with(&want)).unwrap_or_else(|| panic!("no `{prefix}` in {:#?}", self.log.borrow()))
         }
         pub fn count(&self, prefix: &str) -> usize {
             let want = Self::norm(prefix);
@@ -852,9 +603,6 @@ pub mod fake {
             }
             Ok(())
         }
-        fn exists(&self, p: &Path) -> bool {
-            self.present.borrow().contains(p) || self.files.borrow().contains_key(p) || (self.disk && p.exists())
-        }
         fn reg_get(&self, name: &str) -> Option<String> {
             self.reg.borrow().get(name).cloned()
         }
@@ -873,97 +621,6 @@ pub mod fake {
             self.note(line.clone());
             Ok(Out { ok: !(prog == "systemctl" && line.contains("show-environment")) || self.systemd.get(), stdout: String::new() })
         }
-        fn process_running(&self, image: &str) -> bool {
-            self.running.borrow().contains(image)
-        }
-        fn kill_process(&self, image: &str) {
-            self.note(format!("kill {image}"));
-            self.running.borrow_mut().remove(image);
-        }
-        fn sleep(&self, _: Duration) {
-            self.note("sleep".into());
-            if self.respawn.get() {
-                self.running.borrow_mut().insert("AgentDesk.App.exe".into());
-            }
-        }
-        fn user_env_get(&self, name: &str) -> Option<String> {
-            self.env.borrow().get(name).cloned()
-        }
-        fn user_env_set(&self, name: &str, v: Option<&str>) -> Result<()> {
-            self.note(format!("env-set {name}"));
-            match v {
-                Some(v) => self.env.borrow_mut().insert(name.into(), v.into()),
-                None => self.env.borrow_mut().remove(name),
-            };
-            Ok(())
-        }
-        fn task_get(&self, _: &str) -> Option<TaskAction> {
-            self.task.borrow().clone()
-        }
-        fn task_restore(&self, _: &str, t: &TaskAction) -> Result<()> {
-            self.note("task-restore".into());
-            *self.task.borrow_mut() = Some(t.clone());
-            Ok(())
-        }
-        fn migrate(&self) -> Result<String> {
-            self.note("migrate".into());
-            Ok(String::new())
-        }
-        fn start_core(&self) -> Result<()> {
-            self.note("start-core".into());
-            Ok(())
-        }
-        fn stop_core(&self) -> Result<()> {
-            self.note("stop-core".into());
-            Ok(())
-        }
-        fn copy_file(&self, from: &Path, to: &Path) -> Result<()> {
-            self.note(format!("copy {} -> {}", from.display(), to.display()));
-            self.present.borrow_mut().insert(to.to_path_buf());
-            Ok(())
-        }
-        fn kill_stray(&self) {
-            self.note("kill-stray".into());
-        }
-        fn relaunch(&self, exe: &Path, args: &[String]) -> Result<bool> {
-            self.note(format!("relaunch {} {}", exe.display(), args.join(" ")));
-            Ok(true)
-        }
-        fn board_summary(&self) -> Result<Summary> {
-            self.note("summary".into());
-            let mut s = self.summary.borrow().clone();
-            if self.lose_rows.get() && self.log.borrow().iter().any(|l| l == "start-core") {
-                s.messages -= 1;
-            }
-            Ok(s)
-        }
-        fn backup_board(&self) -> Result<String> {
-            self.note("backup-board".into());
-            Ok("board.zip".into())
-        }
-        fn core_info(&self) -> Option<(u32, String)> {
-            if self.log.borrow().iter().any(|l| l == "start-core") && !self.core_dead.get() {
-                Some((4242, self.core_exe.borrow().clone()))
-            } else {
-                None
-            }
-        }
-        fn move_aside(&self, from: &Path, to: &Path) -> bool {
-            let there = self.present.borrow().contains(from);
-            if there {
-                self.note(format!("move {} -> {}", from.display(), to.display()));
-                let mut p = self.present.borrow_mut();
-                p.remove(from);
-                p.insert(to.to_path_buf());
-            }
-            there
-        }
-        fn task_delete(&self, name: &str) {
-            self.note(format!("task-delete {name}"));
-        }
-        fn slack_state(&self) -> (bool, String) {
-            (!self.slack_down.get(), "Slack bridge is up".into())
-        }
     }
 }
 
@@ -977,7 +634,7 @@ mod tests {
             Os::Windows => (PathBuf::from(r"C:\Users\Jo Doe\AppData\Local\Programs\agent desk\agentdesk.exe"), PathBuf::from(r"C:\Users\Jo Doe")),
             _ => (root.join("My Apps").join("agentdesk"), root.join("home")),
         };
-        Ctx { os, exe, data: root.join("data"), config: home.join(".config"), local: root.join("local"), home, uid: "501".into() }
+        Ctx { os, exe, data: root.join("data"), config: home.join(".config"), home, uid: "501".into() }
     }
 
     #[test]
@@ -1015,12 +672,6 @@ mod tests {
         assert!(u.contains("ExecStart=\"/opt/my app/agentdesk\" daemon\n") && u.contains("Restart=on-failure") && u.contains("WantedBy=default.target"));
         let d = desktop_entry("AgentDesk tray", "/opt/my app/agentdesk", "tray");
         assert!(d.starts_with("[Desktop Entry]\n") && d.contains("Exec=\"/opt/my app/agentdesk\" tray\n") && d.contains("Terminal=false"));
-    }
-
-    #[test]
-    fn the_schtasks_command_points_the_task_at_backup() {
-        let a = schtasks_change_args("AgentDesk-Backup", r"C:\Users\Jo Doe\agentdesk.exe");
-        assert_eq!(a, ["/Change", "/TN", "AgentDesk-Backup", "/TR", r#""C:\Users\Jo Doe\agentdesk.exe" backup"#]);
     }
 
     #[test]
@@ -1123,24 +774,5 @@ mod tests {
         uninstall(&h, &c, false).unwrap();
         assert!(std::fs::read_dir(&agents).unwrap().next().is_none());
         assert!(h.count("run launchctl bootout") >= 4);
-    }
-}
-
-#[cfg(all(test, windows))]
-mod relaunch_live {
-    use super::*;
-
-    /// Needs a real Windows session (creates and removes a one-shot scheduled task): `cargo test relaunch_live -- --ignored`.
-    #[test]
-    #[ignore]
-    fn the_detached_run_reports_its_exit_code_through_the_log() {
-        let dir = std::env::temp_dir().join("agentdesk-relaunch-live");
-        let _ = std::fs::create_dir_all(&dir);
-        std::env::set_var("AGENTDESK_DATA", &dir);
-        let exe = std::env::current_exe().unwrap();
-        assert!(SysHost.relaunch(&exe, &["--list".to_string()]).unwrap(), "exit 0 comes back as true");
-        let log = std::fs::read_to_string(paths::data_dir().join("cutover.log")).unwrap();
-        assert!(log.contains("EXIT 0"), "{log}");
-        assert!(!SysHost.relaunch(&exe, &["--no-such-flag-xyz".to_string()]).unwrap(), "a failing run comes back as false");
     }
 }

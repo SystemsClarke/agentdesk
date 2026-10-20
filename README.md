@@ -26,12 +26,7 @@ Or download the archive for your platform from the Releases page. From source: `
 (`AGENTDESK_NO_UPDATE_CHECK=1` turns the background check off.)
 
 **Coming from the .NET AgentDesk:** `agentdesk migrate` (a dry run), then `agentdesk migrate --apply`: it backs up the board, updates its
-schema and points Claude Code's MCP entry and hooks at this binary. On Windows, one line does the whole cutover
-(`AGENTDESK_CUTOVER_DRY=1` first shows what it would do):
-
-```
-irm https://raw.githubusercontent.com/SystemsClarke/agentdesk/main/scripts/cutover.ps1 | iex
-```
+schema and points Claude Code's MCP entry and hooks at this binary.
 
 ## Use
 
