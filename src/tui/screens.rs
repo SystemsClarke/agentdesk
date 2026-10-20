@@ -232,15 +232,6 @@ pub fn vault_segs(v: &Option<VaultHealth>) -> Seg {
     s(format!("pushed to GitHub {ago}"), "gr")
 }
 
-fn tilde(folder: &str) -> String {
-    let home = dirs::home_dir().map(|h| h.to_string_lossy().into_owned()).unwrap_or_default();
-    if !home.is_empty() && folder.starts_with(&home) {
-        format!("~{}", &folder[home.len()..])
-    } else {
-        folder.to_string()
-    }
-}
-
 fn spark(vals: &[f64], tag: &str, unit: &str, max_w: usize) -> L {
     const BLOCKS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
     if vals.is_empty() {
@@ -539,7 +530,8 @@ impl App {
             }
             m
         } else {
-            vec![s("○ Concierge off", "or"), s(" · Ctrl+W starts it", "fa")]
+            let hint = if matches!(self.screen, Screen::Read | Screen::Compose) { "" } else { " · Ctrl+W starts it" };
+            vec![s("○ Concierge off", "or"), s(hint, "fa")]
         };
         let slack_up = self.st.slack_up;
         let mut right: L = vec![
@@ -548,7 +540,7 @@ impl App {
             if slack_up { s("SlackNet ● up", "cy") } else { s("SlackNet ○ down", "fa") },
         ];
         if let Some(u) = &self.update {
-            right.push(s(format!(" · ↑ v{u} (U)"), "ye"));
+            right.push(s(format!(" · ↑ v{u} in Options"), "ye"));
         }
         if let Some(bg) = self.st.budget.as_ref().filter(|b| b.samples > 0) {
             if (w as i64) - (width(&left) + width(&mid) + width(&right)) as i64 >= 20 {
@@ -585,6 +577,12 @@ impl App {
             return cat(vec![vec![s(format!(" {text} "), "pk b inv")], k("Y", "yes"), k("N", "no")]);
         }
         let q = self.channel == "question";
+        let goal_keys = |v: &mut Vec<L>| {
+            v.extend([k("A", "approve"), k("S", "start/stop lead"), k("X", "stop goal"), k("L", "goal lead")]);
+            if !self.sel_goal().is_some_and(|g| g.standing) {
+                v.push(k("+ -", "members (] [ ±10)"));
+            }
+        };
         match self.screen {
             Screen::Main => cat(vec![
                 k("Q D W J", "message bases"),
@@ -593,30 +591,40 @@ impl App {
                 k("B", "who's on"),
                 k("A", "agents"),
                 k("R", "recurring jobs"),
-                k("X", "permission rules"),
                 k("O", "options"),
                 k("T", "theme"),
-                k("G", "hang up"),
+                k("G", "hang up (Ctrl+C anywhere)"),
             ]),
             Screen::List => {
                 let mut v = vec![k("↑↓", "move"), k("↵", "read"), k("N", "new post")];
                 if q {
                     v.push(k("H", if self.show_archived { "active" } else { "archived" }));
+                    if self.show_archived {
+                        v.push(k("U", "bring back"));
+                    }
                     v.push(k("Ctrl+R", "wake agent"));
                 }
                 v.push(k("Esc", "main menu"));
                 cat(v)
             }
             Screen::Read => {
-                let mut v = vec![k("type", "to reply"), k("Ctrl+S", "send"), k("Ctrl+D", "dictate"), k("PgUp/PgDn", "scroll"), k("Alt+N/P", "next/prev"), k("Alt+R", "run script")];
-                match self.detail.as_ref().map(|d| d.kind.as_str()) {
+                let mut v = vec![k("type", "to reply"), k("Ctrl+S", "send"), k("Ctrl+D", "dictate"), k("PgUp/PgDn", "scroll"), k("Alt+N/P", "next/prev")];
+                let d = self.detail.as_ref();
+                if self.runner.is_some() || d.is_some_and(|d| !super::runner::extract_blocks(&d.run_msgs).is_empty()) {
+                    v.push(k("Alt+R", "run script"));
+                }
+                match d.map(|d| d.kind.as_str()) {
                     Some(kinds::PACKET) => v.extend([k("Alt+↑↓", "step"), k("Alt+T", "tick"), k("Alt+V", "choose"), k("Alt+D", "finish")]),
-                    Some(kinds::PERMISSION) => v.extend([k("Alt+A", "approve"), k("Alt+D", "reject")]),
+                    Some(kinds::PERMISSION) => match self.st.rules.iter().find(|r| r.thread_id == self.read_tid).map(|r| r.status.as_str()) {
+                        Some("pending") => v.extend([k("Alt+A", "approve"), k("Alt+D", "reject")]),
+                        Some("approved") => v.push(k("Alt+V", "take back")),
+                        _ => {}
+                    },
                     _ => {}
                 }
                 if q {
                     v.push(k("Alt+C", "close"));
-                    if self.detail.as_ref().map(|d| d.thread.status == "archived").unwrap_or(false) {
+                    if d.is_some_and(|d| d.thread.status == "archived") {
                         v.push(k("Alt+U", "bring back"));
                     }
                 }
@@ -643,10 +651,8 @@ impl App {
             Screen::Agents => {
                 let mut v = vec![k("↑↓", "move")];
                 if self.sel_goal().is_some() {
-                    v.extend([k("↵", "read"), k("A", "approve"), k("X", "stop goal"), k("S", "start/stop lead"), k("L", "goal's lead")]);
-                    if !self.sel_goal().map(|g| g.standing).unwrap_or(false) {
-                        v.push(k("+ -", "members (] [ ±10)"));
-                    }
+                    v.push(k("↵", "read"));
+                    goal_keys(&mut v);
                 } else {
                     v.extend([k("↵", "attach"), k("S", "start/stop"), k("A", "adopt"), k("F", "forget")]);
                 }
@@ -655,11 +661,9 @@ impl App {
             }
             Screen::Adopt => cat(vec![k("↑↓", "move"), k("↵", "adopt"), k("Esc", "agents")]),
             Screen::Goal => {
-                let mut v = vec![k("A", "approve"), k("S", "start/stop lead")];
-                if !self.sel_goal().map(|g| g.standing).unwrap_or(false) {
-                    v.push(k("+ -", "members (] [ ±10)"));
-                }
-                v.extend([k("X", "stop"), k("L", "attach to lead"), k("↑↓", "scroll"), k("Esc", "agents")]);
+                let mut v = vec![];
+                goal_keys(&mut v);
+                v.extend([k("↑↓", "scroll"), k("Esc", "agents")]);
                 cat(v)
             }
             Screen::Ask => cat(vec![k("↵", "next"), k("Esc", "cancel")]),
@@ -1233,7 +1237,7 @@ impl App {
             _ => {
                 // Any question with a runnable script says so, so nobody has to know the key.
                 if self.runner.is_none() && !super::runner::extract_blocks(&d.run_msgs).is_empty() {
-                    l.push(vec![s(" ▶ RUN ", "cy b"), s("a script is in this thread: Alt+R shows it, Alt+R again runs it as you (or click Alt+R in the bar below).", "mu")]);
+                    l.push(vec![s(" ▶ RUN ", "cy b"), s("a script is in this thread: Alt+R shows it, Alt+R again runs it as you.", "mu")]);
                 }
             }
         }
@@ -1672,16 +1676,7 @@ impl App {
         foot.extend(scroll_cue(&win));
         l.push(foot);
         l.push(vec![]);
-        l.push(vec![
-            s(" ↵", "ye"),
-            s(" on an agent attaches (", "mu"),
-            s("agentdesk attach <name>", "cy"),
-            s("; Ctrl+] detaches); on a goal it reads it. ", "mu"),
-            s("A", "ye"),
-            s(" adopts a Claude session, or approves a goal; ", "mu"),
-            s("X", "ye"),
-            s(" stops one.", "mu"),
-        ]);
+        l.push(vec![s(" ↵", "ye"), s(" on an agent attaches (", "mu"), s("agentdesk attach <name>", "cy"), s("; Ctrl+] detaches); on a goal it reads it.", "mu")]);
         if let Some(note) = &self.adopt_note {
             l.push(vec![]);
             l.extend(boxed("Adopted", vec![vec![s(note.clone(), "ye")]], w));
@@ -1695,8 +1690,10 @@ impl App {
         let folder_w = 44.min(w / 3);
         let msg_w = w.saturating_sub(folder_w + 15).max(20);
         let r2 = rs.clone();
-        let row =
-            move |i: usize| -> L { vec![s(format!("  {}", fit(&tilde(&r2[i].1), folder_w)), "cy"), s(format!(" {}", fit(&when(r2[i].2), 11)), "fa"), plain(fit(&r2[i].3, msg_w))] };
+        let home = crate::paths::home_dir().to_string_lossy().into_owned();
+        let row = move |i: usize| -> L {
+            vec![s(format!("  {}", fit(&super::folders::tilde(&r2[i].1, &home), folder_w)), "cy"), s(format!(" {}", fit(&when(r2[i].2), 11)), "fa"), plain(fit(&r2[i].3, msg_w))]
+        };
         let win = self.run_rows(
             w,
             h,
@@ -1731,7 +1728,6 @@ impl App {
         vec![
             bar(w, &format!("NEW POST  ·  {}", title_of(self.channel)), "barcy"),
             vec![],
-            vec![s(" Type a subject, press ", "mu"), s("Enter", "ye"), s(", write the message, then ", "mu"), s("Ctrl+S", "ye"), s(" to post it.", "mu")],
             vec![s(" Markdown works. So do @mentions: an agent named after the @ sees it on its next poll.", "fa")],
         ]
     }
@@ -1751,8 +1747,6 @@ impl App {
         if self.on_folder_step() {
             l.extend(self.folder_lines(w));
         }
-        l.push(vec![]);
-        l.push(vec![s(" Type in the box below and press ", "mu"), s("Enter", "ye"), s(" for the next one. ", "mu"), s("Esc", "ye"), s(" cancels.", "mu")]);
         l
     }
 

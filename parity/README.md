@@ -21,10 +21,10 @@ stand-in executable on `PATH`, so nothing touches real data or the network.
 
 | Layer | Driven through |
 |---|---|
-| The MCP contract: 24 tools, instructions, JSON-RPC | `agentdesk mcp` on stdio, compared with `original/tools.json` (extracted from `Tools.g.cs`) |
+| The MCP contract: 27 tools, instructions, JSON-RPC | `agentdesk mcp` on stdio, compared with `original/tools.json` (extracted from `Tools.g.cs`) |
 | Recorded behaviour of the tools | `cargo test parity::` replays the original's seed.db + golden JSON (`testdata/golden/`) |
 | Hooks and `wait` | `agentdesk hook <event>`, `agentdesk wait` |
-| The window-to-core protocol (`docs/ui-api.md`, 50 requests) | `agentdesk ui <request> [json]`: every `ui:*` request is one stable command |
+| The window-to-core protocol (50 requests) | `agentdesk ui <request> [json]`: every `ui:*` request is one stable command |
 | Screens and keys | `agentdesk ui-snapshot --keys "q enter ctrl+s" --json`: renders the window headlessly after the keys |
 | Timers (jobs, toasts, merge list, sweep) | `agentdesk daemon` plus the board file and `AGENTDESK_TOAST_LOG` |
 | Schema | `original/schema.json` (extracted from `BoardStore.cs` + `Governor.cs`) against the fresh board |

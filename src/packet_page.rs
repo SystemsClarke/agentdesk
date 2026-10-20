@@ -122,8 +122,7 @@ pub fn blocks(md: &str, packet: Option<i64>) -> String {
                 fence = None;
                 code.clear();
             } else {
-                let lead = line.len() - t.len();
-                code.push(line[lead.min(indent)..].to_string());
+                code.push(runner::dedent(line, indent).to_string());
             }
             continue;
         }
