@@ -3,3 +3,6 @@ parity/stubhost/target/
 parity/stubhost/Cargo.lock
 __pycache__/
 *.pyc
+
+# scratch folder written by python/scripts/check_slack_commands.py when it runs
+/python/obj/
