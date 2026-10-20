@@ -743,7 +743,7 @@ impl Host for SysHost {
                 "Slack bridge {} (tokens from {}, {})",
                 if up { "is up" } else { "is NOT up yet" },
                 tokens.display(),
-                if crate::bridge::use_native() { "native" } else { "embedded Python" }
+                if crate::bridge::use_native() { "native" } else { "stand-in command" }
             ),
         )
     }
