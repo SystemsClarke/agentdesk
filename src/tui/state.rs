@@ -293,40 +293,13 @@ fn post_from(v: &Value) -> Post {
     }
 }
 
-thread_local! {
-    /// `ui-bench` turns this on to learn what each step of a refresh costs; off (None) it is one thread-local read per step.
-    static PROBE: std::cell::RefCell<Option<Vec<(&'static str, f64)>>> = const { std::cell::RefCell::new(None) };
-}
-
-/// Runs one step of a refresh and, while a probe is armed, records how long it took.
-fn step<T>(name: &'static str, f: impl FnOnce() -> T) -> T {
-    if PROBE.with(|p| p.borrow().is_none()) {
-        return f();
-    }
-    let t = std::time::Instant::now();
-    let r = f();
-    let ms = t.elapsed().as_secs_f64() * 1000.0;
-    PROBE.with(|p| p.borrow_mut().as_mut().map(|v| v.push((name, ms))));
-    r
-}
-
-/// Starts recording the steps of `State::load` on this thread.
-pub fn probe_start() {
-    PROBE.with(|p| *p.borrow_mut() = Some(Vec::new()));
-}
-
-/// Stops recording and returns every step in the order it ran.
-pub fn probe_take() -> Vec<(&'static str, f64)> {
-    PROBE.with(|p| p.borrow_mut().take()).unwrap_or_default()
-}
-
 fn table_exists(db: &Db, name: &str) -> bool {
     db.scalar_i64("SELECT 1 FROM sqlite_master WHERE type='table' AND name=:n", &[(":n", &name)]).ok().flatten().is_some()
 }
 
 impl State {
     fn load_swarm(&mut self, db: &Db, memo: Option<&mut Memo>) {
-        let list = step("goals::list", || crate::goals::list(db)).ok().and_then(|v| v["goals"].as_array().cloned()).unwrap_or_default();
+        let list = crate::goals::list(db).ok().and_then(|v| v["goals"].as_array().cloned()).unwrap_or_default();
         self.goals = list
             .iter()
             .map(|g| GoalRow {
@@ -356,7 +329,7 @@ impl State {
                 standing: true,
             });
         }
-        if let Ok(c) = step("concierge::state", || crate::concierge::state(db)) {
+        if let Ok(c) = crate::concierge::state(db) {
             self.concierge_on = c["on"].as_bool().unwrap_or(false);
             self.held_id = c["held"].as_array().and_then(|h| h.first()).and_then(|v| v.as_i64());
             self.swarm = c["members"]
@@ -372,7 +345,7 @@ impl State {
                 })
                 .unwrap_or_default();
         }
-        if let Ok(slots) = step("slots::list", || crate::slots::list(db)) {
+        if let Ok(slots) = crate::slots::list(db) {
             for sl in slots["slots"].as_array().cloned().unwrap_or_default() {
                 if let (Some(g), Some(n)) = (sl["goal"].as_str(), sl["n"].as_i64()) {
                     self.slots.insert(g.to_lowercase(), n);
@@ -382,7 +355,7 @@ impl State {
         self.budget = match memo {
             Some(m) if m.budget.as_ref().is_some_and(|(at, _)| at.elapsed() < BUDGET_TTL) => m.budget.as_ref().and_then(|(_, b)| b.clone()),
             memo => {
-                let b = step("governor::report", || budget_of(db));
+                let b = budget_of(db);
                 if let Some(m) = memo {
                     m.budget = Some((Instant::now(), b.clone()));
                 }
@@ -405,13 +378,8 @@ impl State {
     }
 
     fn load_rows(&mut self, db: &Db, want: &Want) {
-        for (i, ch) in CHANNELS.into_iter().enumerate().filter(|(i, _)| want.rows[*i]) {
-            let all: Vec<ThreadRow> =
-                step(["list_threads question", "list_threads discussion", "list_threads wiki", "list_threads work"][i], || db.list_threads(Some(ch), None, 300, true, false))
-                    .unwrap_or_default()
-                    .iter()
-                    .map(ThreadRow::from)
-                    .collect();
+        for (_, ch) in CHANNELS.into_iter().enumerate().filter(|(i, _)| want.rows[*i]) {
+            let all: Vec<ThreadRow> = db.list_threads(Some(ch), None, 300, true, false).unwrap_or_default().iter().map(ThreadRow::from).collect();
             let mut rows: Vec<ThreadRow> = if ch == "question" { all.into_iter().filter(|r| (r.status == "archived") == want.archived).collect() } else { all };
             if ch == "question" {
                 rows.sort_by_key(|r| !(want.archived || r.waiting)); // stable: ringing first
@@ -422,8 +390,9 @@ impl State {
 
     fn load_rest(&mut self, db: &Db, memo: Option<&mut Memo>) {
         let st = self;
-        st.open_qs = step("open_questions", || db.open_questions(false)).unwrap_or_default().iter().map(|q| ThreadRow::from(&serde_json::json!({"id": q["thread_id"], "subject": q["subject"], "opened_by": q["opened_by"], "created_ts": q["created_ts"], "updated_ts": q["updated_ts"], "channel": "question", "status": "open"}))).collect();
-        st.prs = step("pull_requests", || db.rows("SELECT * FROM pull_requests ORDER BY id DESC LIMIT 200", &[]))
+        st.open_qs = db.open_questions(false).unwrap_or_default().iter().map(|q| ThreadRow::from(&serde_json::json!({"id": q["thread_id"], "subject": q["subject"], "opened_by": q["opened_by"], "created_ts": q["created_ts"], "updated_ts": q["updated_ts"], "channel": "question", "status": "open"}))).collect();
+        st.prs = db
+            .rows("SELECT * FROM pull_requests ORDER BY id DESC LIMIT 200", &[])
             .unwrap_or_default()
             .iter()
             .map(|p| PrRow {
@@ -441,49 +410,49 @@ impl State {
             })
             .collect();
         let post_sql = "SELECT m.author, m.ts, m.thread_id, m.meta, t.subject, t.channel, (m.id = (SELECT MIN(id) FROM messages WHERE thread_id = m.thread_id)) AS first FROM messages m JOIN threads t ON t.id = m.thread_id";
-        st.recent = step("recent posts", || db.rows(&format!("{post_sql} ORDER BY m.id DESC LIMIT 8"), &[])).unwrap_or_default().iter().map(post_from).collect();
+        st.recent = db.rows(&format!("{post_sql} ORDER BY m.id DESC LIMIT 8"), &[]).unwrap_or_default().iter().map(post_from).collect();
         let day_ago = (chrono::Utc::now() - chrono::Duration::hours(24)).format("%Y-%m-%dT%H:%M:%S+00:00").to_string();
-        let callers = step("callers", || {
+        let callers = {
             db.rows(
                 &format!("{post_sql} WHERE m.author <> 'john' AND m.ts >= :d AND m.id = (SELECT MAX(x.id) FROM messages x WHERE x.author = m.author AND x.author_kind='agent') ORDER BY m.id DESC LIMIT 40"),
                 &[(":d", &day_ago)],
             )
-        })
+        }
         .unwrap_or_default();
         st.callers = callers.iter().map(post_from).collect();
-        st.bios = step("bios", || db.rows("SELECT id, subject FROM threads WHERE channel='discussion' AND subject LIKE 'bio: %' ORDER BY id DESC", &[]))
+        st.bios = db
+            .rows("SELECT id, subject FROM threads WHERE channel='discussion' AND subject LIKE 'bio: %' ORDER BY id DESC", &[])
             .unwrap_or_default()
             .iter()
             .filter_map(|r| Some((r["subject"].as_str()?.get(5..)?.trim().to_lowercase(), r["id"].as_i64()?)))
             .collect();
-        let last_john = step("last john post", || db.row(&format!("{post_sql} WHERE m.author = 'john' ORDER BY m.id DESC LIMIT 1"), &[])).ok().flatten();
+        let last_john = db.row(&format!("{post_sql} WHERE m.author = 'john' ORDER BY m.id DESC LIMIT 1"), &[]).ok().flatten();
         if let Some(j) = &last_john {
             st.john_last = Some(post_from(j));
-            let after = step("max john id", || db.scalar_i64("SELECT MAX(id) FROM messages WHERE author='john'", &[])).ok().flatten().unwrap_or(0);
-            st.since_posts = step("since posts", || {
+            let after = db.scalar_i64("SELECT MAX(id) FROM messages WHERE author='john'", &[]).ok().flatten().unwrap_or(0);
+            st.since_posts = {
                 db.scalar_i64(
                     "SELECT COUNT(*) FROM messages WHERE id > :a AND author <> 'john' AND COALESCE(CASE WHEN json_valid(meta) THEN json_extract(meta,'$.kind') END,'') NOT IN ('ack','ack-note','read-receipt')",
                     &[(":a", &after)],
                 )
-            })
+            }
             .ok()
                 .flatten()
                 .unwrap_or(0);
         }
-        st.last_filed = step("last filed", || db.list_threads(Some("question"), Some("archived"), 1, true, false)).ok().and_then(|v| v.first().map(ThreadRow::from));
-        let u = step("usage report", usage::report);
+        st.last_filed = db.list_threads(Some("question"), Some("archived"), 1, true, false).ok().and_then(|v| v.first().map(ThreadRow::from));
+        let u = usage::report();
         st.usage_lines = u["lines"].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default();
         st.usage_summary = u["summary"].as_str().unwrap_or("").into();
-        st.vault = step("vault_state.json", || std::fs::read_to_string(paths::data_dir().join("vault_state.json")))
+        st.vault = std::fs::read_to_string(paths::data_dir().join("vault_state.json"))
             .ok()
             .and_then(|t| serde_json::from_str::<Value>(&t).ok())
             .and_then(|v| Some(VaultHealth { ts: ts(&v["ts"])?, unpushed: v["unpushed"].as_i64(), error: v["error"].as_str().filter(|e| !e.is_empty()).map(String::from) }));
-        let beat = step("slack_bridge.state", || std::fs::read_to_string(paths::data_dir().join("slack_bridge.state"))).ok();
-        st.slack_up = step("slack_up (pid check)", || beat.as_deref().map(super::live::slack_up).unwrap_or(false));
-        st.slack = beat
-            .and_then(|t| serde_json::from_str::<Value>(&t).ok())
-            .map(|v| (ts(&v["ts"]), v["poll_s"].as_i64().unwrap_or(0), v["last_relay"].as_object().map(|r| (ts(&r["ts"].clone()), r["thread_id"].as_i64().unwrap_or(0)))));
-        st.jobs = step("jobs", || jobs::list(db))
+        let beat = std::fs::read_to_string(paths::data_dir().join("slack_bridge.state")).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok());
+        st.slack_up = beat.as_ref().is_some_and(|v| matches!(crate::bridge::heartbeat_of(v), (Some(_), Some(age)) if age < crate::bridge::FRESH));
+        st.slack =
+            beat.map(|v| (ts(&v["ts"]), v["poll_s"].as_i64().unwrap_or(0), v["last_relay"].as_object().map(|r| (ts(&r["ts"].clone()), r["thread_id"].as_i64().unwrap_or(0)))));
+        st.jobs = jobs::list(db)
             .unwrap_or_default()
             .iter()
             .map(|j| JobRow {
@@ -501,7 +470,7 @@ impl State {
                 runs: j["runs"].as_i64().unwrap_or(0),
             })
             .collect();
-        if let Ok(p) = step("permissions", || permissions::list(db)) {
+        if let Ok(p) = permissions::list(db) {
             st.rules = p["proposals"]
                 .as_array()
                 .map(|a| {
@@ -521,9 +490,10 @@ impl State {
             st.allow = p["allow"].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default();
             st.settings_path = p["settings"].as_str().unwrap_or("").into();
         }
-        st.has_session_tables = step("table_exists", || table_exists(db, "identities"));
+        st.has_session_tables = table_exists(db, "identities");
         if st.has_session_tables {
-            st.agents = step("identities", || db.rows("SELECT name, folder, host, model, state, generation FROM identities ORDER BY name", &[]))
+            st.agents = db
+                .rows("SELECT name, folder, host, model, state, generation FROM identities ORDER BY name", &[])
                 .unwrap_or_default()
                 .iter()
                 .map(|a| Agent {
@@ -537,9 +507,9 @@ impl State {
                 .collect();
         }
         let _ = RECEIPT_KINDS;
-        st.max_sessions = step("max_sessions", crate::identities::max_sessions) as i64;
+        st.max_sessions = crate::identities::max_sessions() as i64;
         if st.has_session_tables {
-            step("swarm (goals+concierge+slots+governor)", || st.load_swarm(db, memo));
+            st.load_swarm(db, memo);
         }
     }
 }
@@ -580,10 +550,10 @@ impl Fresh {
         let st = State::load_for(db, &want, memo);
         let detail = want.read.map(|id| match known {
             Some(d) if d.thread.id == id => Some(d),
-            _ => step("thread", || Detail::load(db, id)),
+            _ => Detail::load(db, id),
         });
-        let goal_doc = want.goal.as_ref().map(|n| step("goal", || crate::goals::status(db, n).ok()));
-        Fresh { update: step("update::pending", update_pending), want, st, detail, goal_doc, sig: 0 }
+        let goal_doc = want.goal.as_ref().map(|n| crate::goals::status(db, n).ok());
+        Fresh { update: update_pending(), want, st, detail, goal_doc, sig: 0 }
     }
 }
 
