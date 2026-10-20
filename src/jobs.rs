@@ -4,7 +4,7 @@
 //! is skipped, not stacked; a run missed while nothing was ticking fires once if it is under `catch_up_minutes`
 //! late, else it is skipped and the status says so.
 
-use crate::db::{err, now_iso, Db};
+use crate::db::{err, iso, now_iso, Db};
 use anyhow::Result;
 use chrono::{DateTime, Datelike, Duration, Local, NaiveTime, TimeZone, Utc, Weekday};
 use serde_json::{json, Value};
@@ -19,10 +19,6 @@ const DAYS: [&str; 7] = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
 fn running() -> &'static Mutex<HashMap<String, Child>> {
     static R: OnceLock<Mutex<HashMap<String, Child>>> = OnceLock::new();
     R.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-fn iso(t: DateTime<Utc>) -> String {
-    t.format("%Y-%m-%dT%H:%M:%S+00:00").to_string()
 }
 
 fn parse_at(at: &str) -> Result<NaiveTime> {
@@ -61,6 +57,11 @@ fn parse_days(days: &str) -> Result<HashSet<u32>> {
 }
 
 /// The first run strictly after `after`.
+/// A local wall-clock time. The spring-forward gap has no such time: it is the hour after.
+pub fn local_at(wall: chrono::NaiveDateTime) -> Option<DateTime<Local>> {
+    Local.from_local_datetime(&wall).earliest().or_else(|| Local.from_local_datetime(&(wall + Duration::hours(1))).earliest())
+}
+
 pub fn next(after: DateTime<Utc>, at: Option<&str>, days: &str, every_minutes: Option<f64>) -> Result<DateTime<Utc>> {
     if let Some(m) = every_minutes {
         return Ok(after + Duration::seconds((m * 60.0) as i64));
@@ -85,8 +86,7 @@ pub fn next(after: DateTime<Utc>, at: Option<&str>, days: &str, every_minutes: O
         }
         let wall = date.and_time(time);
         // the spring-forward gap has no such local time: run just after it
-        let when = Local.from_local_datetime(&wall).earliest().or_else(|| Local.from_local_datetime(&(wall + Duration::hours(1))).earliest());
-        if let Some(w) = when {
+        if let Some(w) = local_at(wall) {
             let w = w.with_timezone(&Utc);
             if w > after {
                 return Ok(w);
@@ -189,13 +189,16 @@ pub fn tick(db: &Db) -> Result<Vec<String>> {
         let due_s = job["next_run_ts"].as_str().unwrap_or("").to_string();
         let Ok(due) = DateTime::parse_from_rfc3339(&due_s) else { continue };
         let late = (now - due.with_timezone(&Utc)).num_minutes() as f64;
-        let nxt = next(now, job["at"].as_str(), job["days"].as_str().unwrap_or("daily"), job["every_minutes"].as_f64())?;
+        let Ok(nxt) = next(now, job["at"].as_str(), job["days"].as_str().unwrap_or("daily"), job["every_minutes"].as_f64()) else {
+            set_status(db, &name, "bad schedule: not run");
+            continue;
+        };
         let claimed = db.exec("UPDATE recurring_jobs SET next_run_ts=:x WHERE name=:n AND next_run_ts=:old", &[(":x", &iso(nxt)), (":n", &name), (":old", &due_s)])? == 1;
         if !claimed {
             continue;
         }
         if late > job["catch_up_minutes"].as_f64().unwrap_or(240.0) {
-            set_status(db, &name, &format!("missed: due {due_s}, {late:.0} min late (nothing was ticking?); not run"));
+            set_status(db, &name, &format!("missed: due {due_s}, {late:.0} min late; not run"));
         } else {
             fire.push(name);
         }

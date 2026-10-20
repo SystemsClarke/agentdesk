@@ -20,8 +20,10 @@ pub fn addr_file() -> PathBuf {
     paths::data_dir().join("supervisor.addr")
 }
 
+/// What every "the core is not running" answer says.
+pub const NOT_RUNNING: &str = "The core is not running. Start it with `agentdesk core start`.";
+
 /// `(port, key)` of the running supervisor's attach endpoint, if its file is there (it may be stale: connecting tells).
-#[allow(dead_code)] // the client (`agentdesk attach`) reads it
 pub fn read_addr() -> Option<(u16, String)> {
     let text = std::fs::read_to_string(addr_file()).ok()?;
     let mut it = text.split_whitespace();
@@ -150,7 +152,6 @@ fn constant_eq(a: &str, b: &str) -> bool {
 
 const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
-#[allow(dead_code)] // the client encodes keystrokes with it
 pub fn base64_encode(data: &[u8]) -> String {
     let mut s = String::with_capacity(data.len().div_ceil(3) * 4);
     for c in data.chunks(3) {
@@ -179,19 +180,6 @@ pub fn base64_decode(text: &str) -> Option<Vec<u8>> {
         }
     }
     Some(out)
-}
-
-fn b64(bytes: &[u8]) -> String {
-    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::new();
-    for c in bytes.chunks(3) {
-        let n = (c[0] as u32) << 16 | (*c.get(1).unwrap_or(&0) as u32) << 8 | *c.get(2).unwrap_or(&0) as u32;
-        out.push(T[(n >> 18) as usize & 63] as char);
-        out.push(T[(n >> 12) as usize & 63] as char);
-        out.push(if c.len() > 1 { T[(n >> 6) as usize & 63] as char } else { '=' });
-        out.push(if c.len() > 2 { T[n as usize & 63] as char } else { '=' });
-    }
-    out
 }
 
 /// The bytes a key press sends to a terminal.
@@ -405,7 +393,7 @@ pub fn switch_key(code: ratatui::crossterm::event::KeyCode, ctrl: bool) -> Switc
         Char('p') | Char('P') | Left | Up | BackTab => Switch::Prev,
         Char(d) if d.is_ascii_digit() && d != '0' => Switch::Jump(d as usize - '1' as usize),
         Char(']') if ctrl => Switch::Window,
-        Char('d') | Char('D') | Char('w') | Char('W') | Char(']') | Char('l') | Char('L') | Enter | Esc => Switch::Window,
+        Char('d') | Char('D') | Char('w') | Char('W') | Char(']') | Char('l') | Char('L') | Enter => Switch::Window,
         _ => Switch::Cancel,
     }
 }
@@ -569,13 +557,13 @@ fn repaint(link: &mut Link, cols: u16, rows: u16) {
 /// `agentdesk attach <name>`: uses a session the supervisor hosts from this console.
 ///
 /// Ctrl+] is the prefix. After it: `n`/`p` (or the arrow keys, Tab) switch to the next or previous running session without going back to
-/// the window, `1`-`9` jump, `d` (or Ctrl+] again, Enter, Esc, or waiting a moment) detaches to the window. The sessions keep running.
+/// the window, `1`-`9` jump, `d` (or Ctrl+] again, Enter, or waiting a moment) detaches to the window, and Esc stays. The sessions keep running.
 pub fn client(name: &str) -> Result<()> {
     use ratatui::crossterm::{
         event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
         terminal,
     };
-    let Some((port, key)) = read_addr() else { anyhow::bail!("no supervisor is running: start `agentdesk daemon` (or the window), which owns the sessions") };
+    let Some((port, key)) = read_addr() else { anyhow::bail!(NOT_RUNNING) };
     let (mut cols, mut rows) = terminal::size().unwrap_or((120, 30));
     let skin = Skin::load();
     let framed = frame_on(rows);
@@ -670,12 +658,12 @@ pub fn client(name: &str) -> Result<()> {
                     }
                     let b = key_bytes(&k);
                     if !b.is_empty() {
-                        writeln!(link.conn, "INPUT {}", b64(&b))?;
+                        writeln!(link.conn, "INPUT {}", base64_encode(&b))?;
                     }
                 }
                 Event::Paste(text) => {
                     let b = paste_bytes(&text, link.bracketed.load(std::sync::atomic::Ordering::Relaxed));
-                    writeln!(link.conn, "INPUT {}", b64(&b))?;
+                    writeln!(link.conn, "INPUT {}", base64_encode(&b))?;
                 }
                 Event::Resize(c, r) => {
                     (cols, rows) = (c, r);
@@ -735,6 +723,7 @@ mod client_tests {
         assert_eq!(switch_key(KeyCode::Char(']'), true), Switch::Window);
         assert_eq!(switch_key(KeyCode::Char('d'), false), Switch::Window);
         assert_eq!(switch_key(KeyCode::Char('x'), false), Switch::Cancel);
+        assert_eq!(switch_key(KeyCode::Esc, false), Switch::Cancel, "the bar says Esc stays");
     }
 
     #[test]
@@ -759,13 +748,6 @@ mod client_tests {
         assert_eq!(neighbour(&names, "C", 1).as_deref(), Some("a"));
         assert_eq!(neighbour(&names[..1], "a", 1), None);
         assert_eq!(neighbour(&names, "zzz", 1), None);
-    }
-
-    #[test]
-    fn base64_matches_the_standard() {
-        assert_eq!(super::b64(b"ping\r"), "cGluZw0=");
-        assert_eq!(super::b64(b"a"), "YQ==");
-        assert_eq!(super::b64(b"abc"), "YWJj");
     }
 
     fn plain(s: &str) -> String {

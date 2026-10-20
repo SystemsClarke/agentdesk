@@ -4,7 +4,7 @@
 //! once: each claims its work with a conditional UPDATE.
 
 use crate::db::Db;
-use crate::{jobs, notify, paths, prs, usage, vault};
+use crate::{jobs, notify, paths, prs, usage};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -130,7 +130,7 @@ fn toasts(db: &Db, known: &mut HashSet<i64>, last_msg: &mut i64) {
 
 /// Files settled questions: a note per thread in the vault, then status `archived`.
 pub fn sweep(db: &Db) {
-    let cutoff = (chrono::Utc::now() - chrono::Duration::minutes(SWEEP_AFTER_MINUTES)).format("%Y-%m-%dT%H:%M:%S+00:00").to_string();
+    let cutoff = crate::db::iso(chrono::Utc::now() - chrono::Duration::minutes(SWEEP_AFTER_MINUTES));
     let rows = db
         .rows(
             "SELECT id FROM threads WHERE channel='question' AND status IN ('answered','closed') AND updated_ts < :c \
@@ -140,7 +140,7 @@ pub fn sweep(db: &Db) {
         .unwrap_or_default();
     for r in rows {
         let id = r["id"].as_i64().unwrap_or(0);
-        if vault::write_thread_note(db, id).is_ok() {
+        if crate::vault_threads::write_thread(db, id).is_ok() {
             let _ = db.archive(id);
         }
     }

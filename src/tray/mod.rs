@@ -43,14 +43,11 @@ pub fn open_terminal(args: &[String]) -> Result<()> {
     let Some(cmd) = model::terminal_command_args(model::Os::current(), &exe, over.as_deref(), &model::which, args) else {
         anyhow::bail!("no terminal found (set AGENTDESK_TERMINAL to a terminal command line)");
     };
-    let mut c = crate::paths::new_command(&cmd[0]); // no console flash on Windows
-    c.args(&cmd[1..]).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
-    c.spawn().map_err(|e| anyhow::anyhow!("could not start {}: {e}", cmd[0]))?;
-    Ok(())
+    launch(&cmd)
 }
 
 /// Starts `cmd` (program first) with no window and no stdio; fire and forget.
-fn launch(cmd: &[String]) -> Result<()> {
+pub(crate) fn launch(cmd: &[String]) -> Result<()> {
     let mut c = crate::paths::new_command(&cmd[0]);
     c.args(&cmd[1..]).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
     c.spawn().map_err(|e| anyhow::anyhow!("could not start {}: {e}", cmd[0]))?;

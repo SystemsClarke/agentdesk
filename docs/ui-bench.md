@@ -31,16 +31,12 @@ Use a release build (`cargo build --release`): a debug build is several times sl
 | Section | What it measures |
 |---|---|
 | `board` | rows in the copy, so a number can be read against its size |
-| `bridge::running() ...` / `tui::live::slack_up ...` | the Slack-bridge check the window used to make on every frame (it started `tasklist`), and what replaced it |
-| `reload_ms` | `App::reload` (the exact reload after a write), and every step of `State::load` one by one, slowest first |
+| `reload_ms` | `App::reload` (the exact reload after a write), warm and the first time |
 | `draw_ms` | `App::draw` per screen into a ratatui `TestBackend` (120x40); opening the longest thread cold, and drawing it warm |
 | `render_ms` | the Markdown / mermaid / chart renderer on the longest thread, whole and for its longest message |
 | `key_to_frame_ms` | a key and the frame it causes: moving in a list, typing and scrolling in the reader, switching screens, the theme key; and `reload` against `reload_nav` (switching screen reuses the slow-moving budget) |
 | `terminal_frame` | what one frame sends the console: bytes and `write` calls, for a full screen, an unchanged screen, one changed row and a theme change; the old path (crossterm over `stdout`'s 1 KiB `LineWriter`) against the window's (one write, synchronized-update markers) |
 | `event_loop` | `PRAGMA data_version` cost, what an idle loop does (it must request no frames), and the stall on the window's thread while the board changes ten times a second |
-
-`State::load`'s steps are named in the code (`step("governor::report", ...)` in `src/tui/state.rs`); a step you add shows up here by
-wrapping it the same way.
 
 To read the plan of the list query, and what its covering index buys: `python scripts/ui_explain.py <copy of the board>`.
 

@@ -39,6 +39,12 @@ pub fn shell_for(lang: &str) -> Option<Shell> {
     }
 }
 
+/// `line` without up to `indent` bytes of its leading whitespace; never cuts inside a character (a non-breaking space is two bytes).
+pub fn dedent(line: &str, indent: usize) -> &str {
+    let t = line.trim_start();
+    line.get((line.len() - t.len()).min(indent)..).unwrap_or(t)
+}
+
 /// Every runnable fenced block in the messages (`(author, body)`), the newest message's first.
 pub fn extract_blocks(msgs: &[(String, String)]) -> Vec<Block> {
     let mut out = Vec::new();
@@ -62,8 +68,7 @@ pub fn extract_blocks(msgs: &[(String, String)]) -> Vec<Block> {
                         }
                         lang = None;
                     } else {
-                        let lead = line.len() - line.trim_start().len();
-                        buf.push(&line[lead.min(indent)..]);
+                        buf.push(dedent(line, indent));
                     }
                 }
             }
@@ -297,6 +302,13 @@ mod tests {
 
     fn msgs(v: &[(&str, &str)]) -> Vec<(String, String)> {
         v.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect()
+    }
+
+    #[test]
+    fn dedent_never_cuts_a_character() {
+        assert_eq!(dedent("    echo", 2), "  echo");
+        assert_eq!(dedent("\u{a0}echo", 1), "echo", "a non-breaking space is two bytes: fall back to the trimmed line");
+        assert_eq!(extract_blocks(&msgs(&[("a", " ```sh\n\u{a0}ls\n ```")]))[0].script, "ls");
     }
 
     #[test]

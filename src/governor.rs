@@ -5,10 +5,10 @@
 //! `Budget` is the one session pool: John's own identities answer only to `max_sessions`, a goal's lead or member also to the pool's
 //! ceiling (the plan, while `governor_enforce` is on), its goal's fair share and its `max_members`.
 
-use crate::db::Db;
+use crate::db::{iso, Db};
 use crate::paths;
 use anyhow::Result;
-use chrono::{DateTime, Duration, SecondsFormat, TimeZone, Utc};
+use chrono::{DateTime, Duration, TimeZone, Utc};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 
@@ -107,12 +107,8 @@ impl Settings {
     }
 
     pub fn read() -> Settings {
-        Settings::from(&settings_json())
+        Settings::from(&paths::settings())
     }
-}
-
-fn settings_json() -> Value {
-    std::fs::read_to_string(paths::data_dir().join("settings.json")).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(Value::Null)
 }
 
 /// John's own burn in weekly-% per hour: an EWMA per hour of week (UTC), a global EWMA and variance behind it, and the measured burn of
@@ -514,10 +510,6 @@ pub fn series(samples: &[Sample], now: Time) -> Vec<f64> {
 
 // ---- the board
 
-fn iso(t: Time) -> String {
-    t.to_rfc3339_opts(SecondsFormat::Secs, false)
-}
-
 fn parse_time(v: &Value) -> Option<Time> {
     if let Some(n) = v.as_f64() {
         return Utc.timestamp_millis_opt((if n > 1e11 { n } else { n * 1000.0 }) as i64).single();
@@ -640,17 +632,12 @@ fn trained_inputs(db: &Db, now: Time) -> Option<(Vec<Sample>, Sample)> {
 
 /// settings.json's governor_enforce, keeping every other key.
 pub fn set_enforce(on: bool) -> Result<()> {
-    let file = paths::data_dir().join("settings.json");
-    let mut d = settings_json();
+    let mut d = paths::settings();
     if !d.is_object() {
         d = json!({});
     }
     d["governor_enforce"] = json!(on);
-    std::fs::create_dir_all(paths::data_dir())?;
-    let tmp = file.with_extension("json.tmp");
-    std::fs::write(&tmp, serde_json::to_string_pretty(&d)?)?;
-    std::fs::rename(&tmp, &file)?;
-    Ok(())
+    Ok(paths::write_atomic(&paths::data_dir().join("settings.json"), serde_json::to_string_pretty(&d)?)?)
 }
 
 fn r2(v: f64) -> f64 {
@@ -718,8 +705,6 @@ fn build(db: &Db, s: &Settings, now: Time) -> Value {
 /// A swarm identity that is running or queued: its goal, whether it leads it, and since when it has waited.
 #[derive(Clone, Debug)]
 pub struct Want {
-    #[allow(dead_code)]
-    pub name: String,
     pub goal: String,
     pub lead: bool,
     pub running: bool,
@@ -757,7 +742,6 @@ impl Budget {
             .unwrap_or_default()
             .iter()
             .map(|r| Want {
-                name: r["name"].as_str().unwrap_or("").into(),
                 goal: r["goal"].as_str().unwrap_or("").into(),
                 lead: r["lead"].as_i64() == Some(1),
                 running: r["state"].as_str() == Some("running"),

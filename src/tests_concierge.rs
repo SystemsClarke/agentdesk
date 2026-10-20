@@ -137,15 +137,14 @@ fn a_finished_recurring_item_posts_its_next_run_once() {
 #[test]
 fn recur_accepts_times_and_intervals_and_computes_the_next_run() {
     for ok in ["09:30", "15m", "2h", " 90 "] {
-        assert!(recur::valid(ok), "{ok}");
+        assert!(recur::next(ok, Utc::now()).is_some(), "{ok}");
     }
     for bad in ["", "soon", "0m", "25:00", "9:3"] {
-        assert!(!recur::valid(bad), "{bad}");
+        assert!(recur::next(bad, Utc::now()).is_none(), "{bad}");
     }
     let t = Utc.with_ymd_and_hms(2026, 10, 11, 12, 0, 0).unwrap();
     assert_eq!(recur::next("30m", t), Some(t + chrono::Duration::minutes(30)));
     assert_eq!(recur::next("2h", t), Some(t + chrono::Duration::hours(2)));
-    assert_eq!(recur::first("30m", t), Some(t), "an interval starts at once");
     let daily = recur::next("09:30", t).unwrap();
     assert!(daily > t && daily <= t + chrono::Duration::hours(25), "the next 09:30, local: {daily}");
 }

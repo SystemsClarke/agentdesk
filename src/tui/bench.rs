@@ -2,7 +2,7 @@
 //! refuses to run without it: the bench opens threads, saves drafts and settings). See `docs/ui-bench.md`.
 //!
 //! What it measures, in milliseconds unless it says otherwise:
-//! - `reload`: `App::reload`, and every step of `State::load` one by one (median over the runs).
+//! - `reload`: `App::reload`, warm and the first time.
 //! - `draw`: `App::draw` into a TestBackend, per screen.
 //! - `render`: the Markdown / mermaid / chart renderer on the longest thread.
 //! - `key_to_frame`: a key, then the frame it causes, on the screens people live on.
@@ -40,10 +40,6 @@ fn time(n: usize, mut f: impl FnMut()) -> Value {
             })
             .collect(),
     )
-}
-
-fn median_of(v: &Value) -> f64 {
-    v["median"].as_f64().unwrap_or(0.0)
 }
 
 /// Counts what reaches the console: bytes, and how many separate `write` calls (each one a console write on Windows).
@@ -107,35 +103,6 @@ fn screens(app: &mut App, w: u16, h: u16, runs: usize, long_thread: Option<i64>)
         out.insert("read-longest-thread".into(), time(runs, || draw_to_test(app, &mut t)));
     }
     Value::Object(out)
-}
-
-fn reload_steps(app: &mut App, runs: usize) -> Value {
-    let db_archived = app.show_archived;
-    let mut by_name: Vec<(&'static str, Vec<f64>)> = Vec::new();
-    let mut totals = Vec::new();
-    for i in 0..=runs {
-        state::probe_start();
-        let t = Instant::now();
-        let _ = State::load(&app.db, db_archived);
-        let total = ms(t);
-        let steps = state::probe_take();
-        if i == 0 {
-            continue; // warm-up: statement cache, page cache
-        }
-        totals.push(total);
-        for (n, v) in steps {
-            match by_name.iter_mut().find(|(k, _)| *k == n) {
-                Some((_, a)) => a.push(v),
-                None => by_name.push((n, vec![v])),
-            }
-        }
-    }
-    let mut steps: Vec<(&str, f64)> = by_name.into_iter().map(|(n, v)| (n, median_of(&summary(v)))).collect();
-    steps.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-    json!({
-        "State::load": summary(totals),
-        "steps_median_ms_slowest_first": steps.iter().map(|(n, v)| json!({"step": n, "ms": round(*v)})).collect::<Vec<_>>(),
-    })
 }
 
 /// The longest thread by body bytes, and the one with the most mermaid/chart fences.
@@ -329,12 +296,9 @@ pub fn run(runs: usize, quick: bool) -> Result<String> {
     if std::env::var_os("AGENTDESK_DATA").filter(|d| !d.is_empty()).is_none() {
         anyhow::bail!("ui-bench opens threads and saves drafts and settings: point AGENTDESK_DATA at a copy of a board first (never the live one)");
     }
-    // A machine with the Slack bridge up: its heartbeat names a live pid (this one), which the window must check on every frame.
+    // A machine with the Slack bridge up: its heartbeat names a live pid (this one), which every refresh checks.
     let beat = json!({"ts": chrono::Utc::now().to_rfc3339(), "pid": std::process::id(), "poll_s": 5});
     std::fs::write(paths::data_dir().join("slack_bridge.state"), beat.to_string())?;
-    let bridge_running = time(if quick { 1 } else { 8 }, || {
-        std::hint::black_box(crate::bridge::running());
-    });
     let db = Db::open(&paths::db_path())?;
     db.init()?;
     let count = |t: &str| db.scalar_i64(&format!("SELECT COUNT(*) FROM {t}"), &[]).ok().flatten().unwrap_or(0);
@@ -346,22 +310,16 @@ pub fn run(runs: usize, quick: bool) -> Result<String> {
     let t0 = Instant::now();
     app.reload();
     let first_reload = ms(t0);
-    let reload = json!({"App::reload": time(runs, || app.reload()), "first_reload_ms": round(first_reload), "State::load": reload_steps(&mut app, runs)});
+    let reload = json!({"App::reload": time(runs, || app.reload()), "first_reload_ms": round(first_reload)});
     let draw = screens(&mut app, w, h, runs, big);
     let render = json!({"longest thread": render_bench(&app, big, runs), "thread with mermaid/chart": render_bench(&app, fenced, runs)});
     let keys = key_to_frame(&mut app, w, h, runs, big);
     let terminal = terminal_path(&mut app, w, h);
-    let beat_text = beat.to_string();
-    let slack_up = time(50, || {
-        std::hint::black_box(super::live::slack_up(&beat_text));
-    });
     let live = live_loop(&mut app, if quick { 300 } else { 1500 });
     let doc = json!({
         "build": if cfg!(debug_assertions) { "debug" } else { "release" },
         "os": std::env::consts::OS,
         "board": board,
-        "bridge::running() with a live heartbeat (what every frame used to call)": bridge_running,
-        "tui::live::slack_up with a live heartbeat (what a refresh calls now)": slack_up,
         "event_loop": live,
         "size": format!("{w}x{h}"),
         "reload_ms": reload,

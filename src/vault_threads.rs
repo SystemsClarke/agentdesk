@@ -29,6 +29,15 @@ pub fn link(tid: i64, label: Option<&str>) -> String {
     }
 }
 
+/// Token shapes that must never reach a note (and so a remote): replaced in the note, the board keeps the original.
+pub fn redact(s: &str) -> std::borrow::Cow<'_, str> {
+    static RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    let re = RE.get_or_init(|| {
+        Regex::new(r"gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16}|xox[abposr]-[A-Za-z0-9-]{10,}|sk-[A-Za-z0-9_-]{20,}|-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)").unwrap()
+    });
+    re.replace_all(s, "[redacted token]")
+}
+
 fn yaml(s: &str) -> String {
     format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', " "))
 }
@@ -53,7 +62,7 @@ fn write_if_changed(path: &Path, text: &str) -> Result<bool> {
 fn day_bounds(d: NaiveDate) -> (String, String) {
     let at = |day: NaiveDate| {
         let naive = day.and_hms_opt(0, 0, 0).unwrap();
-        Local.from_local_datetime(&naive).earliest().unwrap_or_else(|| Local.from_utc_datetime(&naive)).with_timezone(&Utc).format("%Y-%m-%dT%H:%M:%S+00:00").to_string()
+        crate::db::iso(Local.from_local_datetime(&naive).earliest().unwrap_or_else(|| Local.from_utc_datetime(&naive)).with_timezone(&Utc))
     };
     (at(d), at(d.succ_opt().unwrap()))
 }
@@ -104,7 +113,7 @@ fn render_thread(db: &Db, tid: i64, bios: &HashMap<String, i64>, known: &HashSet
             _ => who.to_string(),
         };
         let reply = m["reply_to"].as_i64().map(|r| format!(" (reply to #{r})")).unwrap_or_default();
-        let body = m["body"].as_str().unwrap_or("").replace("\r\n", "\n");
+        let body = redact(m["body"].as_str().unwrap_or("")).replace("\r\n", "\n");
         let body = re
             .replace_all(&body, |c: &regex::Captures| match c[2].parse::<i64>() {
                 Ok(n) if n != tid && known.contains(&n) => format!("{} {}", &c[1], link(n, Some(&c[2]))),
@@ -117,14 +126,14 @@ fn render_thread(db: &Db, tid: i64, bios: &HashMap<String, i64>, known: &HashSet
     Ok(Some(lines.join("\n").trim_end_matches('\n').to_string() + "\n"))
 }
 
-/// The note for every thread; returns how many files changed on disk.
-pub fn write_threads(db: &Db) -> Result<usize> {
+/// The note for each of `only` (or every thread); returns how many files changed on disk.
+fn write_notes(db: &Db, only: Option<i64>) -> Result<usize> {
     let dir = threads_dir();
     std::fs::create_dir_all(&dir)?;
     let known: HashSet<i64> = db.rows("SELECT id FROM threads", &[])?.iter().filter_map(|r| r["id"].as_i64()).collect();
     let bios = bio_ids(db)?;
     let mut changed = 0;
-    let mut ids: Vec<i64> = known.iter().copied().collect();
+    let mut ids: Vec<i64> = known.iter().copied().filter(|t| only.is_none_or(|o| o == *t)).collect();
     ids.sort_unstable();
     for tid in ids {
         if let Some(text) = render_thread(db, tid, &bios, &known)? {
@@ -134,6 +143,16 @@ pub fn write_threads(db: &Db) -> Result<usize> {
         }
     }
     Ok(changed)
+}
+
+/// The note for every thread; returns how many files changed on disk.
+pub fn write_threads(db: &Db) -> Result<usize> {
+    write_notes(db, None)
+}
+
+/// The note for one thread (a settled question is filed once it has one).
+pub fn write_thread(db: &Db, tid: i64) -> Result<()> {
+    write_notes(db, Some(tid)).map(|_| ())
 }
 
 /// `maps/AgentDesk MOC.md`: every thread by channel, newest first.
@@ -203,7 +222,7 @@ pub fn write_day(db: &Db, date: NaiveDate) -> Result<PathBuf> {
     for r in &rows {
         let tid = r["thread_id"].as_i64().unwrap_or(0);
         let reply = r["reply_to"].as_i64().map(|x| format!(" (reply to #{x})")).unwrap_or_default();
-        let body = r["body"].as_str().unwrap_or("").replace("\r\n", "\n").replace('\n', "\n  ");
+        let body = redact(r["body"].as_str().unwrap_or("")).replace("\r\n", "\n").replace('\n', "\n  ");
         lines.push(format!(
             "- {} **{}** ({}) [{}]{reply} - {body}",
             local(r["ts"].as_str().unwrap_or("")).format("%H:%M"),
@@ -233,7 +252,9 @@ pub fn write_day(db: &Db, date: NaiveDate) -> Result<PathBuf> {
 
 // --- git ----------------------------------------------------------------------
 
-const PATHS: [&str; 3] = ["agentdesk", "log", "maps/AgentDesk MOC.md"];
+/// What every backup commits: the board's own notes. `SWEEP` (once a day) adds what other sessions wrote.
+pub const DAILY: [&str; 3] = ["agentdesk", "log", "maps/AgentDesk MOC.md"];
+pub const SWEEP: [&str; 4] = ["notes", "maps", "log", "Home.md"];
 
 fn git(vault: &Path, args: &[&str], env: &[(&str, String)]) -> Option<std::process::Output> {
     crate::paths::new_command("git").args(args).current_dir(vault).envs(env.iter().map(|(k, v)| (*k, v.as_str()))).output().ok()
@@ -244,45 +265,54 @@ fn text(o: &std::process::Output) -> String {
     t.chars().take(300).collect()
 }
 
-/// Commits what the backup wrote (only `agentdesk/`, `log/` and the map, so a note another session is mid-way through writing is left for
-/// its author) and pushes. Never fails the backup: the problem is in the result, and the next run retries.
+/// A setting of the automated commits: the environment variable, else settings.json (`vault_git_author_name`, `vault_git_author_email`,
+/// `vault_git_signing_key`: an OpenPGP key id; none means unsigned).
+fn conf(env: &str, key: &str) -> Option<String> {
+    std::env::var(env).ok().filter(|v| !v.is_empty()).or_else(|| paths::setting(key).as_str().filter(|v| !v.is_empty()).map(String::from))
+}
+
+/// Commits `paths` of the vault (the ones that exist) and pushes. Never fails the backup: the problem is in the result, and the next run retries.
 ///
-/// Commit identity comes from `AGENTDESK_GIT_AUTHOR_NAME` / `AGENTDESK_GIT_AUTHOR_EMAIL` (default: the repository's own config), signing
-/// from `AGENTDESK_GIT_SIGNING_KEY` (an OpenPGP key id; unset means the repository's config; a failing signature falls back to unsigned).
-pub fn sync(vault: &Path) -> Value {
+/// Commit author comes from `AGENTDESK_GIT_AUTHOR_NAME` / `_EMAIL` or settings.json (default: the repository's own config); signing from
+/// `AGENTDESK_GIT_SIGNING_KEY` or settings.json (an OpenPGP key id; none means unsigned; a failing signature falls back to unsigned).
+pub fn sync(vault: &Path, paths: &[&str], what: &str) -> Value {
     let mut out = json!({"committed": false, "pushed": false, "unpushed": null, "error": null});
     if !vault.join(".git").exists() {
         out["error"] = json!("the vault is not a git repository");
         return out;
     }
     let mut env: Vec<(&str, String)> = vec![];
-    if let Ok(n) = std::env::var("AGENTDESK_GIT_AUTHOR_NAME") {
+    if let Some(n) = conf("AGENTDESK_GIT_AUTHOR_NAME", "vault_git_author_name") {
         env.push(("GIT_AUTHOR_NAME", n));
     }
-    if let Ok(e) = std::env::var("AGENTDESK_GIT_AUTHOR_EMAIL") {
+    if let Some(e) = conf("AGENTDESK_GIT_AUTHOR_EMAIL", "vault_git_author_email") {
         env.push(("GIT_AUTHOR_EMAIL", e));
     }
+    let paths: Vec<&str> = paths.iter().copied().filter(|p| vault.join(p).exists()).collect();
     let mut add = vec!["add", "--"];
-    add.extend(PATHS);
+    add.extend(&paths);
     git(vault, &add, &[]);
     let mut diff = vec!["diff", "--cached", "--quiet", "--"];
-    diff.extend(PATHS);
+    diff.extend(&paths);
     if git(vault, &diff, &[]).map(|o| !o.status.success()).unwrap_or(false) {
-        let msg = format!("AgentDesk board backup {}", Local::now().format("%Y-%m-%d %H:%M"));
-        let mut signed = vec![];
-        if let Ok(k) = std::env::var("AGENTDESK_GIT_SIGNING_KEY") {
+        let msg = format!("AgentDesk {what} {}", Local::now().format("%Y-%m-%d %H:%M"));
+        // An automated commit must not wait for a person: signed with the configured key, else not signed at all (the repository's own
+        // signing, such as a password manager's prompt, would stop every hourly backup).
+        let unsigned = ["-c".to_string(), "commit.gpgsign=false".to_string()];
+        let mut signed = unsigned.to_vec();
+        if let Some(k) = conf("AGENTDESK_GIT_SIGNING_KEY", "vault_git_signing_key") {
             let key = format!("user.signingkey={k}");
-            signed.extend(["-c".to_string(), "gpg.format=openpgp".to_string(), "-c".to_string(), key, "-c".to_string(), "commit.gpgsign=true".to_string()]);
+            signed = ["-c".to_string(), "gpg.format=openpgp".to_string(), "-c".to_string(), key, "-c".to_string(), "commit.gpgsign=true".to_string()].to_vec();
         }
         let commit = |extra: &[String]| {
             let mut args: Vec<&str> = extra.iter().map(String::as_str).collect();
             args.extend(["commit", "-q", "-m", &msg, "--"]);
-            args.extend(PATHS);
+            args.extend(&paths);
             git(vault, &args, &env)
         };
         let mut r = commit(&signed);
-        if r.as_ref().map(|o| !o.status.success()).unwrap_or(true) && !signed.is_empty() {
-            r = commit(&["-c".to_string(), "commit.gpgsign=false".to_string()]);
+        if r.as_ref().map(|o| !o.status.success()).unwrap_or(true) && signed != unsigned {
+            r = commit(&unsigned);
         }
         match r {
             Some(o) if o.status.success() => out["committed"] = json!(true),
@@ -320,4 +350,62 @@ pub fn sync(vault: &Path) -> Value {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn token_shapes_never_reach_a_note_and_ordinary_text_is_left_alone() {
+        let ghp = format!("ghp_{}", "a1B2".repeat(9));
+        let secret = format!("tok {ghp} and github_pat_{} and AKIA{} and xoxb-1234567890-abcdef", "x".repeat(30), "Q".repeat(16));
+        let r = redact(&secret);
+        assert_eq!(r, "tok [redacted token] and [redacted token] and [redacted token] and [redacted token]");
+        assert_eq!(redact("-----BEGIN RSA PRIVATE KEY-----\nMIIE\n-----END RSA PRIVATE KEY----- after"), "[redacted token] after");
+        let plain = "thread 12, PR #131, ghp is not a token, sk-short, AKIA is a prefix";
+        assert!(matches!(redact(plain), std::borrow::Cow::Borrowed(_)), "text with no secret is not copied");
+    }
+
+    fn repo() -> tempfile::TempDir {
+        let d = tempfile::tempdir().unwrap();
+        let run = |args: &[&str]| assert!(crate::paths::new_command("git").args(args).current_dir(d.path()).output().unwrap().status.success(), "git {args:?}");
+        run(&["init", "-q", "-b", "main"]);
+        for (k, v) in [("user.name", "t"), ("user.email", "t@example.com"), ("commit.gpgsign", "false")] {
+            run(&["config", k, v]);
+        }
+        std::fs::create_dir_all(d.path().join("agentdesk")).unwrap();
+        std::fs::create_dir_all(d.path().join("notes")).unwrap();
+        std::fs::write(d.path().join("agentdesk/a.md"), "board").unwrap();
+        std::fs::write(d.path().join("notes/n.md"), "a note another session is writing").unwrap();
+        d
+    }
+
+    fn committed(d: &Path) -> String {
+        String::from_utf8_lossy(&crate::paths::new_command("git").args(["ls-tree", "-r", "--name-only", "HEAD"]).current_dir(d).output().unwrap().stdout).replace('\r', "")
+    }
+
+    #[test]
+    fn the_hourly_commit_takes_only_the_boards_own_folders_and_the_daily_sweep_takes_the_notes() {
+        let d = repo();
+        let r = sync(d.path(), &DAILY, "board backup");
+        assert_eq!(r["committed"], true, "{r}");
+        assert_eq!(committed(d.path()).trim(), "agentdesk/a.md", "a note mid-way through being written is not caught hourly");
+        let r = sync(d.path(), &SWEEP, "notes sweep");
+        assert_eq!(r["committed"], true, "{r}");
+        assert!(committed(d.path()).contains("notes/n.md"), "the sweep commits notes");
+        assert_eq!(sync(d.path(), &SWEEP, "notes sweep")["committed"], false, "nothing new, nothing committed");
+    }
+
+    #[test]
+    fn a_folder_that_is_not_a_repository_says_so_and_the_vault_follows_the_setting() {
+        let e = crate::tests_identities::Env::new();
+        let plain = tempfile::tempdir().unwrap();
+        assert_eq!(sync(plain.path(), &DAILY, "board backup")["error"], "the vault is not a git repository");
+        assert_eq!(paths::vault_dir(), paths::data_dir().join("vault"), "the default");
+        let notes = plain.path().join("MyVault");
+        std::fs::create_dir_all(e.data()).unwrap();
+        std::fs::write(e.data().join("settings.json"), serde_json::json!({"vault_dir": notes}).to_string()).unwrap();
+        assert_eq!(paths::vault_dir(), notes, "settings.json vault_dir points the board's history at an existing vault");
+    }
 }

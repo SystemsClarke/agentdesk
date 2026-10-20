@@ -42,8 +42,7 @@ impl Rules {
     }
 
     pub fn load() -> Rules {
-        let settings = std::fs::read_to_string(paths::data_dir().join("settings.json")).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()).unwrap_or(Value::Null);
-        Rules::from_settings(&settings)
+        Rules::from_settings(&paths::settings())
     }
 
     pub fn describe(&self) -> Value {

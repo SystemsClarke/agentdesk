@@ -20,7 +20,7 @@ use std::process::{Child, Stdio};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-const FRESH: Duration = Duration::from_secs(90);
+pub(crate) const FRESH: Duration = Duration::from_secs(90);
 
 fn status_file() -> std::path::PathBuf {
     paths::data_dir().join("bridge.json")
@@ -42,14 +42,14 @@ pub fn pid_alive(pid: i64) -> bool {
     }
     #[cfg(windows)]
     {
-        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ACCESS_DENIED};
         use windows_sys::Win32::System::Threading::{GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
         const STILL_ACTIVE: u32 = 259;
         // SAFETY: plain FFI; the handle is closed before returning.
         unsafe {
             let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid as u32);
             if h.is_null() {
-                return false;
+                return GetLastError() == ERROR_ACCESS_DENIED; // an elevated process we may not open still exists
             }
             let mut code = 0u32;
             let ok = GetExitCodeProcess(h, &mut code) != 0;
@@ -73,7 +73,11 @@ pub fn heartbeat() -> (Option<i64>, Option<Duration>) {
         }
         std::thread::sleep(Duration::from_millis(50)); // caught mid-replace
     }
-    let Some(d) = doc else { return (None, None) };
+    doc.map(|d| heartbeat_of(&d)).unwrap_or((None, None))
+}
+
+/// `heartbeat()` for a heartbeat document already read.
+pub fn heartbeat_of(d: &Value) -> (Option<i64>, Option<Duration>) {
     let Some(ts) = d["ts"].as_str().and_then(|t| DateTime::parse_from_rfc3339(t).ok()) else { return (None, None) };
     let age = (Utc::now() - ts.with_timezone(&Utc)).to_std().unwrap_or_default();
     (d["pid"].as_i64().filter(|p| pid_alive(*p)), Some(age))
@@ -126,17 +130,13 @@ pub fn status() -> Value {
 
 /// `settings.json`'s `"slack_bridge": false` switches it off.
 fn settings_on() -> bool {
-    std::fs::read_to_string(paths::data_dir().join("settings.json"))
-        .ok()
-        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
-        .and_then(|v| v["slack_bridge"].as_bool())
-        .unwrap_or(true)
+    paths::setting("slack_bridge").as_bool().unwrap_or(true)
 }
 
 /// Whether the bridge runs natively (see the module comment): `slack_native` in settings.json, else when there is no Python to run.
 /// `AGENTDESK_BRIDGE_CMD` (a stand-in command) is a Python-style child, so it keeps the supervised path unless the setting says otherwise.
 pub fn use_native() -> bool {
-    match slack::setting("slack_native").as_bool() {
+    match paths::setting("slack_native").as_bool() {
         Some(b) => b,
         None => std::env::var("AGENTDESK_BRIDGE_CMD").map_or(true, |c| c.trim().is_empty()) && pyhost::interpreter().is_none(),
     }
@@ -271,7 +271,7 @@ pub fn run(stop: Arc<std::sync::atomic::AtomicBool>, registry: Registry) {
         };
         info.pid = None;
         info.last_exit = code;
-        info.last_exit_ts = Some(Utc::now().format("%Y-%m-%dT%H:%M:%S+00:00").to_string());
+        info.last_exit_ts = Some(crate::db::iso(Utc::now()));
         if began.elapsed() >= Duration::from_secs(600) {
             delay = first;
         }
@@ -317,7 +317,7 @@ fn run_native(stop: &Arc<std::sync::atomic::AtomicBool>, info: &mut Info, regist
         };
         info.pid = None;
         info.last_exit = Some(code);
-        info.last_exit_ts = Some(Utc::now().format("%Y-%m-%dT%H:%M:%S+00:00").to_string());
+        info.last_exit_ts = Some(crate::db::iso(Utc::now()));
         if stop.load(Relaxed) {
             write_status(info);
             break;
@@ -374,5 +374,20 @@ fn watch(child: &mut Child, stop: &std::sync::atomic::AtomicBool, info: &mut Inf
             }
         }
         std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_fresh_heartbeat_with_a_live_pid_counts_and_a_made_up_pid_does_not() {
+        let me = i64::from(std::process::id());
+        assert!(pid_alive(me) && !pid_alive(0) && !pid_alive(-5) && !pid_alive(4_000_000_000));
+        let beat = |secs: i64, pid: i64| json!({"ts": (Utc::now() - chrono::Duration::seconds(secs)).to_rfc3339(), "pid": pid});
+        assert!(matches!(heartbeat_of(&beat(0, me)), (Some(_), Some(age)) if age < FRESH));
+        assert!(matches!(heartbeat_of(&beat(300, me)), (Some(_), Some(age)) if age >= FRESH));
+        assert_eq!(heartbeat_of(&json!({"pid": 1})), (None, None));
     }
 }

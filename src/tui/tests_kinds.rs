@@ -181,7 +181,9 @@ fn a_permission_question_is_approved_from_the_reader() {
     press(&mut a, 'y');
     assert!(std::fs::read_to_string(d.path().join(".claude/settings.json")).unwrap().contains("Bash(cargo fmt:*)"));
     assert_eq!(status_of(&a, tid), "answered");
-    assert!(screen(&mut a, 120, 40).contains("approved"));
+    a.flash = None; // the "Allowed" flash covers the footer
+    let s = screen(&mut a, 120, 40);
+    assert!(s.contains("approved") && s.contains("Alt+V take back") && !s.contains("Alt+A approve "), "the footer follows the rule's status: {s}");
 }
 
 #[test]
@@ -213,10 +215,21 @@ fn a_run_question_shows_its_script_at_once_and_does_not_run_it() {
     a.on_key(key(KeyCode::Enter));
     assert!(a.runner.as_ref().is_some_and(|r| r.state == runner::State::Ready), "the pane is open and nothing has run");
     let s = screen(&mut a, 120, 40);
-    assert!(s.contains("Kind: RUN") && s.contains("shown, not run") && s.contains("> echo hello-from-run") && s.contains("Alt+R runs it"), "{s}");
+    assert!(s.contains("Kind: RUN") && s.contains("shown, not run") && s.contains("> echo hello-from-run") && s.contains("Alt+R runs it") && s.contains("Alt+R run script"), "{s}");
     a.on_key(key(KeyCode::Esc));
     let _ = screen(&mut a, 120, 40); // the pane closes on the next draw
     assert!(a.runner.is_none(), "leaving the reader closes the pane");
+}
+
+#[test]
+fn the_reader_footer_offers_run_script_only_where_there_is_one() {
+    let (_d, mut a) = app();
+    a.db.start_thread("question", "Plain question", "builder", "agent", "Ship it?", None, None).unwrap();
+    a.reload();
+    press(&mut a, 'q');
+    a.on_key(key(KeyCode::Enter));
+    let s = screen(&mut a, 120, 40);
+    assert!(s.contains("Plain question") && !s.contains("run script"), "no script, no Alt+R in the footer: {s}");
 }
 
 fn script(word: &str) -> String {

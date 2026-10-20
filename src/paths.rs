@@ -15,9 +15,11 @@ pub fn db_path() -> PathBuf {
     data_dir().join("agentdesk.db")
 }
 
-/// The memory vault: a folder of Markdown notes (`AGENTDESK_VAULT` overrides it).
+/// The memory vault: a folder of Markdown notes. `AGENTDESK_VAULT`, else settings.json's `vault_dir` (point it at an existing notes vault,
+/// such as an Obsidian one, and the board's history lands in its `agentdesk/` folder), else a folder in the data directory.
 pub fn vault_dir() -> PathBuf {
-    std::env::var_os("AGENTDESK_VAULT").filter(|d| !d.is_empty()).map(PathBuf::from).unwrap_or_else(|| data_dir().join("vault"))
+    let set = std::env::var_os("AGENTDESK_VAULT").filter(|d| !d.is_empty()).map(PathBuf::from);
+    set.or_else(|| setting("vault_dir").as_str().filter(|d| !d.is_empty()).map(PathBuf::from)).unwrap_or_else(|| data_dir().join("vault"))
 }
 
 pub fn backup_dir() -> PathBuf {
@@ -35,6 +37,30 @@ pub fn log_file() -> PathBuf {
 /// Claude Code's user settings (permission rules are written here on approval).
 pub fn claude_settings() -> PathBuf {
     home_dir().join(".claude").join("settings.json")
+}
+
+/// `settings.json` in the data folder; `Null` when it is missing or unreadable.
+pub fn settings() -> serde_json::Value {
+    std::fs::read_to_string(data_dir().join("settings.json")).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(serde_json::Value::Null)
+}
+
+/// One key of `settings.json` (`Null` when absent).
+pub fn setting(key: &str) -> serde_json::Value {
+    settings()[key].clone()
+}
+
+/// Writes `path` (creating its folder) through a temporary file named for this process, then renames it into place, so a reader never sees
+/// half a file and two writers never share a temporary.
+pub fn write_atomic(path: &std::path::Path, bytes: impl AsRef<[u8]>) -> std::io::Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(format!(".{}.tmp", std::process::id()));
+    let tmp = path.with_file_name(name);
+    std::fs::write(&tmp, bytes).and_then(|_| std::fs::rename(&tmp, path)).inspect_err(|_| {
+        let _ = std::fs::remove_file(&tmp);
+    })
 }
 
 pub fn log(level: &str, msg: &str) {
