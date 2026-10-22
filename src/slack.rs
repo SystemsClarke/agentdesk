@@ -1,4 +1,4 @@
-//! The Slack bridge in Rust: a port of `python/scripts/slack_bridge.py`, run by the core as threads (`bridge.rs` supervises it, with the
+//! The Slack bridge in Rust: run by the core as threads (`bridge.rs` supervises it, with the
 //! same heartbeat file and `ui:status` bridge section as the Python one) instead of a supervised Python process. Selected by
 //! `settings.json`'s `"slack_native"` (see `bridge.rs`).
 //!
