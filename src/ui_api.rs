@@ -133,7 +133,11 @@ pub fn call(db: &Db, c: &Caller, req: &str, a: &Value) -> Result<Value> {
         }
         "identity_create" => {
             let f = |k: &str| a.get(k).and_then(|v| v.as_str()).filter(|s| !s.is_empty());
-            ids::create(db, text(a, "name"), text(a, "folder"), f("charter"), f("model"), a.get("autostart").and_then(|v| v.as_bool()).unwrap_or(false))
+            let made = ids::create(db, text(a, "name"), text(a, "folder"), f("charter"), f("model"), a.get("autostart").and_then(|v| v.as_bool()).unwrap_or(false));
+            if made.is_ok() {
+                let _ = ids::trust_folder(text(a, "folder"));
+            }
+            made
         }
         "identity_list" => Ok(json!({"identities": ids::list(db)?})),
         "identity_start" => {

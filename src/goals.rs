@@ -195,6 +195,7 @@ pub fn create(db: &Db, name: &str, objective: &str, folder: &str) -> Result<Valu
         return err(format!("goal already exists: {name}"));
     }
     ids::create(db, &lead, folder, Some(LEAD_CHARTER), Some("opus"), false)?;
+    let _ = ids::trust_folder(folder); // the user named this folder: its lead must not stop at the trust prompt
     let thread = db.start_thread(
         "discussion",
         &format!("goal: {name}"),

@@ -117,6 +117,30 @@ pub fn create(db: &Db, name: &str, folder: &str, charter: Option<&str>, model: O
     Ok(get(db, name)?.unwrap_or(Value::Null))
 }
 
+/// Records in Claude Code's own config (`~/.claude.json`, or `AGENTDESK_CLAUDE_JSON`) that the user trusts `folder`, so a session AgentDesk
+/// starts there is not stopped at "Is this a project you trust?": nobody is at a hosted session to press Enter, and it would sit there
+/// forever without taking a turn. Called where the user CHOOSES the folder (a new goal, a new identity, `agentdesk trust`), never for a
+/// folder an agent picked. Returns whether anything changed; a config that is missing or not valid JSON is left alone.
+pub fn trust_folder(folder: &str) -> Result<bool> {
+    let path = std::env::var_os("AGENTDESK_CLAUDE_JSON").map(std::path::PathBuf::from).unwrap_or_else(|| crate::paths::home_dir().join(".claude.json"));
+    let Ok(text) = std::fs::read_to_string(&path) else { return Ok(false) };
+    let mut cfg: Value = serde_json::from_str(&text).map_err(|e| anyhow::anyhow!("{} is not valid JSON ({e}): left alone", path.display()))?;
+    let norm = |s: &str| s.trim_start_matches(r"\\?\").replace('\\', "/").trim_end_matches('/').to_lowercase();
+    let key = folder.trim_start_matches(r"\\?\").replace('\\', "/").trim_end_matches('/').to_string();
+    let Some(root) = cfg.as_object_mut() else { return Ok(false) };
+    let projects = root.entry("projects").or_insert_with(|| json!({}));
+    let Some(projects) = projects.as_object_mut() else { return Ok(false) };
+    let existing = projects.keys().find(|k| norm(k) == norm(&key)).cloned().unwrap_or(key);
+    let entry = projects.entry(existing).or_insert_with(|| json!({}));
+    if entry["hasTrustDialogAccepted"] == true {
+        return Ok(false);
+    }
+    let Some(entry) = entry.as_object_mut() else { return Ok(false) };
+    entry.insert("hasTrustDialogAccepted".into(), json!(true));
+    crate::paths::write_atomic(&path, serde_json::to_string_pretty(&cfg)?)?;
+    Ok(true)
+}
+
 fn need(db: &Db, name: &str) -> Result<Value> {
     match get(db, name)? {
         Some(r) => Ok(r),
