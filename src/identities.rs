@@ -212,7 +212,7 @@ pub fn successor_prompt_for(db: &Db, name: &str, generation: i64, handoff: &str)
 // ---- launching
 
 /// claude writes no transcript until the first message, so only a conversation that has one can be resumed.
-fn has_transcript(session_id: &str) -> bool {
+pub(crate) fn has_transcript(session_id: &str) -> bool {
     let root = std::env::var_os("AGENTDESK_CLAUDE_PROJECTS").map(PathBuf::from).unwrap_or_else(|| crate::paths::home_dir().join(".claude").join("projects"));
     std::fs::read_dir(root).into_iter().flatten().flatten().any(|d| d.path().join(format!("{session_id}.jsonl")).exists())
 }
