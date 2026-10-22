@@ -56,7 +56,7 @@ impl Env {
 
 impl Drop for Env {
     fn drop(&mut self) {
-        for k in ["AGENTDESK_DATA", "AGENTDESK_CLAUDE_PROJECTS", "AGENTDESK_CLAUDE", "AGENTDESK_IDENTITY"] {
+        for k in ["AGENTDESK_DATA", "AGENTDESK_CLAUDE_PROJECTS", "AGENTDESK_CLAUDE", "AGENTDESK_IDENTITY", "AGENTDESK_CLAUDE_JSON"] {
             std::env::remove_var(k);
         }
     }
@@ -302,4 +302,45 @@ fn hosted_sessions_are_told_to_keep_their_transcripts_even_when_the_daemon_is_a_
     }
     assert_eq!(std::fs::read_to_string(&out).unwrap_or_default().trim(), "persist=1");
     sup.shutdown();
+}
+
+#[test]
+fn a_folder_the_user_names_is_trusted_in_claudes_config_so_a_hosted_session_is_not_stopped_at_the_prompt() {
+    let e = Env::new();
+    let cfg = e.dir.path().join("claude.json");
+    std::env::set_var("AGENTDESK_CLAUDE_JSON", &cfg);
+    let (a, b) = (e.dir.path().join("Alpha"), e.dir.path().join("Beta"));
+    std::fs::create_dir_all(&a).unwrap();
+    std::fs::create_dir_all(&b).unwrap();
+    let key = |p: &std::path::Path| p.to_string_lossy().replace('\\', "/");
+    std::fs::write(&cfg, json!({"numStartups": 7, "projects": {key(&a).to_uppercase(): {"hasTrustDialogAccepted": false, "allowedTools": ["x"]}}}).to_string()).unwrap();
+
+    assert!(ids::trust_folder(&a.to_string_lossy()).unwrap(), "an existing untrusted entry (found whatever its letter case) is trusted");
+    assert!(ids::trust_folder(&b.to_string_lossy()).unwrap(), "a folder with no entry gets one");
+    assert!(!ids::trust_folder(&b.to_string_lossy()).unwrap(), "already trusted: nothing written");
+    let v: Value = serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
+    assert_eq!(v["numStartups"], 7, "the rest of the config is kept");
+    assert_eq!(v["projects"].as_object().unwrap().len(), 2, "no duplicate entry for the same folder");
+    assert_eq!(v["projects"][key(&a).to_uppercase()]["hasTrustDialogAccepted"], true);
+    assert_eq!(v["projects"][key(&a).to_uppercase()]["allowedTools"], json!(["x"]));
+    assert_eq!(v["projects"][key(&b)]["hasTrustDialogAccepted"], true);
+
+    // a goal trusts the folder its lead runs in
+    let c = e.dir.path().join("Gamma");
+    std::fs::create_dir_all(&c).unwrap();
+    crate::goals::create(&e.db, "g1", "do the thing", &c.to_string_lossy()).unwrap();
+    let v: Value = serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
+    assert_eq!(v["projects"][key(&c)]["hasTrustDialogAccepted"], true);
+
+    // with the real config (no override) a folder inside the temp directory is never trusted: tests and builds make those by the hundred
+    std::env::remove_var("AGENTDESK_CLAUDE_JSON");
+    assert!(!ids::trust_folder(&c.to_string_lossy()).unwrap(), "a scratch folder is skipped before the real config is even read");
+    std::env::set_var("AGENTDESK_CLAUDE_JSON", &cfg);
+
+    // a config that is not JSON is left alone, and no config at all is not an error
+    std::fs::write(&cfg, "{ not json").unwrap();
+    assert!(ids::trust_folder(&a.to_string_lossy()).is_err());
+    assert_eq!(std::fs::read_to_string(&cfg).unwrap(), "{ not json");
+    std::fs::remove_file(&cfg).unwrap();
+    assert!(!ids::trust_folder(&a.to_string_lossy()).unwrap());
 }

@@ -201,6 +201,14 @@ enum Cmd {
     },
     /// Check the merge list against GitHub now.
     CheckPrs,
+    /// Trust folders for hosted sessions: records in Claude Code's config that you trust them, so a session started there does not stop at
+    /// "Is this a project you trust?" and never take a turn. `trust <folder>...`, or `trust --identities` for every identity's folder.
+    Trust {
+        folders: Vec<String>,
+        /// Every identity's folder (the ones that already exist and were never opened by hand).
+        #[arg(long)]
+        identities: bool,
+    },
     /// Merge a pull request, only if it is open, not a draft, every check is green and GitHub calls it mergeable and clean
     /// (`merge <pr-url> [--squash] [--dry-run]`). The command a permission rule such as `Bash(agentdesk merge:*)` authorizes.
     Merge {
@@ -482,6 +490,22 @@ fn real_main() -> Result<()> {
             println!("{} settled", prs::check(&open()?));
             Ok(())
         }
+        Some(Cmd::Trust { folders, identities: all }) => {
+            let mut list = folders;
+            if all {
+                list.extend(identities::list(&open()?)?.iter().filter_map(|r| r["folder"].as_str().map(String::from)));
+            }
+            list.sort();
+            list.dedup();
+            if list.is_empty() {
+                anyhow::bail!("say which folders: trust <folder>... or trust --identities");
+            }
+            for f in &list {
+                let f = std::fs::canonicalize(f).map(|p| p.to_string_lossy().trim_start_matches(r"\\?\").to_string()).unwrap_or_else(|_| f.clone());
+                println!("{} {f}", if identities::trust_folder(&f)? { "trusted" } else { "already trusted (or no Claude config)" });
+            }
+            Ok(())
+        }
         Some(Cmd::Merge { url, squash, dry_run }) => {
             println!("{}", prs::merge(&url, squash, dry_run).map_err(|e| anyhow::anyhow!(e))?);
             if !dry_run {
@@ -607,7 +631,11 @@ fn setup() {
 fn identity(cmd: IdentityCmd) -> Result<()> {
     let d = open()?;
     let (row, note) = match cmd {
-        IdentityCmd::New { name, folder, charter, model, autostart } => (identities::create(&d, &name, &folder, charter.as_deref(), model.as_deref(), autostart)?, false),
+        IdentityCmd::New { name, folder, charter, model, autostart } => {
+            let made = identities::create(&d, &name, &folder, charter.as_deref(), model.as_deref(), autostart)?;
+            let _ = identities::trust_folder(&folder);
+            (made, false)
+        }
         IdentityCmd::List => {
             for r in identities::list(&d)? {
                 println!(
