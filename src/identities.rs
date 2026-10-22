@@ -117,12 +117,24 @@ pub fn create(db: &Db, name: &str, folder: &str, charter: Option<&str>, model: O
     Ok(get(db, name)?.unwrap_or(Value::Null))
 }
 
+/// Is `folder` inside the system temp directory (compared as real paths, so a short `PROFILE~1` spelling matches)?
+fn in_temp_dir(folder: &str) -> bool {
+    match (std::fs::canonicalize(folder), std::fs::canonicalize(std::env::temp_dir())) {
+        (Ok(f), Ok(tmp)) => f.starts_with(tmp),
+        _ => false,
+    }
+}
+
 /// Records in Claude Code's own config (`~/.claude.json`, or `AGENTDESK_CLAUDE_JSON`) that the user trusts `folder`, so a session AgentDesk
 /// starts there is not stopped at "Is this a project you trust?": nobody is at a hosted session to press Enter, and it would sit there
 /// forever without taking a turn. Called where the user CHOOSES the folder (a new goal, a new identity, `agentdesk trust`), never for a
 /// folder an agent picked. Returns whether anything changed; a config that is missing or not valid JSON is left alone.
 pub fn trust_folder(folder: &str) -> Result<bool> {
-    let path = std::env::var_os("AGENTDESK_CLAUDE_JSON").map(std::path::PathBuf::from).unwrap_or_else(|| crate::paths::home_dir().join(".claude.json"));
+    let explicit = std::env::var_os("AGENTDESK_CLAUDE_JSON").map(std::path::PathBuf::from);
+    if explicit.is_none() && in_temp_dir(folder) {
+        return Ok(false); // a scratch folder (a test's, a build's) is never a working folder: the real config is not filled with them
+    }
+    let path = explicit.unwrap_or_else(|| crate::paths::home_dir().join(".claude.json"));
     let Ok(text) = std::fs::read_to_string(&path) else { return Ok(false) };
     let mut cfg: Value = serde_json::from_str(&text).map_err(|e| anyhow::anyhow!("{} is not valid JSON ({e}): left alone", path.display()))?;
     let norm = |s: &str| s.trim_start_matches(r"\\?\").replace('\\', "/").trim_end_matches('/').to_lowercase();

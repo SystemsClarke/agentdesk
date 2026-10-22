@@ -332,6 +332,11 @@ fn a_folder_the_user_names_is_trusted_in_claudes_config_so_a_hosted_session_is_n
     let v: Value = serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
     assert_eq!(v["projects"][key(&c)]["hasTrustDialogAccepted"], true);
 
+    // with the real config (no override) a folder inside the temp directory is never trusted: tests and builds make those by the hundred
+    std::env::remove_var("AGENTDESK_CLAUDE_JSON");
+    assert!(!ids::trust_folder(&c.to_string_lossy()).unwrap(), "a scratch folder is skipped before the real config is even read");
+    std::env::set_var("AGENTDESK_CLAUDE_JSON", &cfg);
+
     // a config that is not JSON is left alone, and no config at all is not an error
     std::fs::write(&cfg, "{ not json").unwrap();
     assert!(ids::trust_folder(&a.to_string_lossy()).is_err());
