@@ -335,6 +335,9 @@ impl Supervisor {
         let Some(row) = ids::get(db, name)? else { return Ok(()) };
         let wake = row["wake_prompt"].as_str().filter(|w| !w.is_empty()).map(String::from);
         let prompt = prompt.or(wake).or_else(|| ids::pending_successor_prompt(db, &row));
+        let swarm = role(db, name).0.is_some();
+        let had_turn = row["claude_session_id"].as_str().is_some_and(ids::has_transcript);
+        let prompt = prompt.or_else(|| first_turn(swarm, had_turn).map(String::from));
         let (args, id) = ids::launch_args(&row, prompt.as_deref(), model);
         let env = vec![("AGENTDESK_IDENTITY".to_string(), name.to_string()), ("AGENTDESK_AUTHOR".to_string(), name.to_string())];
         let pid = self.host.launch(name, row["folder"].as_str().unwrap_or("."), &claude_program(), &args, &env)?;
@@ -380,6 +383,14 @@ impl Supervisor {
     }
 }
 
+/// The first message for a goal's lead or member that has never taken a turn and was started with none. Its stored prompt is cleared
+/// when it launches, so a session that was stuck (a dialog, a crash) and is relaunched, or relaunched by a core restart, would otherwise
+/// start with its task only in its instructions and wait for a message that never comes. A session with a conversation resumes as it was;
+/// John's own identities wait for him.
+fn first_turn(swarm: bool, had_turn: bool) -> Option<&'static str> {
+    (swarm && !had_turn).then_some("Begin now: your task is in your instructions. Do it, then report what you found on the board.")
+}
+
 /// A goal's member or lead is a swarm identity (the goal, and whether it leads it): the governor gates, sheds and re-tiers those. Any
 /// other identity is John's own.
 fn role(db: &Db, name: &str) -> (Option<String>, bool) {
@@ -399,3 +410,16 @@ const SHED_ORDER: &str = "SELECT i.name FROM identities i LEFT JOIN presence p O
     ORDER BY (i.name IN (SELECT identity FROM goal_members)) DESC, \
              (i.name IN (SELECT identity FROM goal_members WHERE goal='concierge')) DESC, \
              MAX(COALESCE(p.seen_ts, ''), i.updated_ts), i.name";
+
+#[cfg(test)]
+mod first_turn_tests {
+    use super::first_turn;
+
+    #[test]
+    fn a_swarm_session_that_never_had_a_turn_gets_a_first_message_and_nothing_else_does() {
+        assert!(first_turn(true, false).is_some_and(|p| p.starts_with("Begin now")), "a lead or member that never took a turn");
+        assert_eq!(first_turn(true, true), None, "one with a conversation resumes as it was");
+        assert_eq!(first_turn(false, false), None, "John's own identity waits for him");
+        assert_eq!(first_turn(false, true), None);
+    }
+}
