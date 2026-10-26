@@ -8,6 +8,7 @@
 //!   agentdesk job ...              recurring jobs: a prompt run on a schedule
 //!   agentdesk backup | setup | usage-feed | check-prs
 
+mod acp;
 mod adopt;
 mod attach;
 mod backup;
@@ -266,6 +267,13 @@ enum Cmd {
         /// A short run (a few seconds): fewer repeats and shorter loop measurements.
         #[arg(long)]
         quick: bool,
+    },
+    /// Try an ACP agent: initialize, open a session, say hello, print the updates: `agentdesk acp-probe <program> [args...]`.
+    #[command(hide = true)]
+    AcpProbe {
+        program: String,
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
     },
     /// Check GitHub for a newer release; with --apply, download it and swap it in.
     Update {
@@ -531,6 +539,7 @@ fn real_main() -> Result<()> {
             print!("{}", usage::feed(&input));
             Ok(())
         }
+        Some(Cmd::AcpProbe { program, args }) => acp::probe(&program, &args),
         Some(Cmd::Update { apply }) => {
             let (latest, newer) = update::check()?;
             if !newer {
