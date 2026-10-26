@@ -7,13 +7,14 @@
 //! structure. Commit, signing and push are `vault_threads::sync`, with the vault's author and signing settings.
 //!
 //! Not kept (lossy by design, the board's own snapshots hold them): thread and message meta, a rename after the first sync, redacted tokens,
-//! spaces in names (written as underscores). Agent session transcripts are a follow-up, not part of this.
+//! spaces in names (written as underscores), a body's leading and trailing blank lines (restore drops them), and a body's line endings
+//! (`\r\n` and a lone `\r` are written, and restored, as `\n`). Agent session transcripts are a follow-up, not part of this.
 
 use crate::db::Db;
 use crate::{paths, vault_threads};
 use anyhow::{bail, Result};
 use serde_json::{json, Value};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 /// The repository: `conversations_dir` in settings.json, else `<data dir>/conversations`.
@@ -47,21 +48,27 @@ fn slug(subject: &str) -> String {
     }
 }
 
-/// The file of a thread: the one already there for its id (a renamed subject keeps its file), else `<yyyy>/<id>-<slug>.md`.
-fn file_of(root: &Path, tid: i64, created: &str, subject: &str) -> PathBuf {
+/// The files already in each year directory, by thread id: each directory is listed once per run, on first use.
+type Listing = HashMap<PathBuf, HashMap<i64, PathBuf>>;
+
+fn list_year(dir: &Path) -> HashMap<i64, PathBuf> {
+    let mut out = HashMap::new();
+    for p in std::fs::read_dir(dir).into_iter().flatten().flatten().map(|e| e.path()) {
+        let Some(n) = p.file_name().and_then(|n| n.to_str()).filter(|n| n.ends_with(".md")) else { continue };
+        if let Some(id) = n.split_once('-').and_then(|(id, _)| id.parse::<i64>().ok()) {
+            out.entry(id).or_insert(p);
+        }
+    }
+    out
+}
+
+/// The file of a thread: the one already there for its id (a renamed subject keeps its file), else `<yyyy>/<id>-<slug>.md`. The slug is
+/// built from the redacted subject, so a token in a subject never reaches the path, the history or the remote.
+fn file_of(root: &Path, listing: &mut Listing, tid: i64, created: &str, subject: &str) -> PathBuf {
     let year = created.get(..4).filter(|y| y.chars().all(|c| c.is_ascii_digit())).unwrap_or("0000");
     let dir = root.join(year);
-    let prefix = format!("{tid}-");
-    if let Some(found) = std::fs::read_dir(&dir)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .map(|e| e.path())
-        .find(|p| p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with(&prefix) && n.ends_with(".md")))
-    {
-        return found;
-    }
-    dir.join(format!("{tid}-{}.md", slug(subject)))
+    let files = listing.entry(dir.clone()).or_insert_with(|| list_year(&dir));
+    files.entry(tid).or_insert_with(|| dir.join(format!("{tid}-{}.md", slug(&vault_threads::redact(subject))))).clone()
 }
 
 fn block(m: &Value) -> String {
@@ -73,7 +80,7 @@ fn block(m: &Value) -> String {
         m["id"].as_i64().unwrap_or(0),
         m["author_kind"].as_str().unwrap_or("")
     );
-    let body = vault_threads::redact(m["body"].as_str().unwrap_or("")).replace("\r\n", "\n");
+    let body = vault_threads::redact(m["body"].as_str().unwrap_or("")).replace("\r\n", "\n").replace('\r', "\n");
     for line in body.trim_end_matches('\n').lines() {
         if !line.is_empty() {
             s.push_str("  ");
@@ -152,9 +159,10 @@ fn render(db: &Db, tid: i64, old: Option<&str>) -> Result<Option<String>> {
 /// Writes every thread the person took part in; returns how many files were created or appended to.
 pub fn write_all(db: &Db, root: &Path) -> Result<usize> {
     let mut changed = 0;
+    let mut listing = Listing::new();
     for r in db.rows("SELECT id, created_ts, subject FROM threads WHERE id IN (SELECT thread_id FROM messages WHERE author_kind = 'human') ORDER BY id", &[])? {
         let tid = r["id"].as_i64().unwrap_or(0);
-        let file = file_of(root, tid, r["created_ts"].as_str().unwrap_or(""), r["subject"].as_str().unwrap_or(""));
+        let file = file_of(root, &mut listing, tid, r["created_ts"].as_str().unwrap_or(""), r["subject"].as_str().unwrap_or(""));
         let old = std::fs::read_to_string(&file).ok();
         let Some(new) = render(db, tid, old.as_deref())? else { continue };
         if old.as_deref() != Some(&new) {
@@ -340,7 +348,7 @@ mod tests {
     }
 
     fn file(e: &Env, root: &Path, t: i64) -> PathBuf {
-        file_of(root, t, &e.db.scalar_str("SELECT created_ts FROM threads WHERE id=:t", &[(":t", &t)]).unwrap().unwrap(), "x")
+        file_of(root, &mut Listing::new(), t, &e.db.scalar_str("SELECT created_ts FROM threads WHERE id=:t", &[(":t", &t)]).unwrap().unwrap(), "x")
     }
 
     #[test]
@@ -372,6 +380,32 @@ mod tests {
         write_all(&e.db, &root).unwrap();
         let t = &read_repo(&root).unwrap()[0];
         assert_eq!(t.msgs[0].body, "key [redacted token]");
+    }
+
+    #[test]
+    fn a_token_in_a_subject_reaches_neither_the_path_nor_the_file() {
+        let e = Env::new();
+        let root = e.dir.path().join("conv");
+        let token = format!("ghp_{}", "a1B2".repeat(9));
+        let t = e.db.start_thread("discussion", &format!("leak {token}"), "john", "human", "hi", None, None).unwrap();
+        assert_eq!(write_all(&e.db, &root).unwrap(), 1);
+        let files: Vec<PathBuf> = std::fs::read_dir(root.join(&e.db.scalar_str("SELECT created_ts FROM threads WHERE id=:t", &[(":t", &t)]).unwrap().unwrap()[..4]))
+            .unwrap()
+            .map(|f| f.unwrap().path())
+            .collect();
+        assert_eq!(files.len(), 1, "{files:?}");
+        let (path, text) = (files[0].to_string_lossy().to_string(), std::fs::read_to_string(&files[0]).unwrap());
+        assert!(path.ends_with(&format!("{t}-leak-redacted-token.md")), "{path}");
+        let name = files[0].file_name().unwrap().to_string_lossy().to_lowercase();
+        for s in [path.as_str(), text.as_str()] {
+            assert!(!s.contains(&token) && !s.contains("ghp_") && !s.contains("a1B2"), "{s}");
+        }
+        assert!(!name.contains("ghp") && !name.contains("a1b2"), "the slug lowercases and dashes, so check it that way too: {name}");
+        e.db.exec("UPDATE threads SET subject='renamed' WHERE id=:t", &[(":t", &t)]).unwrap();
+        e.db.reply(t, "john", "human", "more", None, None).unwrap();
+        assert_eq!(write_all(&e.db, &root).unwrap(), 1);
+        assert_eq!(file(&e, &root, t), files[0], "a renamed subject keeps its file");
+        assert!(std::fs::read_to_string(&files[0]).unwrap().contains("  more"));
     }
 
     #[test]
