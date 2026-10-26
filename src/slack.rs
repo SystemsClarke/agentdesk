@@ -623,17 +623,13 @@ pub fn socket_loop(app_token: &str, stop: &AtomicBool, events: &Sender<Value>) {
 /// Types a line into a session and presses Enter: (session name, text).
 pub type Input = dyn Fn(&str, &str) -> Result<()> + Send + Sync;
 
-/// Text and Enter in one write read as a paste, so they are two.
-const ENTER_AFTER: Duration = Duration::from_millis(300);
-
 /// From inside the core: straight to the session's terminal through the host's registry.
 pub fn registry_input(registry: Registry) -> Arc<Input> {
     Arc::new(move |name, text| {
         let shared = registry.lock().unwrap_or_else(|e| e.into_inner()).iter().find(|(n, _)| n.eq_ignore_ascii_case(name)).map(|(_, s)| s.clone());
         let shared = shared.ok_or_else(|| anyhow!("{name} is not running"))?;
-        shared.write(text.as_bytes())?;
-        std::thread::sleep(ENTER_AFTER);
-        shared.write(b"\r")
+        // Text and Enter in one write read as a paste, so they are two. Every lead is a Claude Code session today.
+        crate::harness::for_id(crate::harness::DEFAULT).type_into(&mut |b: &[u8]| shared.write(b), text, crate::harness::Enter::Apart)
     })
 }
 
@@ -650,9 +646,8 @@ pub fn attach_input() -> Arc<Input> {
         if line.trim() != "OK" {
             return Err(anyhow!("{}", line.trim().strip_prefix("ERR ").unwrap_or(line.trim())));
         }
-        writeln!(conn, "INPUT {}", crate::attach::base64_encode(text.as_bytes()))?;
-        std::thread::sleep(ENTER_AFTER);
-        writeln!(conn, "INPUT {}", crate::attach::base64_encode(b"\r"))?;
+        let mut input = |b: &[u8]| -> Result<()> { Ok(writeln!(conn, "INPUT {}", crate::attach::base64_encode(b))?) };
+        crate::harness::for_id(crate::harness::DEFAULT).type_into(&mut input, text, crate::harness::Enter::Apart)?;
         writeln!(conn, "DETACH")?;
         // Do not just drop the socket: it still holds the session's replayed output unread, and closing a socket with unread data sends a reset,
         // which on Linux discards the lines the server has received but not yet read (the Enter). Say we are done writing and wait for the

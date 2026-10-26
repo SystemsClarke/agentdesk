@@ -94,7 +94,8 @@ CREATE TABLE IF NOT EXISTS usage_samples (id INTEGER PRIMARY KEY AUTOINCREMENT, 
 CREATE TABLE IF NOT EXISTS identities (name TEXT PRIMARY KEY COLLATE NOCASE, folder TEXT NOT NULL, charter TEXT, host TEXT NOT NULL DEFAULT 'local',
     claude_session_id TEXT, pid INTEGER, state TEXT NOT NULL DEFAULT 'stopped', autostart INTEGER NOT NULL DEFAULT 0,
     created_ts TEXT NOT NULL, updated_ts TEXT NOT NULL, generation INTEGER NOT NULL DEFAULT 1, phoenix_msg INTEGER,
-    model TEXT NOT NULL DEFAULT 'sonnet', running_model TEXT, phoenix_go INTEGER NOT NULL DEFAULT 0, wake_prompt TEXT);
+    model TEXT NOT NULL DEFAULT 'sonnet', running_model TEXT, phoenix_go INTEGER NOT NULL DEFAULT 0, wake_prompt TEXT,
+    harness TEXT DEFAULT 'claude-code');
 CREATE TABLE IF NOT EXISTS phoenix_chain (identity TEXT NOT NULL COLLATE NOCASE, generation INTEGER NOT NULL, claude_session_id TEXT,
     handoff_msg INTEGER, ts TEXT NOT NULL, PRIMARY KEY (identity, generation));
 CREATE TABLE IF NOT EXISTS goals (name TEXT PRIMARY KEY COLLATE NOCASE, objective TEXT NOT NULL, hypothesis TEXT, measure_cmd TEXT,
@@ -200,7 +201,7 @@ impl Db {
     /// `init` gains an ALTER or a data fix. (The .NET build stamps its own hash; two builds sharing one board just re-run the idempotent
     /// init once each time the other has run.)
     fn schema_version() -> i64 {
-        const MIGRATION: &str = "rust-2026-10-26.1"; // .1: the event log and its one-time backfill
+        const MIGRATION: &str = "rust-2026-10-26.2"; // .1: identities.harness; the event log and its one-time backfill
         let mut h: u32 = 2166136261;
         for b in SCHEMA.bytes().chain(WAITING_SQL.bytes()).chain(MIGRATION.bytes()) {
             h = (h ^ u32::from(b)).wrapping_mul(16777619);
@@ -261,6 +262,7 @@ impl Db {
             self.add_column("identities", "running_model", "TEXT")?;
             self.add_column("identities", "wake_prompt", "TEXT")?; // John's reply, for a stopped identity to start with (the Rust build's own column)
             self.add_column("identities", "phoenix_go", "INTEGER NOT NULL DEFAULT 0")?; // the turn that passed the torch has ended (the Rust build's own column)
+            self.add_column("identities", "harness", "TEXT DEFAULT 'claude-code'")?; // which agent program runs it (`harness::for_id`; the Rust build's own column)
             self.add_column("goals", "standing", "INTEGER NOT NULL DEFAULT 0")?;
             self.add_column("experiments", "measuring", "INTEGER NOT NULL DEFAULT 0")?; // experiment_done asked for a measurement (the Rust build's own column)
             self.add_column("goal_members", "work_id", "INTEGER")?;

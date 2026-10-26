@@ -20,6 +20,7 @@ mod dispatcher;
 mod events;
 mod goals;
 mod governor;
+mod harness;
 mod hooks;
 mod identities;
 mod identity;

@@ -305,6 +305,98 @@ fn hosted_sessions_are_told_to_keep_their_transcripts_even_when_the_daemon_is_a_
 }
 
 #[test]
+fn the_claude_code_harness_builds_exactly_the_arguments_launch_args_always_did() {
+    use crate::harness::{for_id, StartSpec};
+    let e = Env::new();
+    let h = for_id("claude-code");
+    let id = "11111111-2222-4333-8444-555555555555";
+    let dir = e.dir.path().join("state");
+    let d = dir.display().to_string();
+
+    // A new conversation, at a tier, with the state folder and a first message.
+    let spec = StartSpec { session_id: Some(id), model: Some("opus"), system_prompt: "CHARTER", add_dir: Some(&dir), prompt: Some("do the thing") };
+    let (l, got) = h.start(&spec);
+    assert_eq!(got, id);
+    assert_eq!(l.args, vec!["--session-id", id, "--model", "opus", "--add-dir", &d, "--append-system-prompt", "CHARTER", "do the thing"]);
+    assert_eq!(l.program, std::env::var("AGENTDESK_CLAUDE").unwrap(), "AGENTDESK_CLAUDE, as paths::claude_program finds it");
+    assert_eq!(l.env, vec![("CLAUDE_CODE_FORCE_SESSION_PERSISTENCE".to_string(), "1".to_string())]);
+    // A tier it does not offer is left out; no state folder, no prompt.
+    let (l, _) = h.start(&StartSpec { session_id: Some(id), model: Some("gpt"), system_prompt: "C", add_dir: None, prompt: None });
+    assert_eq!(l.args, vec!["--session-id", id, "--append-system-prompt", "C"]);
+    // No id on record: a fresh, well-formed one.
+    let (l, fresh) = h.start(&StartSpec { session_id: None, model: None, system_prompt: "C", add_dir: None, prompt: None });
+    assert!(fresh.len() == 36 && fresh != id && l.args[..2] == ["--session-id".to_string(), fresh.clone()]);
+    // Once claude has written a transcript, it is resumed.
+    std::fs::create_dir_all(e.dir.path().join("projects").join("p")).unwrap();
+    std::fs::write(e.dir.path().join("projects").join("p").join(format!("{id}.jsonl")), "{}\n").unwrap();
+    assert!(h.can_resume(id) && !h.can_resume("22222222-2222-4333-8444-555555555555"));
+    let (l, _) = h.start(&StartSpec { session_id: Some(id), model: Some("haiku"), system_prompt: "C", add_dir: None, prompt: Some("hi") });
+    assert_eq!(l.args, vec!["--resume", id, "--model", "haiku", "--append-system-prompt", "C", "hi"]);
+
+    // End to end through identities: the chain charter plus its own, the asked-for model over the stored one.
+    std::fs::create_dir_all(e.data()).unwrap();
+    std::fs::write(e.data().join("settings.json"), r#"{"phoenix_state_file": false}"#).unwrap();
+    ids::create(&e.db, "alpha", e.folder(), Some("be brief"), Some("haiku"), false).unwrap();
+    let row = ids::get(&e.db, "alpha").unwrap().unwrap();
+    let (args, sid) = ids::launch_args(&row, Some("go"), Some("sonnet"));
+    let charter = "You are one generation of alpha, a long-lived AgentDesk agent. The identity alpha continues past this session.
+Your successor starts automatically from your handoff, and nothing you did not write down reaches it.
+If you work on a goal (its lead or a member), the core runs its measure (experiment_done) and wakes its lead: never report a measured value yourself.
+When you get the 60% context warning (PHOENIX), finish the step you are on and call pass_the_torch
+with a standalone handoff: what you own, what is mid-flight, and what is next.
+Then stop. The system ends this session and starts your successor from that handoff.
+When your work is done and nothing is waiting on you, call retire, then stop: it ends this session and frees its slot.
+John's reply, or the core's next wake, starts you again with your conversation intact.
+
+be brief";
+    assert_eq!(args, vec!["--session-id", &sid, "--model", "sonnet", "--append-system-prompt", charter, "go"]);
+    assert_eq!(ids::launch_args(&row, None, None).0[2..4], ["--model".to_string(), "haiku".to_string()], "the stored tier when none is asked for");
+}
+
+#[test]
+fn identities_are_on_claude_code_unless_created_on_another_harness() {
+    let e = Env::new();
+    let row = ids::create(&e.db, "plain", e.folder(), None, None, false).unwrap();
+    assert_eq!(row["harness"], "claude-code");
+    let row = ids::create_with(&e.db, "gen", e.folder(), None, None, false, Some("generic")).unwrap();
+    assert_eq!(row["harness"], "generic");
+    assert!(ids::create_with(&e.db, "odd", e.folder(), None, None, false, Some("no-such-agent")).is_err());
+    assert!(ids::get(&e.db, "odd").unwrap().is_none());
+}
+
+#[test]
+fn the_supervisor_runs_an_identity_on_the_generic_harness_with_its_prompt_last() {
+    let e = Env::new();
+    std::env::set_var("AGENTDESK_GENERIC_AGENT", standin_claude(e.dir.path()));
+    ids::create_with(&e.db, "gen", e.folder(), Some("be brief"), None, false, Some("generic")).unwrap();
+    ids::start_with_prompt(&e.db, "gen", "do the thing").unwrap();
+    let mut sup = Supervisor::new();
+    sup.tick(&e.db).unwrap();
+    let row = ids::get(&e.db, "gen").unwrap().unwrap();
+    assert_eq!(row["state"], "running");
+    assert!(row["pid"].as_i64().unwrap_or(0) > 0 && row["claude_session_id"].as_str().is_some());
+    let cmd = sup.host().command("gen").unwrap().to_vec();
+    assert_eq!(cmd.len(), 2, "the program and one argument: {cmd:?}");
+    assert!(cmd[0].ends_with("claude-standin.cmd") || cmd[0].ends_with("claude-standin.sh"));
+    assert!(cmd[1].starts_with("You are one generation of gen") && cmd[1].ends_with("be brief\n\ndo the thing"), "the charter leads, the prompt is last");
+
+    ids::stop(&e.db, "gen").unwrap();
+    sup.tick(&e.db).unwrap();
+    assert!(sup.host().names().is_empty(), "the session was ended");
+
+    // A supervisor that dies leaves `running` rows; the next one starts them again (a fresh conversation: it cannot resume).
+    ids::start(&e.db, "gen").unwrap();
+    sup.tick(&e.db).unwrap();
+    sup.shutdown();
+    drop(sup);
+    let mut next = Supervisor::new();
+    next.tick(&e.db).unwrap();
+    assert_eq!(next.host().names(), vec!["gen".to_string()], "the new supervisor started it again");
+    next.shutdown();
+    std::env::remove_var("AGENTDESK_GENERIC_AGENT");
+}
+
+#[test]
 fn a_folder_the_user_names_is_trusted_in_claudes_config_so_a_hosted_session_is_not_stopped_at_the_prompt() {
     let e = Env::new();
     let cfg = e.dir.path().join("claude.json");
