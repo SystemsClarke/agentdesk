@@ -248,6 +248,25 @@ pub fn set_budget(db: &Db, c: &Caller, name: &str, max_members: Option<i64>, max
     Ok(g)
 }
 
+/// John changes the success line of a running goal (a target that moved mid-run); the next measure is judged against the new line.
+pub fn set_success(db: &Db, c: &Caller, name: &str, success: &str) -> Result<Value> {
+    if !is_john(c) {
+        return err("only John changes a goal's success line");
+    }
+    let g = need(db, name)?;
+    if st(&g, "state") != "running" {
+        return err(format!("goal {name} is {}: only a running goal's success line changes (a draft is re-proposed)", st(&g, "state")));
+    }
+    if standing(&g) {
+        return err(format!("goal {name} is standing: the core fixes its success line"));
+    }
+    parse_line(success)?;
+    let old = st(&g, "success").to_string();
+    db.exec("UPDATE goals SET success=:s, updated_ts=:ts WHERE name=:n", &[(":s", &success.trim()), (":ts", &now_iso()), (":n", &name)])?;
+    db.reply(thread_of(&g), AUTHOR, AGENT, &format!("**Success line changed by John:** {old} → {}", success.trim()), None, None)?;
+    need(db, name)
+}
+
 /// What an agent may grant when it approves a goal (John may grant anything): a goal an agent starts is a bounded one.
 pub const AGENT_MAX_MEMBERS: i64 = 4;
 pub const AGENT_MAX_HOURS: f64 = 24.0;
