@@ -414,11 +414,15 @@ mod tests {
         let root = e.dir.path().join("conv");
         std::env::set_var("AGENTDESK_GIT_AUTHOR_NAME", "t");
         std::env::set_var("AGENTDESK_GIT_AUTHOR_EMAIL", "t@example.com");
+        // The repository is created by the sync itself, so a machine with no global git identity (CI) has none for the committer either.
+        std::env::set_var("GIT_COMMITTER_NAME", "t");
+        std::env::set_var("GIT_COMMITTER_EMAIL", "t@example.com");
         add(&e);
         let g = sync(&e.db, &root).unwrap();
         let again = sync(&e.db, &root).unwrap();
-        std::env::remove_var("AGENTDESK_GIT_AUTHOR_NAME");
-        std::env::remove_var("AGENTDESK_GIT_AUTHOR_EMAIL");
+        for k in ["AGENTDESK_GIT_AUTHOR_NAME", "AGENTDESK_GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"] {
+            std::env::remove_var(k);
+        }
         assert_eq!(g["committed"], true, "{g}");
         assert!(g["error"].is_null(), "no remote is not an error: {g}");
         assert_eq!(git_ok(&root, &["rev-list", "--count", "HEAD"]).as_deref(), Some("1"));
