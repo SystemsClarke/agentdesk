@@ -374,6 +374,11 @@ enum GoalCmd {
         #[arg(long)]
         cadence: Option<f64>,
     },
+    /// Change a running goal's success line, e.g. `goal success g1 "value <= 25"`.
+    Success {
+        name: String,
+        line: String,
+    },
     Stop {
         name: String,
     },
@@ -787,6 +792,7 @@ fn goal(cmd: GoalCmd) -> Result<()> {
         }
         GoalCmd::Approve { name, members, hours, cadence } => goals::approve(&d, &me, &name, members, hours, cadence)?,
         GoalCmd::Budget { name, members, hours, cadence } => goals::set_budget(&d, &me, &name, members, hours, cadence)?,
+        GoalCmd::Success { name, line } => goals::set_success(&d, &me, &name, &line)?,
         GoalCmd::Stop { name } => goals::stop(&d, &me, &name)?,
         GoalCmd::List => goals::list(&d)?,
         GoalCmd::Status { name } => goals::status(&d, &name)?,

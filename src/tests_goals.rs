@@ -98,6 +98,27 @@ fn a_measure_records_the_value_and_the_verdict_and_a_met_line_ends_the_goal() {
 }
 
 #[test]
+fn john_changes_a_running_goals_success_line_and_the_next_measure_uses_it() {
+    let e = Env::new();
+    running_goal(&e, "g1s", "42", "value < 10");
+    let lead = agent("g1s-lead");
+    assert!(goals::set_success(&e.db, &lead, "g1s", "value < 50").is_err(), "an agent cannot move the bar");
+    as_john();
+    assert!(goals::set_success(&e.db, &john(), "g1s", "faster").is_err(), "a malformed line is refused");
+    assert_eq!(goals::status(&e.db, "g1s").unwrap()["success"], "value < 10", "a refused change leaves the line alone");
+    let g = goals::set_success(&e.db, &john(), "g1s", "value < 50").unwrap();
+    assert_eq!(g["success"], "value < 50");
+    assert!(e.db.row("SELECT 1 FROM messages WHERE body='**Success line changed by John:** value < 10 → value < 50'", &[]).unwrap().is_some());
+
+    let n = goals::experiment_start(&e.db, &agent("g1s-lead"), "g1s", "x").unwrap()["n"].as_i64().unwrap();
+    assert_eq!(goals::measure(&e.db, "g1s", n, Duration::from_secs(30)).unwrap()["verdict"], "met", "42 meets the new line");
+
+    assert!(goals::set_success(&e.db, &john(), "g1s", "value < 5").is_err(), "a succeeded goal is not changed");
+    goals::create(&e.db, "draft1", "o", e.folder()).unwrap();
+    assert!(goals::set_success(&e.db, &john(), "draft1", "value < 5").is_err(), "a draft is re-proposed, not changed");
+}
+
+#[test]
 fn a_measure_that_fails_or_prints_no_number_is_an_error_not_a_value() {
     let e = Env::new();
     running_goal(&e, "g2", "hello", "value < 10");
