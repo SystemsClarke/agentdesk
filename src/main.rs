@@ -13,6 +13,7 @@ mod attach;
 mod backup;
 mod bridge;
 mod concierge;
+mod conversations;
 mod daemon;
 mod db;
 mod dictation;
@@ -200,6 +201,11 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// Your conversations as a git repository of append-only markdown (`conversations sync`, `conversations restore <repo>`).
+    Conversations {
+        #[command(subcommand)]
+        cmd: ConversationsCmd,
+    },
     /// Check the merge list against GitHub now.
     CheckPrs,
     /// Trust folders for hosted sessions: records in Claude Code's config that you trust them, so a session started there does not stop at
@@ -367,6 +373,18 @@ enum GoalCmd {
 }
 
 #[derive(Subcommand)]
+enum ConversationsCmd {
+    /// Render the board's conversations into the repository (`conversations_dir`), commit and push.
+    Sync,
+    /// Read a repository back: counts by default (`--dry-run=false` imports, into an empty board only).
+    Restore {
+        repo: std::path::PathBuf,
+        #[arg(long, num_args = 0..=1, default_value_t = true, default_missing_value = "true", action = clap::ArgAction::Set)]
+        dry_run: bool,
+    },
+}
+
+#[derive(Subcommand)]
 enum JobCmd {
     /// Make a job: `job new <name> <folder> --prompt TEXT (--at HH:MM [--days daily|weekdays|mon,thu] | --every MINUTES)`.
     New {
@@ -475,6 +493,22 @@ fn real_main() -> Result<()> {
             let out = backup::run_with(&open()?, skip_vault)?;
             println!("{}", if json { serde_json::json!({"result": out}).to_string() } else { out });
             Ok(())
+        }
+        Some(Cmd::Conversations { cmd }) => {
+            let out = match cmd {
+                ConversationsCmd::Sync => conversations::sync(&open()?, &conversations::repo_dir()).map(|v| v.to_string()),
+                ConversationsCmd::Restore { repo, dry_run } => conversations::restore(&open()?, &repo, dry_run),
+            };
+            match out {
+                Ok(m) => {
+                    println!("{m}");
+                    Ok(())
+                }
+                Err(e) => {
+                    println!("{}", db::anyhow_msg(&e));
+                    std::process::exit(1);
+                }
+            }
         }
         Some(Cmd::Restore { archive, yes, force_newer, json }) => match backup::restore(&open()?, &archive, yes, force_newer, json) {
             Ok(m) => {

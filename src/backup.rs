@@ -54,7 +54,12 @@ pub fn run_with(db: &Db, skip_vault: bool) -> Result<String> {
         (_, _, Some(e)) => format!(", GIT ERROR: {e}"),
         (c, p, None) => format!(", {}{}", if c == Some(true) { "committed" } else { "no change" }, if p == Some(true) { ", pushed" } else { "" }),
     };
-    Ok(format!("snapshot {} (integrity {integrity}, {thinned} older removed), {threads} thread notes changed in {}{git_note}", path.display(), paths::vault_dir().display()))
+    let conversations = crate::conversations::sync_for_backup(db); // the person's own repository of conversations
+    Ok(format!(
+        "snapshot {} (integrity {integrity}, {thinned} older removed), {threads} thread notes changed in {}{git_note}{conversations}",
+        path.display(),
+        paths::vault_dir().display()
+    ))
 }
 
 /// `PRAGMA integrity_check` on a snapshot: "ok", or what SQLite complained about. A snapshot that fails is renamed `<name>.corrupt`, so it
