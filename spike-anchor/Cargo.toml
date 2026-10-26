@@ -1,0 +1,18 @@
+[package]
+name = "spike-anchor"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# Standalone: never part of the product workspace.
+[workspace]
+
+[features]
+default = ["with-loro"]
+with-loro = ["dep:loro"]
+
+[dependencies]
+loro = { version = "=1.16.2", optional = true }
+
+[profile.release]
+debug = false
