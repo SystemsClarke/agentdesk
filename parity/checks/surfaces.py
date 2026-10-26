@@ -66,7 +66,7 @@ def _supervise(b):
     assert br["restarts"] >= 1 and br["last_exit"] == 3, br
 
 
-def _fake_env(b, history=None):
+def _fake_env(b):
     log = os.path.join(b.dir, "slack.log")
     events = os.path.join(b.dir, "slack.events")
     creds = os.path.join(b.dir, "slack-notify")
@@ -76,12 +76,7 @@ def _fake_env(b, history=None):
             f.write(v)
     for p in (log, events):
         open(p, "w").close()
-    fakes = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "fakes")
-    env = {"PYTHONPATH": fakes, "FAKE_SLACK_LOG": log, "FAKE_SLACK_EVENTS": events, "AGENTDESK_SLACK_DIR": creds,
-           "AGENTDESK_SLACK_DM": "DJOHN", "AGENTDESK_SLACK_USER": "UJOHN"}
-    if history:
-        env["FAKE_SLACK_HISTORY"] = history
-    return env, log, events
+    return log, events
 
 
 def _calls(log):
@@ -95,64 +90,17 @@ def _event(user, text, thread_ts=None, ts=None):
     return ev
 
 
-class PyBridge:
-    """The original's `scripts/slack_bridge.py`, run on the slack_bolt fake (parity/fakes/slack_bolt)."""
-    native = False
-
-    def __init__(self, b, history=None):
-        self.b = b
-        self.env, self.log, self.events = _fake_env(b, history)
-        self.p = None
-
-    def start(self):
-        if self.p is None:
-            self.p = self.b.spawn("python", "scripts/slack_bridge.py", env=self.env)
-
-    def calls(self):
-        return _calls(self.log)
-
-    def event(self, ev):
-        with open(self.events, "a") as f:
-            f.write(json.dumps({"event": ev}) + "\n")
-
-    def says(self):
-        """What the bridge said back (as a reply, not a relayed question)."""
-        return [c for c in self.calls() if c["kind"] == "say"]
-
-    def command(self, text, user="UJOHN"):
-        code = ("from agentdesk import slackcmd; import sys, json\n"
-                "c = slackcmd.Commands(list(slackcmd.AREAS), 'UJOHN', 'AgentDesk')\n"
-                "print(json.dumps(c.handle(sys.argv[1], sys.argv[2])))")
-        path = os.path.join(self.b.work, "cmd.py")
-        with open(path, "w") as f:
-            f.write(code)
-        r = self.b.run("python", path, text, user, env={"AGENTDESK_BIN": self.b.bin})
-        assert r.returncode == 0, r.stderr[-500:]
-        return json.loads(r.stdout.strip().splitlines()[-1])
-
-    def stop(self):
-        if self.p is None:
-            return
-        with open(self.events, "a") as f:
-            f.write(json.dumps({"quit": True}) + "\n")
-        try:
-            self.p.wait(timeout=10)
-        except Exception:
-            self.p.kill()
-
-
-class NativeBridge(PyBridge):
+class NativeBridge:
     """The Rust bridge (`agentdesk slack-bridge`, the same code the core runs when `slack_native` is on) against parity/fakes/slack_web.py:
     real HTTP for the Web API and a real websocket for Socket Mode. `files` gives it its credentials as files in AGENTDESK_SLACK_DIR, as
     on John's machine; otherwise SLACK_BOT_TOKEN / SLACK_APP_TOKEN."""
-    native = True
 
     def __init__(self, b, history=None, files=False, spawn=True):
         import sys
         sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "fakes"))
         from slack_web import FakeSlack
         self.b = b
-        _, self.log, self.events = _fake_env(b, history)
+        self.log, self.events = _fake_env(b)
         self.creds = os.path.join(b.dir, "slack-notify")
         self.fake = FakeSlack(self.log, self.events, history)
         self.env = {"SLACK_API_URL": self.fake.api_url, "AGENTDESK_SLACK_DM": "DJOHN", "AGENTDESK_SLACK_USER": "UJOHN", "AGENTDESK_SLACK_POLL": "1"}
@@ -166,6 +114,9 @@ class NativeBridge(PyBridge):
     def start(self):
         if self.p is None and self.spawn:
             self.p = self.b.spawn("slack-bridge", env=self.env)
+
+    def calls(self):
+        return _calls(self.log)
 
     def event(self, ev):
         with open(self.events, "a") as f:
@@ -224,19 +175,13 @@ def _relay_check(b, drv):
         drv.event(_event("UOTHER", "nope", post["ts"], "1800000000.0002"))
         time.sleep(1.0)
         assert len(b.sql("SELECT id FROM messages WHERE thread_id=? AND author_kind='human'", (q,))) == 1
-        if drv.native:
-            # John's credentials are files, and the bridge keeps the same state file next to them
-            state = json.load(open(os.path.join(drv.creds, "bridge_state.json")))
-            assert state["posted"][str(q)]["ts"] == post["ts"], state
-            beat = json.load(open(os.path.join(b.data, "slack_bridge.state")))
-            assert beat["pid"] and beat["ts"] and "poll_s" in beat, beat
+        # John's credentials are files, and the bridge keeps the same state file next to them
+        state = json.load(open(os.path.join(drv.creds, "bridge_state.json")))
+        assert state["posted"][str(q)]["ts"] == post["ts"], state
+        beat = json.load(open(os.path.join(b.data, "slack_bridge.state")))
+        assert beat["pid"] and beat["ts"] and "poll_s" in beat, beat
     finally:
         drv.stop()
-
-
-@feature("slack.relay-question", "slack", "A new question is relayed to John's Slack DM (formatted: tables, mermaid, charts as images); his threaded reply comes back as a board reply with via=slack", "scripts/slack_bridge.py")
-def _relay(b):
-    _relay_check(b, PyBridge(b))
 
 
 @feature("slack.relay-question-native", "slack", "The native bridge relays a question to John's DM over the Web API and takes his threaded reply from Socket Mode as a board reply with via=slack, credentials from the files in slack-notify", "src/slack.rs")
@@ -250,10 +195,7 @@ def _phone_check(b, drv):
         for w in ("status", "concierge", "governor", "swarm"):
             assert w in h, h
         assert drv.command("status", user="UOTHER") is None, "only John may run commands"
-        if drv.native:  # the bridge with the board area tells John where an answer goes
-            assert "inside the thread" in (drv.command("hello there") or "")
-        else:
-            assert drv.command("hello there") is None
+        assert "inside the thread" in (drv.command("hello there") or "")  # the board area tells John where an answer goes
         drv.command("concierge on")
         assert b.need("ui:status")["concierge"]["on"] is True
         drv.command("concierge off")
@@ -270,60 +212,15 @@ def _phone_check(b, drv):
         before = len(drv.says())
         drv.event(_event("UJOHN", "wake", post["ts"], "1800000000.0003"))
         wait_for(lambda: any(c.get("thread_ts") == post["ts"] for c in drv.says()[before:]), 20, what="the core's answer to wake")
-        if drv.native:
-            assert "replied" in drv.says()[before]["text"], drv.says()[before]
+        assert "replied" in drv.says()[before]["text"], drv.says()[before]
         assert len(b.sql("SELECT id FROM messages WHERE thread_id=? AND author_kind='human'", (q,))) == 0, "wake is not an answer"
     finally:
         drv.stop()
 
 
-@feature("slack.phone-commands", "slack", "John's DM commands: status, concierge on|off, governor on|off, wake (in a question's thread), swarms / swarm new|approve|end|reset", "docs/ui-api.md Swarm slots, slackcmd.py")
-def _phone(b):
-    _phone_check(b, PyBridge(b))
-
-
 @feature("slack.phone-commands-native", "slack", "The native bridge answers John's DM commands (help, status, concierge, governor, wake) and no one else's", "src/slack_cmd.rs")
 def _phone_native(b):
     _phone_check(b, NativeBridge(b))
-
-
-@feature("slack.swarm-channels", "slack", "Swarm slots: each slot's channel mirrors its goal thread as a persona and relays John's channel messages to the lead (`John (via Slack): ...`)", "docs/ui-api.md Swarm slots")
-def _swarmslack(b):
-    hist = os.path.join(b.dir, "history.json")
-    env, log, events = _fake_env(b, hist)
-    code = ("import json, os, sys\nfrom pathlib import Path\nfrom agentdesk import slackcmd, swarm\nimport slack_bolt\n"
-            "c = slack_bolt.Client()\n"
-            "s = swarm.Swarms(c, slackcmd.call, 'UJOHN', Path(os.environ['AGENTDESK_DATA']) / 'swarm_state.json')\n"
-            "s.sleep = lambda x: None\n"
-            "step = sys.argv[1]\n"
-            "if step == 'new': print(s.new('alpha', os.getcwd(), 'raise the score'))\n"
-            "elif step == 'list': print(s.list())\n"
-            "elif step == 'tick': print(s.poll(), s.relay())\n")
-    path = os.path.join(b.work, "swarm.py")
-    with open(path, "w") as f:
-        f.write(code)
-
-    def step(name):
-        r = b.run("python", path, name, env=dict(env, AGENTDESK_BIN=b.bin))
-        assert r.returncode == 0, r.stderr[-600:]
-        return r.stdout
-
-    out = step("new")
-    assert "Slot 1" in out and "alpha" in out, out
-    calls = [c["kind"] for c in _calls(log)]
-    assert "create" in calls, calls
-    assert "alpha" in b.need("ui:goal_status", {"name": "alpha"}).get("name", "")
-    assert "alpha" in step("list")
-    step("tick")  # first sight of the channel: the watermark starts at its newest message
-    cid = next(c for c in _calls(log) if c["kind"] == "create")
-    chan = "C" + cid["name"][-6:].upper().replace("-", "X")
-    with open(hist, "w") as f:
-        json.dump({chan: [{"ts": "%d.0001" % (time.time() + 100), "user": "UJOHN", "text": "try the other approach"}]}, f)
-    step("tick")
-    lead = b.need("ui:goal_status", {"name": "alpha"}).get("lead") or "alpha-lead"
-    # the lead is not running, so the core refuses the input and the bridge says so in the channel
-    posts = [c for c in _calls(log) if c["kind"] == "post" and c.get("channel") == chan]
-    assert any(lead in json.dumps(c) or "free" in json.dumps(c) or "reach" in json.dumps(c) for c in posts), posts
 
 
 @feature("slack.swarm-channels-native", "slack", "The native bridge runs the swarm slots: `swarm new` makes the channel and persona, `swarms` lists it, John's channel messages are polled (with a first-sight watermark) and typed into the lead, and a lead that cannot be reached is said so in the channel", "src/swarm.rs")

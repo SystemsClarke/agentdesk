@@ -33,10 +33,9 @@ stand-in executable on `PATH`, so nothing touches real data or the network.
 `ui-snapshot` keys are space-separated: letters, `enter esc tab up down left right pgup pgdn home end backspace`,
 `ctrl+x alt+x`, and `t:text~with~spaces` to type.
 
-Slack has two fakes: `fakes/slack_bolt` (the Python bridge runs unchanged on it) and `fakes/slack_web.py`, a Web API on
-HTTP plus a Socket Mode websocket on 127.0.0.1 that the native bridge (`agentdesk slack-bridge`, or the daemon with
-`"slack_native": true`) is pointed at with `SLACK_API_URL`. The Slack checks in `checks/surfaces.py` run the same body
-against either one (`PyBridge` / `NativeBridge`), registered as `slack.<feature>` and `slack.<feature>-native`.
+The Slack fake is `fakes/slack_web.py`, a Web API on HTTP plus a Socket Mode websocket on 127.0.0.1 that the bridge
+(`agentdesk slack-bridge`, or the daemon) is pointed at with `SLACK_API_URL`. The Slack checks in `checks/surfaces.py`
+drive it through `NativeBridge` and are registered as `slack.<feature>-native`.
 
 ## Statuses
 

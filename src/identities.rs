@@ -9,6 +9,7 @@
 //! given verbatim to a successor, the 2-minute cooldown between restarts, the pending-handoff prompt for a launch that never happened.
 
 use crate::db::{err, now_iso, Db};
+use crate::harness;
 use crate::paths;
 use anyhow::Result;
 use serde_json::{json, Value};
@@ -96,6 +97,15 @@ pub fn list(db: &Db) -> Result<Vec<Value>> {
 }
 
 pub fn create(db: &Db, name: &str, folder: &str, charter: Option<&str>, model: Option<&str>, autostart: bool) -> Result<Value> {
+    create_with(db, name, folder, charter, model, autostart, None)
+}
+
+/// `create`, on a given harness (default `claude-code`).
+pub fn create_with(db: &Db, name: &str, folder: &str, charter: Option<&str>, model: Option<&str>, autostart: bool, harness: Option<&str>) -> Result<Value> {
+    let harness = harness.map(str::trim).filter(|h| !h.is_empty()).unwrap_or(harness::DEFAULT);
+    if !harness::known(harness) {
+        return err(format!("unknown harness: {harness}"));
+    }
     if name.is_empty() || !name.chars().all(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | '.')) {
         return err("name is required: letters, digits, - _ .");
     }
@@ -111,8 +121,8 @@ pub fn create(db: &Db, name: &str, folder: &str, charter: Option<&str>, model: O
     }
     let ts = now_iso();
     db.exec(
-        "INSERT INTO identities (name, folder, charter, host, state, autostart, created_ts, updated_ts, model) VALUES (:n,:f,:c,'local','stopped',:a,:ts,:ts,:m)",
-        &[(":n", &name), (":f", &folder), (":c", &charter), (":a", &(autostart as i64)), (":ts", &ts), (":m", &model)],
+        "INSERT INTO identities (name, folder, charter, host, state, autostart, created_ts, updated_ts, model, harness) VALUES (:n,:f,:c,'local','stopped',:a,:ts,:ts,:m,:h)",
+        &[(":n", &name), (":f", &folder), (":c", &charter), (":a", &(autostart as i64)), (":ts", &ts), (":m", &model), (":h", &harness)],
     )?;
     Ok(get(db, name)?.unwrap_or(Value::Null))
 }
@@ -247,61 +257,38 @@ pub fn successor_prompt_for(db: &Db, name: &str, generation: i64, handoff: &str)
 
 // ---- launching
 
-/// claude writes no transcript until the first message, so only a conversation that has one can be resumed.
-pub(crate) fn has_transcript(session_id: &str) -> bool {
-    let root = std::env::var_os("AGENTDESK_CLAUDE_PROJECTS").map(PathBuf::from).unwrap_or_else(|| crate::paths::home_dir().join(".claude").join("projects"));
-    std::fs::read_dir(root).into_iter().flatten().flatten().any(|d| d.path().join(format!("{session_id}.jsonl")).exists())
-}
-
-/// What to run for this identity: `--resume <id>` when there is a conversation to resume, else `--session-id` a new (or never-used) id,
-/// the model tier, the state folder, the chain charter plus its own, then the prompt as the first message. Returns (args, session id).
-pub fn launch_args(row: &Value, prompt: Option<&str>, model: Option<&str>) -> (Vec<String>, String) {
+/// How to start this identity, through its harness (`harness::Harness::start`): the chain charter plus its own as the session's
+/// instructions, the state folder, the model (the one asked for, else its stored tier), then the prompt as the first message.
+/// Returns (launch, session id).
+pub fn launch(row: &Value, prompt: Option<&str>, model: Option<&str>) -> (harness::Launch, String) {
     let name = row["name"].as_str().unwrap_or("");
-    let id = row["claude_session_id"].as_str().map(String::from);
-    let resume = id.as_deref().map(has_transcript).unwrap_or(false);
-    let id = id.unwrap_or_else(new_session_id);
     let mut charter = CHAIN.replace("{0}", name);
-    let state_on = state_file_on();
-    if state_on {
+    let state_dir = state_file_on().then(|| {
         let path = state_path(name);
         let _ = std::fs::create_dir_all(path.parent().unwrap());
         charter.push('\n');
         charter.push_str(&STATE_CHARTER.replace("{0}", &path.display().to_string()));
-    }
+        path.parent().unwrap().to_path_buf()
+    });
     if let Some(own) = row["charter"].as_str().filter(|c| !c.is_empty()) {
         charter.push_str("\n\n");
         charter.push_str(own);
     }
-    let tier = model.or_else(|| row["model"].as_str()).filter(|m| MODELS.contains(m));
-    let mut args = vec![if resume { "--resume" } else { "--session-id" }.to_string(), id.clone()];
-    if let Some(t) = tier {
-        args.extend(["--model".to_string(), t.to_string()]);
-    }
-    if state_on {
-        args.extend(["--add-dir".to_string(), state_path(name).parent().unwrap().display().to_string()]);
-    }
-    args.extend(["--append-system-prompt".to_string(), charter]);
-    if let Some(p) = prompt {
-        args.push(p.to_string());
-    }
-    (args, id)
+    let spec = harness::StartSpec {
+        session_id: row["claude_session_id"].as_str(),
+        model: model.or_else(|| row["model"].as_str()),
+        system_prompt: &charter,
+        add_dir: state_dir.as_deref(),
+        prompt,
+    };
+    harness::of(row).start(&spec)
 }
 
-fn new_session_id() -> String {
-    // A v4-shaped UUID from the clock and the process: claude only needs it unique and well-formed.
-    let mut h: [u8; 16] = [0; 16];
-    let seed = format!("{:?}{}{:?}", std::time::SystemTime::now(), std::process::id(), std::thread::current().id());
-    let mut x: u64 = seed.bytes().fold(0xcbf29ce484222325, |a, b| (a ^ u64::from(b)).wrapping_mul(0x100000001b3));
-    for b in h.iter_mut() {
-        x ^= x << 13;
-        x ^= x >> 7;
-        x ^= x << 17;
-        *b = (x >> 24) as u8;
-    }
-    h[6] = (h[6] & 0x0f) | 0x40;
-    h[8] = (h[8] & 0x3f) | 0x80;
-    let hex: Vec<String> = h.iter().map(|b| format!("{b:02x}")).collect();
-    format!("{}-{}-{}-{}-{}", hex[0..4].concat(), hex[4..6].concat(), hex[6..8].concat(), hex[8..10].concat(), hex[10..16].concat())
+/// `launch`'s arguments: (args, session id).
+#[cfg_attr(not(test), allow(dead_code))] // tests read it
+pub fn launch_args(row: &Value, prompt: Option<&str>, model: Option<&str>) -> (Vec<String>, String) {
+    let (l, id) = launch(row, prompt, model);
+    (l.args, id)
 }
 
 /// Phoenix needs a free recorded-restart slot: two minutes since the identity's last chain row.

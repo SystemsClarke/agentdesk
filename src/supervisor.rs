@@ -10,6 +10,7 @@
 
 use crate::db::{now_iso, Db};
 use crate::governor as gov;
+use crate::harness::{self, Enter};
 use crate::identities as ids;
 use crate::paths;
 use crate::sessions::Host;
@@ -53,10 +54,6 @@ pub fn running() -> bool {
 fn lock_file() -> std::io::Result<File> {
     std::fs::create_dir_all(paths::data_dir())?;
     std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(paths::data_dir().join("supervisor.lock"))
-}
-
-fn claude_program() -> String {
-    paths::claude_program()
 }
 
 impl Supervisor {
@@ -127,7 +124,7 @@ impl Supervisor {
         crate::plain::tick(db, &mut self.host)?;
         for r in ids::list(db)?.iter().filter(|r| r["state"].as_str() == Some("running") && r["wake_prompt"].as_str().is_some_and(|w| !w.is_empty())) {
             let (n, w) = (r["name"].as_str().unwrap_or(""), r["wake_prompt"].as_str().unwrap_or(""));
-            if self.host.alive(n) && self.host.type_text(n, &w.replace('\n', " ")).is_ok() {
+            if self.host.alive(n) && harness::of(r).send(&mut self.host, n, &w.replace('\n', " "), Enter::Together).is_ok() {
                 db.exec("UPDATE identities SET wake_prompt=NULL WHERE name=:n", &[(":n", &n)])?;
             }
         }
@@ -308,7 +305,7 @@ impl Supervisor {
                 m["body"].as_str().unwrap_or("")
             );
             let state = if row["state"].as_str() == Some("running") && self.host.alive(name) {
-                match self.host.type_text(name, &text.replace('\n', " ")) {
+                match harness::of(&row).send(&mut self.host, name, &text.replace('\n', " "), Enter::Together) {
                     Ok(()) => "injected",
                     Err(_) => "failed",
                 }
@@ -336,12 +333,13 @@ impl Supervisor {
         let wake = row["wake_prompt"].as_str().filter(|w| !w.is_empty()).map(String::from);
         let prompt = prompt.or(wake).or_else(|| ids::pending_successor_prompt(db, &row));
         let swarm = role(db, name).0.is_some();
-        let had_turn = row["claude_session_id"].as_str().is_some_and(ids::has_transcript);
+        let had_turn = row["claude_session_id"].as_str().is_some_and(|s| harness::of(&row).can_resume(s));
         let prompt = prompt.or_else(|| first_turn(swarm, had_turn).map(String::from));
-        let (args, id) = ids::launch_args(&row, prompt.as_deref(), model);
-        let env = vec![("AGENTDESK_IDENTITY".to_string(), name.to_string()), ("AGENTDESK_AUTHOR".to_string(), name.to_string())];
-        let pid = self.host.launch(name, row["folder"].as_str().unwrap_or("."), &claude_program(), &args, &env)?;
-        let tier = args.windows(2).find(|w| w[0] == "--model").map(|w| w[1].clone());
+        let (launch, id) = ids::launch(&row, prompt.as_deref(), model);
+        let mut env = launch.env;
+        env.extend([("AGENTDESK_IDENTITY".to_string(), name.to_string()), ("AGENTDESK_AUTHOR".to_string(), name.to_string())]);
+        let pid = self.host.launch(name, row["folder"].as_str().unwrap_or("."), &launch.program, &launch.args, &env)?;
+        let tier = launch.args.windows(2).find(|w| w[0] == "--model").map(|w| w[1].clone());
         db.exec(
             "UPDATE identities SET state='running', pid=:p, claude_session_id=:s, running_model=:m, wake_prompt=NULL, updated_ts=:ts WHERE name=:n",
             &[(":p", &i64::from(pid)), (":s", &id), (":m", &tier), (":ts", &now_iso()), (":n", &name)],
