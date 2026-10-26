@@ -250,14 +250,16 @@ fn spawn(job: &Value) -> Result<Child> {
     let dir = crate::paths::data_dir().join("jobs");
     std::fs::create_dir_all(&dir)?;
     let log = std::fs::OpenOptions::new().create(true).append(true).open(dir.join(format!("{name}.log")))?;
-    let mut cmd = crate::paths::command(&crate::paths::claude_program());
-    cmd.arg("-p").arg(&prompt).arg("--model").arg(job["model"].as_str().unwrap_or("sonnet"));
+    let launch = crate::harness::of(job).headless(&prompt, job["model"].as_str().unwrap_or("sonnet"));
+    let mut cmd = crate::paths::command(&launch.program);
+    cmd.args(&launch.args);
     cmd.current_dir(job["folder"].as_str().unwrap_or("."));
     for (k, _) in std::env::vars() {
         if k.starts_with("CLAUDE") || k == "AGENTDESK_SESSION" {
             cmd.env_remove(k);
         }
     }
+    cmd.envs(launch.env);
     cmd.env("AGENTDESK_AUTHOR", name).env("AGENTDESK_IDENTITY", name);
     cmd.stdin(Stdio::null()).stdout(log.try_clone()?).stderr(log);
     Ok(cmd.spawn()?)

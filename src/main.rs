@@ -19,6 +19,7 @@ mod dictation;
 mod dispatcher;
 mod goals;
 mod governor;
+mod harness;
 mod hooks;
 mod identities;
 mod identity;

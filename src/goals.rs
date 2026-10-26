@@ -900,18 +900,16 @@ pub fn wake(db: &Db, host: &mut Host, name: &str) -> Result<()> {
             "decide the next experiment and dispatch it (member_spawn), or run it yourself (experiment_start, experiment_done). Then stop until the next wake."
         }
     );
-    let who = db.row("SELECT state, pid FROM identities WHERE name=:n", &[(":n", &lead)])?;
+    let who = db.row("SELECT state, pid, harness FROM identities WHERE name=:n", &[(":n", &lead)])?;
     match who {
         None => paths::log("WARN", &format!("goal {name}: its lead {lead} is gone")),
         Some(w) if w["state"].as_str() != Some("running") => {
             ids::start_with_prompt(db, &lead, &text)?; // stopped or queued: the text is its first prompt
         }
         Some(w) if w["pid"].is_null() => {} // mid-Phoenix: its successor starts with the goal's status
-        Some(_) => {
-            if host.input(&lead, text.as_bytes()).is_ok() {
-                std::thread::sleep(Duration::from_millis(300)); // text and Enter in one write read as a paste
-                let _ = host.input(&lead, b"\r");
-            }
+        Some(w) => {
+            // text and Enter in one write read as a paste
+            let _ = crate::harness::of(&w).send(host, &lead, &text, crate::harness::Enter::Apart);
         }
     }
     Ok(())
