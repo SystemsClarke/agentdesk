@@ -2,7 +2,8 @@
 //! port is last start's (`web.port` in the data folder) while it is free, else any free one. Every request needs the key, persistent in
 //! `web.key` so a bookmark keeps working: `?k=<key>` once sets an HttpOnly SameSite=Strict cookie and redirects the key out of the address
 //! bar. A Host header other than `127.0.0.1:<port>`, or a foreign Origin, is refused (DNS rebinding, cross-site posts); there is no CORS.
-//! Plain HTTP/1.1 over a `TcpListener`, one request per connection.
+//! Plain HTTP/1.1 over a `TcpListener`, one request per connection; `/events/stream` (the event log as Server-Sent Events) keeps its
+//! connection open.
 
 use crate::{db::Db, identity::Caller, kinds, packet_page, paths, ui_api, update};
 use serde_json::{json, Value};
@@ -110,10 +111,10 @@ pub fn start() -> Option<Server> {
             if active.load(std::sync::atomic::Ordering::Relaxed) >= 32 {
                 continue; // a flood is refused, not queued
             }
-            let (key, started, active) = (key.clone(), started.clone(), active.clone());
+            let (key, started, active, stop) = (key.clone(), started.clone(), active.clone(), flag.clone());
             active.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             std::thread::spawn(move || {
-                let _ = serve(conn, port, &key, &started);
+                let _ = serve(conn, port, &key, &started, &stop);
                 active.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
             });
         }
@@ -193,13 +194,35 @@ fn reason(status: u16) -> &'static str {
         404 => "Not Found",
         405 => "Method Not Allowed",
         500 => "Internal Server Error",
+        503 => "Service Unavailable",
         _ => "Error",
     }
 }
 
-fn serve(mut conn: TcpStream, port: u16, key: &str, started: &str) -> std::io::Result<()> {
+/// Live event streams open now: each holds a connection and a thread, so there are at most `MAX_STREAMS`.
+static STREAMS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+const MAX_STREAMS: usize = 8;
+
+/// `?name=<integer>` from the query string.
+fn query_i64(r: &Request, name: &str) -> Option<i64> {
+    r.query.split('&').filter_map(|p| p.split_once('=')).find(|(k, _)| *k == name).and_then(|(_, v)| v.parse::<i64>().ok())
+}
+
+fn serve(mut conn: TcpStream, port: u16, key: &str, started: &str, stop: &std::sync::atomic::AtomicBool) -> std::io::Result<()> {
     let (status, headers, body) = match read_request(&mut conn) {
         None => (400, vec![], vec![]),
+        Some(r) if r.path == "/events/stream" && r.method == "GET" => match gate(&r, port, key) {
+            Some(refused) => refused,
+            None if STREAMS.fetch_add(1, std::sync::atomic::Ordering::SeqCst) >= MAX_STREAMS => {
+                STREAMS.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                json_reply(503, json!({"error": "too many live streams"}))
+            }
+            None => {
+                let done = stream(&mut conn, query_i64(&r, "after"), stop);
+                STREAMS.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                return done;
+            }
+        },
         Some(r) => route(&r, port, key, started),
     };
     let mut head = format!("HTTP/1.1 {status} {}\r\n", reason(status));
@@ -211,21 +234,73 @@ fn serve(mut conn: TcpStream, port: u16, key: &str, started: &str) -> std::io::R
     conn.write_all(&body)
 }
 
+/// `GET /events/stream?after=<seq>` as Server-Sent Events: every event past `after` (default: the newest now), one `id:`/`data:` pair
+/// each, found by polling the log every 250 ms, and a `: ping` comment every 15 s. It ends when a write fails (the client left) or the
+/// console stops.
+fn stream(conn: &mut TcpStream, after: Option<i64>, stop: &std::sync::atomic::AtomicBool) -> std::io::Result<()> {
+    let db = match Db::open(&paths::db_path()).and_then(|d| d.init().map(|_| d)) {
+        Ok(d) => d,
+        Err(_) => return conn.write_all(b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"),
+    };
+    conn.set_write_timeout(Some(std::time::Duration::from_secs(10)))?;
+    conn.write_all(
+        b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nConnection: close\r\n\r\nretry: 3000\n\n",
+    )?;
+    let mut last = after.unwrap_or_else(|| db.max_event_seq());
+    let mut pinged = std::time::Instant::now();
+    while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+        if db.max_event_seq() > last {
+            for ev in db.events_after(last, 1000).unwrap_or_default() {
+                last = ev["seq"].as_i64().unwrap_or(last);
+                conn.write_all(format!("id: {last}\ndata: {ev}\n\n").as_bytes())?;
+            }
+        }
+        if pinged.elapsed() >= std::time::Duration::from_secs(15) {
+            conn.write_all(b": ping\n\n")?;
+            pinged = std::time::Instant::now();
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+    Ok(())
+}
+
 type Reply = (u16, Vec<(String, String)>, Vec<u8>);
 
-fn route(r: &Request, port: u16, key: &str, started: &str) -> Reply {
+/// The door every request goes through: the Host and Origin checks, then the key (`?k=` sets the cookie and redirects). None: let it in.
+fn gate(r: &Request, port: u16, key: &str) -> Option<Reply> {
     let host = format!("127.0.0.1:{port}");
     let origin = r.header("Origin").unwrap_or("");
     if r.header("Host") != Some(host.as_str()) || (!origin.is_empty() && origin != format!("http://{host}")) {
-        return (400, vec![], vec![]);
+        return Some((400, vec![], vec![]));
     }
     let query_k = r.query.split('&').filter_map(|p| p.split_once('=')).find(|(k, _)| crate::links::percent_decode(k) == "k").map(|(_, v)| crate::links::percent_decode(v));
     if query_k.as_deref().map(|k| same(k, key)).unwrap_or(false) {
-        return (302, vec![("Location".into(), r.path.clone()), ("Set-Cookie".into(), format!("k={key}; max-age={}; path=/; samesite=strict; httponly", 400 * 86400))], vec![]);
+        return Some((
+            302,
+            vec![("Location".into(), r.path.clone()), ("Set-Cookie".into(), format!("k={key}; max-age={}; path=/; samesite=strict; httponly", 400 * 86400))],
+            vec![],
+        ));
     }
     let cookie = r.header("Cookie").unwrap_or("").split(';').filter_map(|p| p.trim().split_once('=')).find(|(k, _)| *k == "k").map(|(_, v)| v.to_string());
     if !cookie.as_deref().map(|c| same(c, key)).unwrap_or(false) {
-        return (401, vec![], vec![]);
+        return Some((401, vec![], vec![]));
+    }
+    None
+}
+
+fn route(r: &Request, port: u16, key: &str, started: &str) -> Reply {
+    if let Some(refused) = gate(r, port, key) {
+        return refused;
+    }
+    if r.path == "/events" {
+        if r.method != "GET" {
+            return (405, vec![("Allow".into(), "GET".into())], vec![]);
+        }
+        let (after, limit) = (query_i64(r, "after").unwrap_or(0), query_i64(r, "limit").unwrap_or(200).clamp(1, 1000));
+        return match Db::open(&paths::db_path()).and_then(|d| d.init().map(|_| d)).and_then(|d| d.events_after(after, limit)) {
+            Ok(evs) => json_reply(200, Value::Array(evs)),
+            Err(e) => json_reply(500, json!({"error": crate::db::anyhow_msg(&e)})),
+        };
     }
     if r.path == "/" {
         return if r.method == "GET" {
@@ -497,6 +572,111 @@ mod tests {
 
         assert_eq!(post("finish", json!({})).0, 200);
         assert_eq!(post("run", json!({"block": hash})).0, 400, "a finished packet runs nothing");
+        drop(e);
+    }
+
+    #[test]
+    fn events_after_a_seq_honour_the_limit_behind_the_door() {
+        let e = Env::new();
+        let db = Db::open(&paths::db_path()).unwrap();
+        db.init().unwrap();
+        let tid = db.start_thread("discussion", "s", "alpha", "agent", "one", None, None).unwrap();
+        let after = db.max_event_seq();
+        for b in ["two", "three", "four"] {
+            db.reply(tid, "alpha", "agent", b, None, None).unwrap();
+        }
+        let mut r = req("GET", "/events", None, json!(null), true);
+        r.query = format!("after={after}&limit=2");
+        let (s, body) = go(&r);
+        assert_eq!(s, 200);
+        let evs: Vec<Value> = serde_json::from_str(&body).unwrap();
+        assert_eq!(evs.iter().map(|e| e["body"].as_str().unwrap()).collect::<Vec<_>>(), ["two", "three"]);
+        assert!(evs[0]["seq"].as_i64().unwrap() > after && evs[0]["data"]["message_id"].is_i64());
+        r.query = String::new();
+        assert_eq!(serde_json::from_str::<Vec<Value>>(&go(&r).1).unwrap().len() as i64, db.max_event_seq(), "after defaults to the start");
+        assert_eq!(go(&req("GET", "/events", None, json!(null), false)).0, 401, "no key, no log");
+        assert_eq!(go(&req("POST", "/events", Some("application/json"), json!({}), true)).0, 405);
+        drop(e);
+    }
+
+    /// Opens `/events/stream` on the running console; returns the socket and the status line.
+    fn open_stream(port: u16, key: Option<&str>) -> (TcpStream, String) {
+        let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let cookie = key.map(|k| format!("Cookie: k={k}\r\n")).unwrap_or_default();
+        s.write_all(format!("GET /events/stream HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n{cookie}\r\n").as_bytes()).unwrap();
+        s.set_read_timeout(Some(std::time::Duration::from_secs(10))).unwrap();
+        let mut got = Vec::new();
+        let mut b = [0u8; 1];
+        while !got.ends_with(b"\r\n\r\n") && s.read(&mut b).map(|n| n == 1).unwrap_or(false) {
+            got.push(b[0]);
+        }
+        let head = String::from_utf8_lossy(&got).into_owned();
+        (s, head.lines().next().unwrap_or("").to_string())
+    }
+
+    #[test]
+    fn the_event_stream_delivers_a_new_post_within_a_second_needs_the_key_and_takes_eight() {
+        let e = Env::new();
+        let db = Db::open(&paths::db_path()).unwrap();
+        db.init().unwrap();
+        let server = start().expect("the console starts");
+        let port: u16 = std::fs::read_to_string(port_file()).unwrap().trim().parse().unwrap();
+        let k = key();
+
+        assert!(open_stream(port, None).1.contains(" 401 "), "no key, no stream");
+        let (mut s, status) = open_stream(port, Some(&k));
+        assert!(status.contains(" 200 "), "{status}");
+        let tid = db.start_thread("discussion", "live", "alpha", "agent", "streamed-now", None, None).unwrap();
+        let posted = std::time::Instant::now();
+        s.set_read_timeout(Some(std::time::Duration::from_millis(100))).unwrap();
+        let mut seen = String::new();
+        let mut buf = [0u8; 4096];
+        while !seen.contains("streamed-now") && posted.elapsed() < std::time::Duration::from_secs(1) {
+            if let Ok(n) = s.read(&mut buf) {
+                seen.push_str(&String::from_utf8_lossy(&buf[..n]));
+            }
+        }
+        assert!(seen.contains("streamed-now"), "an event posted after the stream opened arrives within a second: {seen:?}");
+        let data = seen.lines().find(|l| l.starts_with("data: ") && l.contains("streamed-now")).unwrap();
+        let ev: Value = serde_json::from_str(&data["data: ".len()..]).unwrap();
+        assert_eq!(ev["thread_id"], tid);
+        assert!(seen.contains(&format!("id: {}\n", ev["seq"])), "{seen}");
+
+        let mut more: Vec<TcpStream> = (0..7)
+            .map(|_| open_stream(port, Some(&k)))
+            .map(|(s, st)| {
+                assert!(st.contains(" 200 "), "{st}");
+                s
+            })
+            .collect();
+        let (_ninth, st) = open_stream(port, Some(&k));
+        assert!(st.contains(" 503 "), "the ninth stream is refused: {st}");
+        more.clear();
+        drop(s);
+        drop(server);
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while STREAMS.load(std::sync::atomic::Ordering::SeqCst) > 0 && std::time::Instant::now() < until {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert_eq!(STREAMS.load(std::sync::atomic::Ordering::SeqCst), 0, "the streams end with the console");
+        drop(e);
+    }
+
+    #[test]
+    fn the_packet_page_listens_to_the_event_stream_and_keeps_polling_as_the_fallback() {
+        let e = Env::new();
+        let db = Db::open(&paths::db_path()).unwrap();
+        db.init().unwrap();
+        let c = Caller { session_id: Some("s".into()), env_author: None, cwd: None, harness: Some("claude-code".into()), pid: 1 };
+        let made = crate::tests::call(
+            &db,
+            &c,
+            "ask_human",
+            json!({"subject": "P", "body": "Waiting.", "author": "builder", "meta": {"type": "packet", "packet": crate::tests_kinds::spec()}}),
+        );
+        let (s, html) = go(&req("GET", &format!("/packet/{}", made["thread_id"]), None, json!(null), true));
+        assert_eq!(s, 200);
+        assert!(html.contains("new EventSource('/events/stream')") && html.contains("es.onerror") && html.contains("setInterval(check,2500)"), "{html}");
         drop(e);
     }
 

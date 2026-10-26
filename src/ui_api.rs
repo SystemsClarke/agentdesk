@@ -331,9 +331,6 @@ pub fn wake(db: &Db, thread_id: i64) -> Result<Value> {
     );
     let state = if ids::get(db, &who)?.map(|r| r["state"].as_str() == Some("running")).unwrap_or(false) { "injected" } else { "resumed" };
     ids::start_with_prompt(db, &who, &text)?;
-    db.exec(
-        "INSERT OR REPLACE INTO deliveries(message_id, method, state, detail, ts) VALUES (:m, 'wake', :s, NULL, :ts)",
-        &[(":m", &m["id"].as_i64().unwrap_or(0)), (":s", &state), (":ts", &crate::db::now_iso())],
-    )?;
+    db.record_delivery(m["id"].as_i64().unwrap_or(0), "wake", state, &crate::db::now_iso())?;
     Ok(json!({"ok": true, "said": format!("woke {who}: John's reply handed over ({state})")}))
 }

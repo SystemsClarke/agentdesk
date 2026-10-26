@@ -2,6 +2,7 @@
 //! The SQL is kept textually close to the original `db.py` / `BoardStore.cs` so an
 //! existing board opens unchanged.
 
+use crate::events::NewEvent;
 use anyhow::Result;
 use rusqlite::{types::ValueRef, Connection, ToSql};
 use serde_json::{json, Map, Value};
@@ -108,6 +109,10 @@ CREATE TABLE IF NOT EXISTS goal_members (identity TEXT PRIMARY KEY COLLATE NOCAS
     created_ts TEXT NOT NULL, work_id INTEGER);
 CREATE TABLE IF NOT EXISTS slots (n INTEGER PRIMARY KEY CHECK (n BETWEEN 1 AND 10), channel_id TEXT, channel_name TEXT,
     persona_name TEXT, persona_icon TEXT, goal TEXT COLLATE NOCASE, updated_ts TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS events (seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, ts TEXT NOT NULL, hlc INTEGER NOT NULL,
+    origin TEXT NOT NULL, actor TEXT NOT NULL, actor_kind TEXT NOT NULL, actor_seq INTEGER NOT NULL, kind TEXT NOT NULL, thread_id INTEGER,
+    ref TEXT, body TEXT, data TEXT, UNIQUE(origin, actor, actor_seq));
+CREATE TABLE IF NOT EXISTS event_marks (name TEXT PRIMARY KEY, value TEXT NOT NULL);
 "#;
 
 pub type Named<'a> = &'a [(&'a str, &'a dyn ToSql)];
@@ -117,6 +122,8 @@ pub struct Db {
     /// Where this board lives: a background thread opens its own connection to the same file.
     pub path: std::path::PathBuf,
     depth: Cell<u32>,
+    /// The `events` table is known to exist (a board no build of this version has opened yet has none, and writes skip the log there).
+    pub(crate) events_ready: Cell<bool>,
 }
 
 thread_local! {
@@ -132,6 +139,14 @@ pub fn pin_clock(start: Option<i64>) {
 /// The board's timestamp shape: UTC, whole seconds, a `+00:00` offset.
 pub fn iso(t: chrono::DateTime<chrono::Utc>) -> String {
     t.format("%Y-%m-%dT%H:%M:%S+00:00").to_string()
+}
+
+/// The time an event is stamped with when its row carries none: the pinned clock is read, not advanced, so recorded timestamps do not shift.
+pub fn peek_iso() -> String {
+    match TICK.with(|t| t.get()) {
+        Some(n) => iso(chrono::DateTime::from_timestamp(1767225600 + n, 0).unwrap()),
+        None => iso(chrono::Utc::now()),
+    }
 }
 
 pub fn now_iso() -> String {
@@ -178,7 +193,7 @@ impl Db {
         let conn = Connection::open(path)?;
         conn.busy_timeout(std::time::Duration::from_secs(30))?;
         conn.execute_batch("PRAGMA foreign_keys=ON; PRAGMA temp_store=MEMORY; PRAGMA cache_size=-16000;")?;
-        Ok(Db { conn, path: path.to_path_buf(), depth: Cell::new(0) })
+        Ok(Db { conn, path: path.to_path_buf(), depth: Cell::new(0), events_ready: Cell::new(false) })
     }
 
     /// The `PRAGMA user_version` this build stamps: an FNV hash of everything `init` does, so a board already at it is left alone. The
@@ -186,7 +201,7 @@ impl Db {
     /// `init` gains an ALTER or a data fix. (The .NET build stamps its own hash; two builds sharing one board just re-run the idempotent
     /// init once each time the other has run.)
     fn schema_version() -> i64 {
-        const MIGRATION: &str = "rust-2026-10-26.1";
+        const MIGRATION: &str = "rust-2026-10-26.2"; // .1: identities.harness; the event log and its one-time backfill
         let mut h: u32 = 2166136261;
         for b in SCHEMA.bytes().chain(WAITING_SQL.bytes()).chain(MIGRATION.bytes()) {
             h = (h ^ u32::from(b)).wrapping_mul(16777619);
@@ -254,6 +269,8 @@ impl Db {
             for tier in ["haiku", "sonnet", "opus"] {
                 self.add_column("usage_samples", &format!("{tier}_sessions"), "INTEGER NOT NULL DEFAULT 0")?;
             }
+            self.backfill_events()?;
+            self.events_ready.set(true);
             self.conn.execute_batch(&format!("PRAGMA user_version={version}"))?;
             Ok(())
         })
@@ -416,17 +433,16 @@ If you need something else from him, ask a new question with ask_human.");
         self.tx(|| {
             let ts = now_iso();
             let tid = match thread_id {
-                None => self.insert(
-                    "INSERT INTO threads (created_ts, updated_ts, channel, subject, opened_by, status, meta) VALUES (:ts,:ts,:channel,:subject,:by,:status,:meta)",
-                    &[
-                        (":ts", &ts),
-                        (":channel", &channel),
-                        (":subject", &subject),
-                        (":by", &opened_by),
-                        (":status", &if channel == "question" || channel == "work" { "open" } else { "fyi" }),
-                        (":meta", &dumps(meta)),
-                    ],
-                )?,
+                None => {
+                    let status = if channel == "question" || channel == "work" { "open" } else { "fyi" };
+                    let tid = self.insert(
+                        "INSERT INTO threads (created_ts, updated_ts, channel, subject, opened_by, status, meta) VALUES (:ts,:ts,:channel,:subject,:by,:status,:meta)",
+                        &[(":ts", &ts), (":channel", &channel), (":subject", &subject), (":by", &opened_by), (":status", &status), (":meta", &dumps(meta))],
+                    )?;
+                    let data = json!({"channel": channel, "subject": subject, "status": status});
+                    self.append_event(NewEvent::new("thread.created", opened_by, kind).thread(tid).ts(&ts).data(data))?;
+                    tid
+                }
                 Some(id) => {
                     if self.scalar_i64("SELECT 1 FROM threads WHERE id=:id", &[(":id", &id)])?.is_none() {
                         return err(format!("no such thread: {id}"));
@@ -435,10 +451,12 @@ If you need something else from him, ask a new question with ask_human.");
                     id
                 }
             };
-            self.insert(
+            let stored = Self::message_meta(meta, body);
+            let mid = self.insert(
                 "INSERT INTO messages (ts, thread_id, author, author_kind, body, reply_to, meta) VALUES (:ts,:tid,:author,:kind,:body,NULL,:meta)",
-                &[(":ts", &ts), (":tid", &tid), (":author", &opened_by), (":kind", &kind), (":body", &body), (":meta", &Self::message_meta(meta, body))],
+                &[(":ts", &ts), (":tid", &tid), (":author", &opened_by), (":kind", &kind), (":body", &body), (":meta", &stored)],
             )?;
+            self.append_event(NewEvent::message(mid, tid, opened_by, kind, body, None, stored.as_deref(), &ts))?;
             self.touch_presence(opened_by, kind)?;
             Ok(tid)
         })
@@ -450,10 +468,12 @@ If you need something else from him, ask a new question with ask_human.");
         }
         self.tx(|| {
             let ts = now_iso();
+            let stored = Self::message_meta(meta, body);
             let id = self.insert(
                 "INSERT INTO messages (ts, thread_id, author, author_kind, body, reply_to, meta) VALUES (:ts,:tid,:author,:kind,:body,:rt,:meta)",
-                &[(":ts", &ts), (":tid", &thread_id), (":author", &author), (":kind", &kind), (":body", &body), (":rt", &reply_to), (":meta", &Self::message_meta(meta, body))],
+                &[(":ts", &ts), (":tid", &thread_id), (":author", &author), (":kind", &kind), (":body", &body), (":rt", &reply_to), (":meta", &stored)],
             )?;
+            self.append_event(NewEvent::message(id, thread_id, author, kind, body, reply_to, stored.as_deref(), &ts))?;
             self.exec("UPDATE threads SET updated_ts=:ts WHERE id=:id", &[(":ts", &ts), (":id", &thread_id)])?;
             self.touch_presence(author, kind)?;
             Ok(id)
@@ -468,8 +488,18 @@ If you need something else from him, ask a new question with ask_human.");
 
     /// Rewrites the first message's body: a packet's first message is its current state rendered as Markdown.
     pub fn set_first_body(&self, thread_id: i64, body: &str) -> Result<()> {
-        self.exec("UPDATE messages SET body=:b WHERE id=(SELECT MIN(id) FROM messages WHERE thread_id=:t)", &[(":b", &body), (":t", &thread_id)])?;
-        Ok(())
+        self.tx(|| {
+            if self.exec("UPDATE messages SET body=:b WHERE id=(SELECT MIN(id) FROM messages WHERE thread_id=:t)", &[(":b", &body), (":t", &thread_id)])? == 1 {
+                let first = self.scalar_i64("SELECT MIN(id) FROM messages WHERE thread_id=:t", &[(":t", &thread_id)])?.unwrap_or(0);
+                self.append_event(NewEvent::new("packet.revised", "agentdesk", "system").thread(thread_id).reference(format!("message:{first}")).body(body))?;
+            }
+            Ok(())
+        })
+    }
+
+    /// A thread's status changed: the superseding event for an UPDATE that rewrote it in place.
+    fn status_event(&self, thread_id: i64, status: &str, actor: &str, actor_kind: &str, ts: &str) -> Result<i64> {
+        self.append_event(NewEvent::new("thread.status", actor, actor_kind).thread(thread_id).ts(ts).data(json!({"status": status})))
     }
 
     // ---- the work queue: claim and complete are each one conditional UPDATE
@@ -482,10 +512,16 @@ If you need something else from him, ask a new question with ask_human.");
     }
 
     fn move_work(&self, id: i64, agent: &str, ts: &str, meta: &Map<String, Value>, from: &str, to: &str) -> Result<bool> {
-        let moved = self.exec(
-            "UPDATE threads SET status=:to, updated_ts=:ts, meta=:meta WHERE id=:id AND channel='work' AND status=:from",
-            &[(":to", &to), (":ts", &ts), (":meta", &py_dumps(&Value::Object(meta.clone()))), (":id", &id), (":from", &from)],
-        )? == 1;
+        let moved = self.tx(|| {
+            let moved = self.exec(
+                "UPDATE threads SET status=:to, updated_ts=:ts, meta=:meta WHERE id=:id AND channel='work' AND status=:from",
+                &[(":to", &to), (":ts", &ts), (":meta", &py_dumps(&Value::Object(meta.clone()))), (":id", &id), (":from", &from)],
+            )? == 1;
+            if moved {
+                self.status_event(id, to, agent, AGENT, ts)?;
+            }
+            Ok(moved)
+        })?;
         if moved {
             self.touch_presence(agent, AGENT)?;
         }
@@ -528,10 +564,17 @@ If you need something else from him, ask a new question with ask_human.");
         let mut meta = self.thread_meta(id)?;
         meta.remove("assignee");
         meta.remove("claimed_ts");
-        Ok(self.exec(
-            "UPDATE threads SET status='open', updated_ts=:ts, meta=:meta WHERE id=:id AND channel='work' AND status='claimed'",
-            &[(":ts", &now_iso()), (":meta", &py_dumps(&Value::Object(meta))), (":id", &id)],
-        )? == 1)
+        self.tx(|| {
+            let ts = now_iso();
+            let moved = self.exec(
+                "UPDATE threads SET status='open', updated_ts=:ts, meta=:meta WHERE id=:id AND channel='work' AND status='claimed'",
+                &[(":ts", &ts), (":meta", &py_dumps(&Value::Object(meta))), (":id", &id)],
+            )? == 1;
+            if moved {
+                self.status_event(id, "open", "agentdesk", "system", &ts)?;
+            }
+            Ok(moved)
+        })
     }
 
     // ---- acknowledgements of John's replies
@@ -541,13 +584,15 @@ If you need something else from him, ask a new question with ask_human.");
         for row in self.rows("SELECT message_id, thread_id FROM acks WHERE agent=:a AND state='pending' ORDER BY message_id", &[(":a", &agent)])? {
             let mid = row["message_id"].as_i64().unwrap_or(0);
             let done = self.tx(|| {
-                if self.exec(
-                    "UPDATE acks SET state='posted', settled_ts=:ts WHERE message_id=:m AND agent=:a AND state='pending'",
-                    &[(":ts", &now_iso()), (":m", &mid), (":a", &agent)],
-                )? != 1
+                let ts = now_iso();
+                if self
+                    .exec("UPDATE acks SET state='posted', settled_ts=:ts WHERE message_id=:m AND agent=:a AND state='pending'", &[(":ts", &ts), (":m", &mid), (":a", &agent)])?
+                    != 1
                 {
                     return Ok(false);
                 }
+                let tid = row["thread_id"].as_i64();
+                self.append_event(NewEvent::ack(mid, tid, agent, "posted", agent, AGENT, &ts))?;
                 let Some(tid) = self.scalar_i64("SELECT thread_id FROM messages WHERE id=:m", &[(":m", &mid)])? else {
                     return err(format!("no such message: {mid}"));
                 };
@@ -578,13 +623,25 @@ If you need something else from him, ask a new question with ask_human.");
             return Ok(mid);
         }
         if s(&t["status"]) == Some("open") {
-            self.exec("UPDATE threads SET status='answered', updated_ts=:ts WHERE id=:tid", &[(":ts", &now_iso()), (":tid", &thread_id)])?;
+            self.tx(|| {
+                let ts = now_iso();
+                self.exec("UPDATE threads SET status='answered', updated_ts=:ts WHERE id=:tid", &[(":ts", &ts), (":tid", &thread_id)])?;
+                self.status_event(thread_id, "answered", JOHN, HUMAN, &ts)
+            })?;
         }
         if self.scalar_str("SELECT author_kind FROM messages WHERE thread_id=:tid ORDER BY id LIMIT 1", &[(":tid", &thread_id)])?.as_deref() == Some(AGENT) {
-            self.exec(
-                "INSERT OR IGNORE INTO acks (message_id, thread_id, agent, state, created_ts) SELECT :mid, id, opened_by, 'pending', :ts FROM threads WHERE id=:tid",
-                &[(":mid", &mid), (":ts", &now_iso()), (":tid", &thread_id)],
-            )?;
+            self.tx(|| {
+                let ts = now_iso();
+                if self.exec(
+                    "INSERT OR IGNORE INTO acks (message_id, thread_id, agent, state, created_ts) SELECT :mid, id, opened_by, 'pending', :ts FROM threads WHERE id=:tid",
+                    &[(":mid", &mid), (":ts", &ts), (":tid", &thread_id)],
+                )? == 1
+                {
+                    let agent = self.scalar_str("SELECT agent FROM acks WHERE message_id=:m", &[(":m", &mid)])?.unwrap_or_default();
+                    self.append_event(NewEvent::ack(mid, Some(thread_id), &agent, "pending", "agentdesk", "system", &ts))?;
+                }
+                Ok(())
+            })?;
         }
         Ok(mid)
     }
@@ -597,10 +654,22 @@ If you need something else from him, ask a new question with ask_human.");
         }
         let mut meta = parse_obj(s(&t["meta"])).unwrap_or_default();
         meta.remove("archive_hold");
-        Ok(self.exec(
-            "UPDATE threads SET status='closed', updated_ts=:ts, meta=:meta WHERE id=:tid",
-            &[(":ts", &now_iso()), (":meta", &py_dumps(&Value::Object(meta))), (":tid", &thread_id)],
-        )? == 1)
+        self.set_status(thread_id, "UPDATE threads SET status='closed', updated_ts=:ts, meta=:meta WHERE id=:tid", None, meta, ("closed", JOHN, HUMAN))
+    }
+
+    /// One status UPDATE (`:ts`, `:meta`, `:tid`, and `:s` when `status` is given) and its `thread.status` event, in one transaction.
+    fn set_status(&self, thread_id: i64, sql: &str, status: Option<&str>, meta: Map<String, Value>, ev: (&str, &str, &str)) -> Result<bool> {
+        self.tx(|| {
+            let (ts, meta) = (now_iso(), py_dumps(&Value::Object(meta)));
+            let changed = match status {
+                Some(st) => self.exec(sql, &[(":s", &st), (":ts", &ts), (":meta", &meta), (":tid", &thread_id)])?,
+                None => self.exec(sql, &[(":ts", &ts), (":meta", &meta), (":tid", &thread_id)])?,
+            } == 1;
+            if changed {
+                self.status_event(thread_id, ev.0, ev.1, ev.2, &ts)?;
+            }
+            Ok(changed)
+        })
     }
 
     /// John brings an archived question back with the status it was settled with, held off the sweep.
@@ -613,10 +682,7 @@ If you need something else from him, ask a new question with ask_human.");
         let settled = meta.get("archived_from").and_then(|v| v.as_str()).filter(|v| !v.is_empty()).unwrap_or("answered").to_string();
         meta.remove("archived_from");
         meta.insert("archive_hold".into(), json!(true));
-        Ok(self.exec(
-            "UPDATE threads SET status=:s, updated_ts=:ts, meta=:meta WHERE id=:tid",
-            &[(":s", &settled), (":ts", &now_iso()), (":meta", &py_dumps(&Value::Object(meta))), (":tid", &thread_id)],
-        )? == 1)
+        self.set_status(thread_id, "UPDATE threads SET status=:s, updated_ts=:ts, meta=:meta WHERE id=:tid", Some(&settled), meta, (&settled, JOHN, HUMAN))
     }
 
     /// Archives a question thread (the sweep: a settled question leaves the Questions tab).
@@ -628,10 +694,7 @@ If you need something else from him, ask a new question with ask_human.");
         }
         let mut meta = parse_obj(s(&t["meta"])).unwrap_or_default();
         meta.insert("archived_from".into(), json!(status));
-        Ok(self.exec(
-            "UPDATE threads SET status='archived', updated_ts=:ts, meta=:meta WHERE id=:tid",
-            &[(":ts", &now_iso()), (":meta", &py_dumps(&Value::Object(meta))), (":tid", &thread_id)],
-        )? == 1)
+        self.set_status(thread_id, "UPDATE threads SET status='archived', updated_ts=:ts, meta=:meta WHERE id=:tid", None, meta, ("archived", "agentdesk", "system"))
     }
 
     // ---- read receipts: once per (agent, thread) by PRIMARY KEY
@@ -649,10 +712,12 @@ If you need something else from him, ask a new question with ask_human.");
             if self.exec("INSERT OR IGNORE INTO receipts (agent, thread_id, created_ts) VALUES (:a,:t,:ts)", &[(":a", &agent), (":t", &thread_id), (":ts", &ts)])? != 1 {
                 return Ok(false);
             }
+            let stored = py_dumps(&json!({"kind": "read-receipt"}));
             let mid = self.insert(
                 "INSERT INTO messages (ts, thread_id, author, author_kind, body, reply_to, meta) VALUES (:ts,:tid,:author,:kind,:body,NULL,:meta)",
-                &[(":ts", &ts), (":tid", &thread_id), (":author", &agent), (":kind", &AGENT), (":body", &body), (":meta", &py_dumps(&json!({"kind": "read-receipt"})))],
+                &[(":ts", &ts), (":tid", &thread_id), (":author", &agent), (":kind", &AGENT), (":body", &body), (":meta", &stored)],
             )?;
+            self.append_event(NewEvent::message(mid, thread_id, agent, AGENT, body, None, Some(&stored), &ts))?;
             self.exec("UPDATE receipts SET message_id=:m WHERE agent=:a AND thread_id=:t", &[(":m", &mid), (":a", &agent), (":t", &thread_id)])?;
             Ok(true)
         })

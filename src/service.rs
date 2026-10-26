@@ -159,10 +159,17 @@ fn ack_watch(db: &Db, last_human: &mut i64) {
         .unwrap_or_default();
     for r in rows {
         let (mid, tid, who) = (r["id"].as_i64().unwrap_or(0), r["thread_id"].as_i64().unwrap_or(0), r["opened_by"].as_str().unwrap_or("").to_string());
-        let _ = db.exec(
-            "INSERT OR IGNORE INTO acks (message_id, thread_id, agent, state, created_ts) VALUES (:m,:t,:a,'pending',:ts)",
-            &[(":m", &mid), (":t", &tid), (":a", &who), (":ts", &crate::db::now_iso())],
-        );
+        let _ = db.tx(|| {
+            let ts = crate::db::now_iso();
+            if db.exec(
+                "INSERT OR IGNORE INTO acks (message_id, thread_id, agent, state, created_ts) VALUES (:m,:t,:a,'pending',:ts)",
+                &[(":m", &mid), (":t", &tid), (":a", &who), (":ts", &ts)],
+            )? == 1
+            {
+                db.append_event(crate::events::NewEvent::ack(mid, Some(tid), &who, "pending", "agentdesk", "system", &ts))?;
+            }
+            Ok(())
+        });
         *last_human = (*last_human).max(mid);
     }
     if let Ok(Some(max)) = db.scalar_i64("SELECT MAX(id) FROM messages WHERE author_kind='human'", &[]).map(|m| m.filter(|m| *m > *last_human)) {
