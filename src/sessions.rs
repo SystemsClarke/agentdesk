@@ -244,10 +244,4 @@ impl Host {
         self.live.get(name).ok_or_else(|| anyhow!("{name} is not running"))?.shared.resize(cols, rows);
         Ok(())
     }
-
-    /// Types `text` and presses Enter, as if at the keyboard: how a reply from John reaches a session that is waiting.
-    pub fn type_text(&mut self, name: &str, text: &str) -> Result<()> {
-        let l = self.live.get(name).ok_or_else(|| anyhow!("{name} is not running"))?;
-        l.shared.write(format!("{text}\r").as_bytes())
-    }
 }
