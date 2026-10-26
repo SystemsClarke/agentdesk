@@ -233,12 +233,12 @@ enum Cmd {
     UsageFeed,
     /// Refresh the usage feed now with `claude -p /usage` (the original does this every 5 minutes).
     UsageProbe,
-    /// Runs a Python script or module of the embedded Python half with its packages importable: `python scripts/slack_bridge.py`.
+    /// Runs a Python script or module of the embedded Python half with its packages importable: `python -m agentdesk.plugin`.
     Python {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
-    /// The native Slack bridge in the foreground (the core runs it itself when `slack_native` is on): `--once` does one outbound pass and exits.
+    /// The native Slack bridge in the foreground (the core runs it itself): `--once` does one outbound pass and exits.
     /// Tokens come from `SLACK_BOT_TOKEN` (and `SLACK_APP_TOKEN`), else `~/.claude/slack-notify`; `SLACK_API_URL` replaces https://slack.com/api.
     SlackBridge {
         #[arg(long)]
