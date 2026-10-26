@@ -4,10 +4,18 @@
 //! (with `session/update` notifications streaming until the response arrives), `session/cancel`, and the agent's inbound
 //! `session/request_permission`. Inbound `fs/*` and `terminal/*` requests get a JSON-RPC method-not-found error, and `initialize`
 //! advertises no such capability, so a well-behaved agent never asks. Not yet wired into the supervisor.
+//!
+//! Timeouts are idle timeouts: how long the agent may go without sending any message at all, not a cap on the whole call. Setup
+//! calls (`initialize`, `session/new`) default to 60 s; a prompt turn defaults to 10 minutes, since a working agent can think or run a
+//! long tool between updates. Both are settable (`set_setup_timeout`, `set_prompt_timeout`, or `set_timeout` for both).
+//!
+//! The client makes one request at a time, so a JSON-RPC error response whose `id` is null or names no request it is waiting for
+//! (and none it already gave up on) is taken to be about the pending one and fails it at once rather than waiting out the timeout.
 #![allow(dead_code)]
 
 use anyhow::{anyhow, bail, Result};
 use serde_json::{json, Value};
+use std::collections::HashSet;
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 use std::process::{Child, ChildStdin, Stdio};
@@ -18,6 +26,11 @@ use std::time::Duration;
 
 /// The ACP major protocol version this client speaks.
 pub const PROTOCOL_VERSION: u64 = 1;
+
+/// Default idle timeout for `initialize` and `session/new`.
+pub const SETUP_TIMEOUT: Duration = Duration::from_secs(60);
+/// Default idle timeout for a `session/prompt` turn.
+pub const PROMPT_TIMEOUT: Duration = Duration::from_secs(600);
 
 /// How the agent ended a prompt turn.
 #[derive(Debug, Clone, PartialEq)]
@@ -160,14 +173,18 @@ pub struct AcpAgent {
     stdin: Arc<Mutex<ChildStdin>>,
     rx: Receiver<Msg>,
     next_id: u64,
-    timeout: Duration,
+    setup_timeout: Duration,
+    prompt_timeout: Duration,
+    /// Requests that timed out: a late response to one of these is stale and is ignored.
+    abandoned: HashSet<u64>,
     handler: Box<dyn FnMut(&PermissionRequest) -> PermissionDecision + Send>,
 }
 
 impl AcpAgent {
-    /// Starts the agent process. Its stderr is discarded (ACP says it is free-form logging).
+    /// Starts the agent process. Its stderr is discarded (ACP says it is free-form logging). `program` is found the way a shell would
+    /// (`paths::command`): on Windows that includes PATHEXT, and an npm `.cmd` shim (opencode, gemini) runs through `cmd /d /c`.
     pub fn spawn(program: &str, args: &[String], cwd: &Path, env: &[(String, String)]) -> Result<AcpAgent> {
-        let mut cmd = crate::paths::new_command(program);
+        let mut cmd = crate::paths::command(program);
         cmd.args(args).current_dir(cwd).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
         for (k, v) in env {
             cmd.env(k, v);
@@ -188,12 +205,32 @@ impl AcpAgent {
             }
             let _ = tx.send(Msg::Eof);
         });
-        Ok(AcpAgent { child, stdin: Arc::new(Mutex::new(stdin)), rx, next_id: 0, timeout: Duration::from_secs(60), handler: Box::new(|_| PermissionDecision::Reject) })
+        Ok(AcpAgent {
+            child,
+            stdin: Arc::new(Mutex::new(stdin)),
+            rx,
+            next_id: 0,
+            setup_timeout: SETUP_TIMEOUT,
+            prompt_timeout: PROMPT_TIMEOUT,
+            abandoned: HashSet::new(),
+            handler: Box::new(|_| PermissionDecision::Reject),
+        })
     }
 
-    /// How long the agent may stay silent (no message of any kind) before a call fails. Default 60 s.
+    /// Sets both idle timeouts (setup and prompt) to `d`.
     pub fn set_timeout(&mut self, d: Duration) {
-        self.timeout = d;
+        self.setup_timeout = d;
+        self.prompt_timeout = d;
+    }
+
+    /// How long the agent may stay silent during `initialize` or `session/new` before the call fails. Default 60 s.
+    pub fn set_setup_timeout(&mut self, d: Duration) {
+        self.setup_timeout = d;
+    }
+
+    /// How long the agent may stay silent (no update or request of any kind) during a prompt turn before it fails. Default 10 minutes.
+    pub fn set_prompt_timeout(&mut self, d: Duration) {
+        self.prompt_timeout = d;
     }
 
     /// Decides `session/request_permission`. The default rejects everything.
@@ -206,15 +243,19 @@ impl AcpAgent {
     }
 
     /// Sends one request and waits for its response, serving the agent's notifications and inbound requests meanwhile.
-    fn call(&mut self, method: &str, params: Value, on_update: &mut dyn FnMut(Update)) -> Result<Value> {
+    /// `idle` is how long the agent may go without sending anything.
+    fn call(&mut self, method: &str, params: Value, idle: Duration, on_update: &mut dyn FnMut(Update)) -> Result<Value> {
         self.next_id += 1;
         let id = self.next_id;
         write_line(&self.stdin, &json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}))?;
         loop {
-            let msg = match self.rx.recv_timeout(self.timeout) {
+            let msg = match self.rx.recv_timeout(idle) {
                 Ok(Msg::Line(v)) => v,
                 Ok(Msg::Eof) | Err(RecvTimeoutError::Disconnected) => bail!("the agent exited during {method}"),
-                Err(RecvTimeoutError::Timeout) => bail!("the agent was silent for {:?} during {method}", self.timeout),
+                Err(RecvTimeoutError::Timeout) => {
+                    self.abandoned.insert(id);
+                    bail!("the agent was silent for {idle:?} during {method}")
+                }
             };
             let m = msg.get("method").and_then(Value::as_str);
             match (m, msg.get("id")) {
@@ -230,6 +271,12 @@ impl AcpAgent {
                         bail!("{method} failed: {}", e.get("message").and_then(Value::as_str).unwrap_or("agent error"));
                     }
                     return Ok(msg.get("result").cloned().unwrap_or(Value::Null));
+                }
+                // An error naming no request we are waiting on (a null id, a missing one, or one we never sent) can only be about the
+                // one outstanding request: fail it now. A late answer to a request that already timed out is stale: drop it.
+                (None, rid) if msg.get("error").is_some() && !rid.and_then(Value::as_u64).is_some_and(|r| self.abandoned.contains(&r)) => {
+                    let e = &msg["error"];
+                    bail!("{method} failed: {} (error response with id {})", e.get("message").and_then(Value::as_str).unwrap_or("agent error"), rid.unwrap_or(&Value::Null));
                 }
                 _ => {}
             }
@@ -255,7 +302,7 @@ impl AcpAgent {
             "clientCapabilities": {"fs": {"readTextFile": false, "writeTextFile": false}, "terminal": false},
             "clientInfo": {"name": "agentdesk", "title": "AgentDesk", "version": env!("CARGO_PKG_VERSION")},
         });
-        let r = self.call("initialize", p, &mut |_| {})?;
+        let r = self.call("initialize", p, self.setup_timeout, &mut |_| {})?;
         let v = r.get("protocolVersion").and_then(Value::as_u64).unwrap_or(0);
         if v != PROTOCOL_VERSION {
             bail!("the agent speaks ACP version {v}, this client speaks {PROTOCOL_VERSION}");
@@ -264,13 +311,13 @@ impl AcpAgent {
     }
 
     pub fn new_session(&mut self, cwd: &Path) -> Result<String> {
-        let r = self.call("session/new", json!({"cwd": cwd.to_string_lossy(), "mcpServers": []}), &mut |_| {})?;
+        let r = self.call("session/new", json!({"cwd": cwd.to_string_lossy(), "mcpServers": []}), self.setup_timeout, &mut |_| {})?;
         r.get("sessionId").and_then(Value::as_str).map(String::from).ok_or_else(|| anyhow!("session/new returned no sessionId"))
     }
 
     /// Sends a prompt and blocks until the agent's response, calling `on_update` for everything it streams.
     pub fn prompt(&mut self, session: &str, text: &str, on_update: &mut dyn FnMut(Update)) -> Result<StopReason> {
-        let r = self.call("session/prompt", json!({"sessionId": session, "prompt": [{"type": "text", "text": text}]}), on_update)?;
+        let r = self.call("session/prompt", json!({"sessionId": session, "prompt": [{"type": "text", "text": text}]}), self.prompt_timeout, on_update)?;
         Ok(StopReason::parse(r.get("stopReason").and_then(Value::as_str).unwrap_or("")))
     }
 
@@ -282,6 +329,10 @@ impl AcpAgent {
 
 impl Drop for AcpAgent {
     fn drop(&mut self) {
+        // A `.cmd` shim leaves the real agent as a grandchild of `cmd`: take the whole tree down, not just the shell.
+        if cfg!(windows) {
+            let _ = crate::paths::new_command("taskkill").args(["/PID", &self.child.id().to_string(), "/T", "/F"]).output();
+        }
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
@@ -291,7 +342,6 @@ impl Drop for AcpAgent {
 pub fn probe(program: &str, args: &[String]) -> Result<()> {
     let cwd = std::env::current_dir()?;
     let mut a = AcpAgent::spawn(program, args, &cwd, &[])?;
-    a.set_timeout(Duration::from_secs(120));
     let init = a.initialize()?;
     println!("initialize: {}", init);
     let sid = a.new_session(&cwd)?;
@@ -347,19 +397,35 @@ while True:
             chunk("s1", "bye"); os._exit(0)
         elif t == "silent":
             while True: read()
+        elif t == "nullerr":
+            send({"jsonrpc":"2.0","id":None,"error":{"code":-32700,"message":"parse error"}})
+        elif t == "wrongerr":
+            send({"jsonrpc":"2.0","id":4242,"error":{"code":-32603,"message":"internal error"}})
 "#;
 
-    fn python() -> String {
-        "python".into()
+    /// The python to run the fake agent with, or `None` (and a note on stderr) when there is none: the tests then skip rather than
+    /// fail. Runs `--version` so the Windows Store's `python` stub, which exists but runs nothing, counts as absent.
+    fn python() -> Option<String> {
+        for p in ["python", "python3"] {
+            if crate::paths::command(p).arg("--version").stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success()) {
+                return Some(p.into());
+            }
+        }
+        eprintln!("skipping: the ACP tests need python on PATH to run the fake agent, and there is none");
+        None
     }
 
-    fn fake() -> (AcpAgent, String) {
-        let cwd = std::env::current_dir().unwrap();
-        let mut a = AcpAgent::spawn(&python(), &["-u".into(), "-c".into(), FAKE.into()], &cwd, &[]).unwrap();
+    fn start(a: &mut AcpAgent) -> String {
         a.set_timeout(Duration::from_secs(20));
         a.initialize().unwrap();
-        let sid = a.new_session(&cwd).unwrap();
-        (a, sid)
+        a.new_session(&std::env::current_dir().unwrap()).unwrap()
+    }
+
+    fn fake() -> Option<(AcpAgent, String)> {
+        let py = python()?;
+        let mut a = AcpAgent::spawn(&py, &["-u".into(), "-c".into(), FAKE.into()], &std::env::current_dir().unwrap(), &[]).unwrap();
+        let sid = start(&mut a);
+        Some((a, sid))
     }
 
     fn texts(v: &[Update]) -> String {
@@ -368,13 +434,13 @@ while True:
 
     #[test]
     fn initialize_reports_the_version_and_session_id() {
-        let (_a, sid) = fake();
+        let Some((_a, sid)) = fake() else { return };
         assert_eq!(sid, "s1");
     }
 
     #[test]
     fn prompt_streams_three_chunks_ignoring_a_malformed_line() {
-        let (mut a, sid) = fake();
+        let Some((mut a, sid)) = fake() else { return };
         let mut got = vec![];
         let stop = a.prompt(&sid, "stream", &mut |u| got.push(u)).unwrap();
         assert_eq!(stop, StopReason::EndTurn);
@@ -384,7 +450,7 @@ while True:
 
     #[test]
     fn permission_is_routed_to_the_callback_and_defaults_to_reject() {
-        let (mut a, sid) = fake();
+        let Some((mut a, sid)) = fake() else { return };
         let mut got = vec![];
         a.prompt(&sid, "perm", &mut |u| got.push(u)).unwrap();
         assert_eq!(texts(&got), "no");
@@ -401,7 +467,7 @@ while True:
 
     #[test]
     fn inbound_fs_requests_get_method_not_found() {
-        let (mut a, sid) = fake();
+        let Some((mut a, sid)) = fake() else { return };
         let mut got = vec![];
         a.prompt(&sid, "fs", &mut |u| got.push(u)).unwrap();
         assert_eq!(texts(&got), "-32601");
@@ -409,7 +475,7 @@ while True:
 
     #[test]
     fn cancel_mid_prompt_ends_the_turn_as_cancelled() {
-        let (mut a, sid) = fake();
+        let Some((mut a, sid)) = fake() else { return };
         let h = a.cancel_handle();
         let sid2 = sid.clone();
         let stop = a.prompt(&sid, "slow", &mut |u| {
@@ -422,7 +488,7 @@ while True:
 
     #[test]
     fn the_child_exiting_mid_prompt_is_an_error_not_a_hang() {
-        let (mut a, sid) = fake();
+        let Some((mut a, sid)) = fake() else { return };
         let mut got = vec![];
         let e = a.prompt(&sid, "die", &mut |u| got.push(u)).unwrap_err();
         assert!(e.to_string().contains("exited"), "{e}");
@@ -431,10 +497,49 @@ while True:
 
     #[test]
     fn a_silent_agent_times_out() {
-        let (mut a, sid) = fake();
+        let Some((mut a, sid)) = fake() else { return };
         a.set_timeout(Duration::from_millis(400));
         let e = a.prompt(&sid, "silent", &mut |_| {}).unwrap_err();
         assert!(e.to_string().contains("silent"), "{e}");
+    }
+
+    #[test]
+    fn an_error_with_a_null_or_unknown_id_fails_the_pending_prompt_at_once() {
+        let Some((mut a, sid)) = fake() else { return };
+        a.set_prompt_timeout(PROMPT_TIMEOUT);
+        for (t, want) in [("nullerr", "parse error"), ("wrongerr", "internal error")] {
+            let started = std::time::Instant::now();
+            let e = a.prompt(&sid, t, &mut |_| {}).unwrap_err();
+            assert!(e.to_string().contains(want), "{e}");
+            assert!(started.elapsed() < Duration::from_secs(10), "{t} waited {:?}", started.elapsed());
+        }
+    }
+
+    #[test]
+    fn the_prompt_idle_timeout_defaults_longer_than_setup() {
+        assert_eq!(SETUP_TIMEOUT, Duration::from_secs(60));
+        assert_eq!(PROMPT_TIMEOUT, Duration::from_secs(600));
+    }
+
+    /// npm installs agents such as opencode and gemini as `.cmd` shims, which `CreateProcess` will not run by name: spawning one by its
+    /// extensionless path proves PATHEXT resolution and the `cmd /d /c` wrapper.
+    #[cfg(windows)]
+    #[test]
+    fn spawns_an_npm_style_cmd_shim() {
+        let Some(py) = python() else { return };
+        let dir = std::env::temp_dir().join(format!("ad-acp-shim-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("fake.py"), FAKE).unwrap();
+        std::fs::write(dir.join("fakeagent.cmd"), format!("@\"{py}\" -u \"%~dp0fake.py\" %*\r\n")).unwrap();
+        {
+            let mut a = AcpAgent::spawn(&dir.join("fakeagent").display().to_string(), &[], &dir, &[]).unwrap();
+            let sid = start(&mut a);
+            assert_eq!(sid, "s1");
+            let mut got = vec![];
+            assert_eq!(a.prompt(&sid, "stream", &mut |u| got.push(u)).unwrap(), StopReason::EndTurn);
+            assert_eq!(texts(&got), "abc");
+        }
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
