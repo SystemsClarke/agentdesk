@@ -17,6 +17,7 @@ mod daemon;
 mod db;
 mod dictation;
 mod dispatcher;
+mod events;
 mod goals;
 mod governor;
 mod hooks;
@@ -50,6 +51,8 @@ mod swarm;
 mod tests;
 #[cfg(test)]
 mod tests_concierge;
+#[cfg(test)]
+mod tests_events;
 #[cfg(test)]
 mod tests_goals;
 #[cfg(test)]

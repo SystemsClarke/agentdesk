@@ -64,11 +64,7 @@ pub fn wait(db: &Db, thread_id: i64) -> Result<String> {
 }
 
 fn deliver(db: &Db, message_id: i64, method: &str, state: &str) -> Result<()> {
-    db.exec(
-        "INSERT OR REPLACE INTO deliveries(message_id, method, state, detail, ts) VALUES(:m, :how, :st, NULL, :ts)",
-        &[(":m", &message_id), (":how", &method), (":st", &state), (":ts", &now_iso())],
-    )?;
-    Ok(())
+    db.record_delivery(message_id, method, state, &now_iso())
 }
 
 /// John's replies, and merge/close notices for PRs, on threads this session took part in that it hasn't been

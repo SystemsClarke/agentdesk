@@ -3,6 +3,7 @@
 //! adds the rule to `permissions.allow` once and leaves every other key as it was.
 
 use crate::db::{err, now_iso, Db, AGENT};
+use crate::events::NewEvent;
 use crate::identity::{resolve, Caller};
 use crate::paths;
 use anyhow::Result;
@@ -73,11 +74,16 @@ pub fn propose(db: &Db, c: &Caller, a: &Value) -> Result<Value> {
         if is_broad(&rule) { "\n**Careful: this rule is broad, it allows every use of the tool.**" } else { "" }
     );
     let tid = db.start_thread("question", &format!("permission rule: {rule}"), &who, AGENT, &body, Some(&json!({"type": "permission"})), None)?;
-    db.exec(
-        "INSERT INTO permission_proposals (rule, scope, project_dir, reason, blocked, requested_by, thread_id, status, created_ts) VALUES (:r,:s,:d,:why,:b,:w,:t,'pending',:ts)",
-        &[(":r", &rule), (":s", &scope), (":d", &dir), (":why", &reason), (":b", &blocked), (":w", &who), (":t", &tid), (":ts", &now_iso())],
-    )?;
-    let id = db.conn.last_insert_rowid();
+    let id = db.tx(|| {
+        let ts = now_iso();
+        db.exec(
+            "INSERT INTO permission_proposals (rule, scope, project_dir, reason, blocked, requested_by, thread_id, status, created_ts) VALUES (:r,:s,:d,:why,:b,:w,:t,'pending',:ts)",
+            &[(":r", &rule), (":s", &scope), (":d", &dir), (":why", &reason), (":b", &blocked), (":w", &who), (":t", &tid), (":ts", &ts)],
+        )?;
+        let id = db.conn.last_insert_rowid();
+        db.append_event(NewEvent::new("approval.requested", &who, AGENT).thread(tid).reference(format!("proposal:{id}")).ts(&ts).data(json!({"rule": rule, "scope": scope})))?;
+        Ok(id)
+    })?;
     Ok(json!({"id": id, "thread_id": tid, "status": "pending",
         "note": "John has been asked. Nothing is written to settings.json until he approves in AgentDesk; carry on with other work and retry the action once his answer is on the thread."}))
 }
@@ -98,6 +104,20 @@ fn tell(db: &Db, p: &Value, result: &str, john_line: Option<&str>) -> Result<()>
             db.john_replies(tid, line)?;
         }
     }
+    Ok(())
+}
+
+/// John's decision on (or revert of) proposal `p`, as an event in the caller's transaction.
+fn settled(db: &Db, p: &Value, kind: &str, status: Option<&str>, ts: &str) -> Result<()> {
+    let mut data = json!({"rule": p["rule"]});
+    if let Some(s) = status {
+        data["status"] = json!(s);
+    }
+    let ev = NewEvent::new(kind, crate::db::JOHN, crate::db::HUMAN).reference(format!("proposal:{}", p["id"])).ts(ts).data(data);
+    db.append_event(match p["thread_id"].as_i64() {
+        Some(t) => ev.thread(t),
+        None => ev,
+    })?;
     Ok(())
 }
 
@@ -159,13 +179,21 @@ pub fn decide(db: &Db, id: i64, approve: bool) -> Result<Value> {
     let path = settings_for(p["scope"].as_str().unwrap_or("user"), p["project_dir"].as_str())?;
     if approve {
         let backup = edit(&path, &rule, true)?;
-        db.exec(
-            "UPDATE permission_proposals SET status='approved', decided_ts=:ts, settings_path=:p, backup=:b WHERE id=:id",
-            &[(":ts", &now_iso()), (":p", &path.to_string_lossy().into_owned()), (":b", &backup), (":id", &id)],
-        )?;
+        db.tx(|| {
+            let ts = now_iso();
+            db.exec(
+                "UPDATE permission_proposals SET status='approved', decided_ts=:ts, settings_path=:p, backup=:b WHERE id=:id",
+                &[(":ts", &ts), (":p", &path.to_string_lossy().into_owned()), (":b", &backup), (":id", &id)],
+            )?;
+            settled(db, &p, "approval.decided", Some("approved"), &ts)
+        })?;
         tell(db, &p, &format!("Approved in AgentDesk: `{rule}` is now in `permissions.allow` of {}. Retry the action.", path.display()), Some("Approved in AgentDesk."))?;
     } else {
-        db.exec("UPDATE permission_proposals SET status='rejected', decided_ts=:ts WHERE id=:id", &[(":ts", &now_iso()), (":id", &id)])?;
+        db.tx(|| {
+            let ts = now_iso();
+            db.exec("UPDATE permission_proposals SET status='rejected', decided_ts=:ts WHERE id=:id", &[(":ts", &ts), (":id", &id)])?;
+            settled(db, &p, "approval.decided", Some("rejected"), &ts)
+        })?;
         tell(db, &p, &format!("Rejected in AgentDesk: `{rule}` was not added. Do not retry the action; ask John another way."), Some("Rejected in AgentDesk."))?;
     }
     need(db, id)
@@ -180,7 +208,11 @@ pub fn revert(db: &Db, id: i64) -> Result<Value> {
     let rule = p["rule"].as_str().unwrap_or("").to_string();
     let path = PathBuf::from(p["settings_path"].as_str().unwrap_or(""));
     let backup = edit(&path, &rule, false)?;
-    db.exec("UPDATE permission_proposals SET status='reverted', reverted_ts=:ts, backup=COALESCE(:b, backup) WHERE id=:id", &[(":ts", &now_iso()), (":b", &backup), (":id", &id)])?;
+    db.tx(|| {
+        let ts = now_iso();
+        db.exec("UPDATE permission_proposals SET status='reverted', reverted_ts=:ts, backup=COALESCE(:b, backup) WHERE id=:id", &[(":ts", &ts), (":b", &backup), (":id", &id)])?;
+        settled(db, &p, "approval.reverted", None, &ts)
+    })?;
     tell(db, &p, &format!("Reverted in AgentDesk: `{rule}` was taken back out of {}.", path.display()), None)?;
     need(db, id)
 }

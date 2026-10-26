@@ -384,7 +384,12 @@ impl Bridge {
         // On a packet or a permission question a reply is a note: the answer is Finish, or Approve / Reject, and those are in the window.
         let noted = matches!(crate::kinds::kind_of(db, tid).unwrap_or(crate::kinds::ASK), crate::kinds::PACKET | crate::kinds::PERMISSION);
         let mid = if noted { crate::kinds::note(db, tid, &body)? } else { db.john_replies(tid, &body)? };
-        db.exec("UPDATE messages SET meta=:m WHERE id=:i", &[(":m", &crate::db::dumps(Some(&json!({"via": "slack"})))), (":i", &mid)])?;
+        db.tx(|| {
+            db.exec("UPDATE messages SET meta=:m WHERE id=:i", &[(":m", &crate::db::dumps(Some(&json!({"via": "slack"})))), (":i", &mid)])?;
+            // the message's meta was rewritten in place: the log keeps the post and adds what replaced it
+            let ev = crate::events::NewEvent::new("msg.revised", crate::db::JOHN, crate::db::HUMAN).thread(tid).reference(format!("message:{mid}"));
+            db.append_event(ev.data(json!({"meta": {"via": "slack"}})))
+        })?;
         if noted {
             return say(&format!("Recorded as a note on #{tid}, and the agent is told. It stays open: finish or decide it in the AgentDesk window."), Some(thread_ts));
         }

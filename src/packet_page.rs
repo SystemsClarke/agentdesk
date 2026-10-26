@@ -1,7 +1,7 @@
 //! A packet as a web page: server-rendered HTML for `GET /packet/<id>` on the ops console (`web.rs`), live from the board. John ticks steps,
 //! chooses, adds notes, runs the commands the packet asks for, and finishes it here; each action is `kinds::step` / `note` / `finish` or a
-//! run of the same script runner the window uses, so the agent that asked is woken exactly as before. The page polls
-//! `/packet/<id>/version` and swaps itself when the agent revises the packet. Its colours are the window's: the theme saved in settings.
+//! run of the same script runner the window uses, so the agent that asked is woken exactly as before. The page listens to
+//! `/events/stream` (polling `/packet/<id>/version` when it cannot), checks the version on this packet's events, and swaps itself when the agent revises the packet. Its colours are the window's: the theme saved in settings.
 //!
 //! Everything from the board is data: it is escaped, links are kept only when they are http(s), and the page runs no script from the board.
 //! A command is never sent by the browser: it names a block (by a hash of its text) and the server finds that block in the packet.
@@ -771,7 +771,7 @@ async function poll(box){
   const r=await fetch(url('run?block='+box.dataset.block),{cache:'no-store'});if(r.ok)paint(box,await r.json())
 }
 setInterval(()=>$$('.run[data-state=running]').forEach(poll),700);
-setInterval(async()=>{
+async function check(){
   try{
     const r=await fetch(url('version'),{cache:'no-store'});if(!r.ok)return;
     const v=(await r.json()).v;if(v===app().dataset.v)return;
@@ -779,7 +779,16 @@ setInterval(async()=>{
     if(busy||dirty){const b=$('#banner');b.textContent='The agent changed this packet. Click to load the changes (what you are typing stays until you do).';b.hidden=false;b.onclick=refresh}
     else refresh()
   }catch(e){}
-},2500);
+}
+/* the board's event stream says when this packet changes; polling every 2.5 s is the fallback when the stream fails, and a slow poll
+   still catches what has no event (the theme) */
+let polling=null;const fallback=()=>{if(!polling)polling=setInterval(check,2500)};
+setInterval(check,30000);
+try{
+  const es=new EventSource('/events/stream');
+  es.onmessage=e=>{try{if(String(JSON.parse(e.data).thread_id)===app().dataset.id)check()}catch(x){}};
+  es.onerror=()=>{es.close();fallback()};
+}catch(e){fallback()}
 document.addEventListener('input',e=>{if(e.target.matches('textarea'))dirty=true});
 /* dictation: Ctrl+D listens through the core (the same local speech-to-text as the window), Ctrl+D again puts the words in the text box, Esc drops them */
 let dict=null;
