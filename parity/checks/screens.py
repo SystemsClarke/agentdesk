@@ -397,7 +397,7 @@ def _mermaid(b):
     has(s, "Start", "Stop")
 
 
-@feature("render.charts", "screens", "```chart blocks (line, bar, progress, burndown, timeline, sparkline, stat, table) are drawn from their JSON spec", "mdrich.py / charts.py")
+@feature("render.charts", "screens", "```chart blocks (line, bar, progress, burndown, timeline, sparkline, stat, table) are drawn from their JSON spec", "src/slackfmt.rs")
 def _charts(b):
     spec = {"type": "bar", "title": "Builds per lane", "labels": ["compile", "sign"], "values": [41, 12]}
     b.need("ui:post", {"channel": "discussion", "subject": "c", "body": "```chart\n%s\n```" % json.dumps(spec)})

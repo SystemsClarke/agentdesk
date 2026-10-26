@@ -351,15 +351,16 @@ fn slack_native_in_settings_decides_who_runs_the_bridge_and_state_files_make_the
     let data = crate::paths::data_dir();
     std::fs::create_dir_all(&data).unwrap();
     std::env::remove_var("AGENTDESK_BRIDGE_CMD");
-    for (text, want) in [(r#"{"slack_native": true}"#, true), (r#"{"slack_native": false}"#, false)] {
-        std::fs::write(data.join("settings.json"), text).unwrap();
-        assert_eq!(crate::bridge::use_native(), want, "{text}: taken as written");
-    }
-    // not set, and a stand-in command to supervise: the child path (the parity suite's stub bridges rely on it)
+    // native unless a stand-in command is set (the parity suite's stub bridges rely on it); `slack_native: true` wins over the stand-in
     std::fs::write(data.join("settings.json"), "{}").unwrap();
+    assert!(crate::bridge::use_native());
     std::env::set_var("AGENTDESK_BRIDGE_CMD", "stub");
     assert!(!crate::bridge::use_native());
+    std::fs::write(data.join("settings.json"), r#"{"slack_native": true}"#).unwrap();
+    assert!(crate::bridge::use_native());
     std::env::remove_var("AGENTDESK_BRIDGE_CMD");
+    std::fs::write(data.join("settings.json"), r#"{"slack_native": false}"#).unwrap();
+    assert!(crate::bridge::use_native(), "the old setting is ignored");
     // credentials from the environment mean a folder that may not exist: the first state write makes it
     let deep = e.dir.path().join("no").join("such").join("bridge_state.json");
     let b = Bridge::new(Arc::new(Web::new("t")), "D1", "U1", deep.clone(), e.dir.path().join("a"));

@@ -1,10 +1,6 @@
-# The Python half (see README): the core's vault plugin, dictation and the Slack bridge.
-# Chart images for the Slack bridge (agentdesk/charts.py)
-Pillow>=12.3.0
+# The Python half (see README): the core's vault plugin and dictation.
 # Embedding search over the memory vault (agentdesk/vault_search.py)
 numpy>=1.26
-# Slack Socket Mode for scripts/slack_bridge.py
-slack_bolt>=1.30.0
 # Dictation (agentdesk/dictate.py): the microphone and the local speech model runtime
 sounddevice>=0.5
 sherpa-onnx>=1.13
