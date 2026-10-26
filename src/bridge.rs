@@ -1,19 +1,16 @@
-//! The Slack bridge (`python/scripts/slack_bridge.py`) under the daemon's supervision, as the original's core did. Its heartbeat is
+//! The Slack bridge under the daemon's supervision. Its heartbeat is
 //! `slack_bridge.state` (its pid and `ts`). A bridge this process did not start is left alone while it beats, and adopted once its pid
 //! is gone. One that is alive but has not beaten for `hung` (180 s) is a stale orphan: logged and shown in `ui:status`, and no second
 //! bridge is started (it would double-post): kill that pid and the daemon takes over. A bridge it supervises that stays alive without
 //! beating for `hung` is killed and restarted. Restarts wait 5 s, doubling to 5 min, back to 5 s once a run lasted 10 min.
 //!
-//! The native bridge (`slack.rs`, no Python) is the same thing run as threads of this process instead of a child: it writes the same
-//! heartbeat and the same `ui:status` section (state `supervised`, `pid` the core's own, `native: true`), and a run that returns an error
-//! or panics is restarted on the same delays. `settings.json` `"slack_native"` picks it: `true` or `false` is taken as written; absent, it
-//! is on when no Python interpreter is found (there is nothing else to run) and off otherwise, so the proven Python bridge stays the
-//! default until the native one has run against real Slack. To switch an installed machine over, put `"slack_native": true` in
-//! `settings.json` in the data folder and restart the core (`agentdesk core restart`); `false` switches back. A bridge started by hand
-//! (`agentdesk slack-bridge`) is "external" to the core while it beats, like any other.
+//! The bridge (`slack.rs`) runs as threads of this process: it writes the heartbeat and the `ui:status` section (state `supervised`, `pid`
+//! the core's own, `native: true`), and a run that returns an error or panics is restarted on the same delays. It is the only bridge;
+//! `settings.json`'s old `"slack_native"` is ignored, except that `true` wins over a stand-in `AGENTDESK_BRIDGE_CMD` (a child command
+//! supervised instead, for tests). A bridge started by hand (`agentdesk slack-bridge`) is "external" to the core while it beats.
 
 use crate::sessions::Registry;
-use crate::{paths, pyhost, slack};
+use crate::{paths, slack};
 use chrono::{DateTime, Utc};
 use serde_json::{json, Value};
 use std::process::{Child, Stdio};
@@ -133,32 +130,15 @@ fn settings_on() -> bool {
     paths::setting("slack_bridge").as_bool().unwrap_or(true)
 }
 
-/// Whether the bridge runs natively (see the module comment): `slack_native` in settings.json, else when there is no Python to run.
-/// `AGENTDESK_BRIDGE_CMD` (a stand-in command) is a Python-style child, so it keeps the supervised path unless the setting says otherwise.
+/// Whether the bridge runs natively: always, unless a stand-in `AGENTDESK_BRIDGE_CMD` is set (and `slack_native` is not `true`).
 pub fn use_native() -> bool {
-    match paths::setting("slack_native").as_bool() {
-        Some(b) => b,
-        None => std::env::var("AGENTDESK_BRIDGE_CMD").map_or(true, |c| c.trim().is_empty()) && pyhost::interpreter().is_none(),
-    }
+    paths::setting("slack_native").as_bool() == Some(true) || command().is_none()
 }
 
-/// The command to supervise, or None (with the reason) when this process should not start a bridge.
-fn command() -> Result<Vec<String>, &'static str> {
-    if let Ok(cmd) = std::env::var("AGENTDESK_BRIDGE_CMD") {
-        if !cmd.trim().is_empty() {
-            return Ok(split(&cmd));
-        }
-    }
-    if std::env::var_os("AGENTDESK_DATA").is_some() {
-        return Err("not supervised on a custom AGENTDESK_DATA without AGENTDESK_BRIDGE_CMD");
-    }
-    let creds = std::env::var("AGENTDESK_SLACK_DIR").map(std::path::PathBuf::from).unwrap_or_else(|_| crate::paths::home_dir().join(".claude").join("slack-notify"));
-    if !creds.join("bot-token.txt").exists() && !creds.join("bots.json").exists() {
-        return Err("not configured: no Slack credentials (set AGENTDESK_SLACK_DIR, or put bot-token.txt and app-token.txt in ~/.claude/slack-notify)");
-    }
-    let py = pyhost::interpreter().ok_or("no Python 3 interpreter")?;
-    let dir = pyhost::dir().map_err(|_| "could not extract the Python half")?;
-    Ok(vec![py, dir.join("scripts").join("slack_bridge.py").to_string_lossy().into_owned()])
+/// The stand-in command to supervise as a child, if `AGENTDESK_BRIDGE_CMD` names one.
+fn command() -> Option<Vec<String>> {
+    let cmd = std::env::var("AGENTDESK_BRIDGE_CMD").ok()?;
+    (!cmd.trim().is_empty()).then(|| split(&cmd))
 }
 
 fn split(command: &str) -> Vec<String> {
@@ -197,7 +177,7 @@ pub fn run(stop: Arc<std::sync::atomic::AtomicBool>, registry: Registry) {
         return;
     }
     let native = use_native();
-    let cmd = match if native { slack::unconfigured().map_or(Ok(vec![]), Err) } else { command() } {
+    let cmd = match if native { slack::unconfigured().map_or(Ok(vec![]), Err) } else { command().ok_or("no bridge command") } {
         Ok(c) => c,
         Err(why) => {
             info.state = if why.starts_with("not configured") { "not-configured".into() } else { "not-supervised".into() };
@@ -248,15 +228,8 @@ pub fn run(stop: Arc<std::sync::atomic::AtomicBool>, registry: Registry) {
     }
     while !stop.load(std::sync::atomic::Ordering::Relaxed) {
         let began = Instant::now();
-        let child = crate::paths::new_command(&cmd[0])
-            .args(&cmd[1..])
-            .current_dir(pyhost::dir().unwrap_or_else(|_| paths::data_dir()))
-            .env("PYTHONIOENCODING", "utf-8")
-            .env("AGENTDESK_DATA", paths::data_dir())
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn();
+        let child =
+            crate::paths::new_command(&cmd[0]).args(&cmd[1..]).env("AGENTDESK_DATA", paths::data_dir()).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
         let code = match child {
             Ok(mut c) => {
                 info.pid = Some(c.id());

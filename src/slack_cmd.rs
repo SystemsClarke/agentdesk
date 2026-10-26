@@ -1,5 +1,5 @@
 //! Phone commands for the Slack bridge: John types `agents`, `concierge off`, `status`... in a bot's DM. A port of
-//! `python/agentdesk/slackcmd.py`. Each command is the same `ui:*` request the Python one sent to the core; in here the core is this
+//! the phone commands. Each command is a `ui:*` request to the core; in here the core is this
 //! process, so a request is `ui_api::call` on the bridge's own board handle instead of an `agentdesk ui` subprocess.
 //!
 //! Each command belongs to an area (agents, concierge, ops, swarms); the bridge can run several Slack bots from bots.json, each
