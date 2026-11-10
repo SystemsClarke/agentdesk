@@ -272,10 +272,11 @@ export const register: Register = on => {
             .join('  ·  ')
           // Title and details are one Button: the whole card is the target.
           const face = [
+            ' ',
             <Text weight="semibold" color={isOpen ? 'claude' : 'text'} wrap="wrap">
               {label}
             </Text>,
-            '\n',
+            '\n ',
             badge !== '' ? (
               <Text color={chip(badge)} size="footnote" weight="semibold">
                 {badge}
@@ -289,11 +290,13 @@ export const register: Register = on => {
             </Text>,
           ]
           return (
+            // No padding between the card and its Button, and the Button stretched
+            // across it: the whole bubble is the click target, not just the words.
+            // The breathing room lives inside the Button's own label instead.
             <Box
               key={`row-${current}-${r.thread_id ?? r.title}`}
               flexDirection="column"
-              paddingX="sm"
-              paddingY="xs"
+              alignItems="stretch"
               borderStyle="round"
               borderColor={isOpen ? 'claude' : 'promptBorder'}
               borderDimColor={!isOpen}
