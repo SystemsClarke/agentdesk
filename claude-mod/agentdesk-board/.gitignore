@@ -1,0 +1,3 @@
+# Written by the Claude Code engine when the mod loads: this build's API types.
+.claude-plugin/types/
+__pycache__/

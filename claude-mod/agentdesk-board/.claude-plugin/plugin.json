@@ -1,0 +1,6 @@
+{
+  "name": "agentdesk-board",
+  "version": "0.1.0",
+  "description": "AgentDesk's board inside Claude: questions waiting on John, threads, reply and close, straight from the SQLite file.",
+  "types": "./types/index.d.ts"
+}
