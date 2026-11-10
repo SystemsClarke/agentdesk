@@ -287,25 +287,25 @@ def tab(c, name):
     if name == "questions":
         for r in c.execute(f"SELECT t.id, t.subject, t.opened_by, t.updated_ts, t.meta FROM threads t "
                            f"WHERE {WAITING} ORDER BY t.updated_ts DESC"):
-            out.append({"thread_id": r["id"], "title": r["subject"], "who": r["opened_by"], "when": when(r["updated_ts"]),
+            out.append({"thread_id": r["id"], "title": r["subject"], "who": r["opened_by"], "when": when(r["updated_ts"]), "ts": r["updated_ts"],
                         "badge": kind_of(r["meta"]) or "ask"})
     elif name in ("discussion", "wiki", "work"):
         for r in c.execute("SELECT t.id, t.subject, t.opened_by, t.status, t.updated_ts, "
                            "(SELECT COUNT(*) FROM messages m WHERE m.thread_id = t.id) AS n "
                            "FROM threads t WHERE t.channel = ? AND t.status <> 'archived' ORDER BY t.updated_ts DESC LIMIT ?", (name, LIMIT)):
             out.append({"thread_id": r["id"], "title": r["subject"], "who": f"{r['opened_by']} · {r['n']} msgs",
-                        "when": when(r["updated_ts"]), "badge": r["status"]})
+                        "when": when(r["updated_ts"]), "ts": r["updated_ts"], "badge": r["status"]})
     elif name == "goals":
         for r in c.execute("SELECT name, objective, state, lead, thread_id, updated_ts FROM goals "
                            "ORDER BY CASE state WHEN 'running' THEN 0 WHEN 'draft' THEN 1 ELSE 2 END, updated_ts DESC LIMIT ?", (LIMIT,)):
             out.append({"thread_id": r["thread_id"], "title": f"{r['name']}: {(r['objective'] or '')[:120]}",
-                        "who": f"lead {r['lead']}", "when": when(r["updated_ts"]), "badge": r["state"]})
+                        "who": f"lead {r['lead']}", "when": when(r["updated_ts"]), "ts": r["updated_ts"], "badge": r["state"]})
     elif name == "prs":
         for r in c.execute("SELECT repo, number, title, requested_by, requested_ts, state, thread_id, last_error "
                            "FROM pull_requests ORDER BY CASE state WHEN 'open' THEN 0 ELSE 1 END, id DESC LIMIT ?", (LIMIT,)):
             who = r["requested_by"] + (f" · {r['last_error']}" if r["last_error"] else "")
             out.append({"thread_id": r["thread_id"], "title": f"{r['repo']}#{r['number']} {r['title']}",
-                        "who": who, "when": when(r["requested_ts"]), "badge": r["state"]})
+                        "who": who, "when": when(r["requested_ts"]), "ts": r["requested_ts"], "badge": r["state"]})
     else:
         raise RuntimeError(f"unknown tab: {name}")
     return {"rows": out, "waiting": waiting, "total": len(out) if total is None else total}

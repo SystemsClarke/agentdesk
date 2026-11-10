@@ -5,6 +5,8 @@ import type { Note, OpenThread, Row, Snapshot } from '../types'
 
 const PANE = 'agentdesk-board'
 const REFRESH_MS = 30000
+// From this many body columns the pane shows the list and the open thread side by side.
+const SPLIT_COLUMNS = 110
 
 const TABS: { id: string; label: string }[] = [
   { id: 'questions', label: 'Questions' },
@@ -140,6 +142,17 @@ async function back($: Api) {
   await update($, open, () => null)
 }
 
+/** "now", "12m ago", "3h ago", "2d ago": how a list is read at a glance. */
+function ago(ts: string, now: number) {
+  const then = Date.parse(ts)
+  if (Number.isNaN(then)) return ''
+  const s = Math.max(0, Math.round((now - then) / 1000))
+  if (s < 60) return 'now'
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`
+  return `${Math.floor(s / 86400)}d ago`
+}
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
@@ -155,7 +168,8 @@ export const register: Register = on => {
 
   on('command.run', { command: 'agentdesk' }, async $ => {
     await say($, '')
-    await $.ui.open({ id: PANE, title: 'AgentDesk', focus: true })
+    // Ask for all the room the surface will give: tall inline, wide when docked.
+    await $.ui.open({ id: PANE, title: 'AgentDesk', focus: true, rows: 60, columns: 160 })
     void refresh($).catch(() => {}) // draws what it has now; the fresh board lands a moment later
     return { text: 'AgentDesk board opened.' }
   })
@@ -172,32 +186,44 @@ export const register: Register = on => {
     const flash = await read($, note)
     const sending = await read($, busy)
     const count = board?.waiting ?? 0
+    const now = Date.now()
+    // Wide enough for the list and the thread side by side: the pane fills
+    // with both, and a press on a row opens it on the right.
+    const isSplit = e.surface !== 'mobile' && (e.props?.bodyColumns ?? 0) >= SPLIT_COLUMNS
+
+    // ---- the header: what this is, how much waits, the tabs
 
     const header = (
-      <Box flexDirection="column" gap={1}>
-        <Box gap={2}>
-          <Text bold color="cyan">
-            AgentDesk
-          </Text>
-          {board === null ? (
-            <Text dimColor>loading…</Text>
-          ) : count > 0 ? (
-            <Text bold color="yellow">
-              {count} waiting on you
+      <Box flexDirection="column" gap="sm">
+        <Box justifyContent="space-between" alignItems="center">
+          <Box gap="sm" alignItems="center">
+            <Text color="claude" size="title" weight="bold">
+              ✻ AgentDesk
             </Text>
-          ) : (
-            <Text color="green">nothing waiting on you</Text>
-          )}
-          {sending !== '' && <Text color="cyan">{sending}</Text>}
-          <Button key="refresh" variant="secondary" hotkey="r" onPress={() => refresh($)}>
-            Refresh
-          </Button>
+            {board === null ? (
+              <Text color="inactive" size="footnote">
+                loading…
+              </Text>
+            ) : count > 0 ? (
+              <Text color="warning" weight="semibold">
+                {count} waiting on you
+              </Text>
+            ) : (
+              <Text color="success">nothing waiting on you</Text>
+            )}
+          </Box>
+          <Box gap="sm" alignItems="center">
+            {sending !== '' && <Text color="claude">{sending}</Text>}
+            <Button key="refresh" plain dimColor hotkey="r" onPress={() => refresh($)}>
+              Refresh
+            </Button>
+          </Box>
         </Box>
-        <Box gap={1}>
+        <Box gap="xs" flexWrap="wrap">
           {TABS.map((t, i) => (
             <Button
               key={`tab-${t.id}`}
-              variant={t.id === current && !thread ? 'primary' : 'secondary'}
+              variant={t.id === current && (isSplit || !thread) ? 'primary' : 'secondary'}
               hotkey={String(i + 1)}
               onPress={() => showTab($, t.id)}
             >
@@ -206,49 +232,116 @@ export const register: Register = on => {
           ))}
         </Box>
         {flash.text !== '' && (
-          <Text bold color={flash.isError ? 'red' : 'green'}>
+          <Text color={flash.isError ? 'error' : 'success'} weight="semibold">
+            {flash.isError ? '✗ ' : '✓ '}
             {flash.text}
           </Text>
         )}
       </Box>
     )
 
-    if (thread) {
-      const id = thread.thread_id
-      const proposal = thread.proposal?.status === 'pending' ? thread.proposal : null
-      const isLive = thread.channel === 'question' && thread.status === 'open'
+    // ---- the list: one row per thread, the whole row the button
+
+    const page = board?.tabs[current]
+    const list: Row[] = page?.rows ?? []
+    const isQuestions = current === 'questions'
+    const chip = (badge: string) =>
+      badge === 'permission' ? 'permission' : badge === 'open' || badge === 'ask' || badge === 'running' ? 'warning' : 'inactive'
+
+    const listView = (
+      <Box flexDirection="column" gap="xs">
+        {page && !isQuestions && (
+          <Text color="inactive" size="footnote">
+            {page.total > list.length ? `Newest ${list.length} of ${page.total}` : `${page.total} in all`}, most recent activity first
+          </Text>
+        )}
+        {board !== null && list.length === 0 && (
+          <Box paddingY="md">
+            <Text color="inactive">{isQuestions ? 'Nothing is waiting on you. ✓' : 'Nothing here.'}</Text>
+          </Box>
+        )}
+        {list.map(r => {
+          const isOpen = thread?.thread_id === r.thread_id && r.thread_id !== null
+          const age = ago(r.ts, now)
+          const meta = isQuestions ? `${age}  ·  #${r.thread_id}` : `${r.who}  ·  ${age}`
+          const label = isQuestions ? r.who : r.title
+          return (
+            <Box
+              key={`row-${current}-${r.thread_id ?? r.title}`}
+              flexDirection="column"
+              paddingX="sm"
+              paddingY="xs"
+              borderStyle="round"
+              borderColor={isOpen ? 'claude' : 'promptBorder'}
+              borderDimColor={!isOpen}
+              hover={{ borderColor: 'claude' }}
+            >
+              <Box justifyContent="space-between" gap="sm">
+                {r.thread_id === null ? (
+                  <Text weight="semibold">{label}</Text>
+                ) : (
+                  <Button
+                    key={`open-${current}-${r.thread_id}`}
+                    plain
+                    onPress={() => openThread($, r.thread_id as number)}
+                  >
+                    <Text weight="semibold" color={isOpen ? 'claude' : 'text'}>
+                      {label}
+                    </Text>
+                  </Button>
+                )}
+                <Text color={chip(r.badge)} size="footnote">
+                  {r.badge}
+                </Text>
+              </Box>
+              <Text color="inactive" size="footnote">
+                {meta}
+                {pending === r.thread_id ? '  ·  opening…' : ''}
+              </Text>
+            </Box>
+          )
+        })}
+      </Box>
+    )
+
+    // ---- the thread: like a transcript, with the decision at the top
+
+    const threadView = (t: OpenThread) => {
+      const id = t.thread_id
+      const proposal = t.proposal?.status === 'pending' ? t.proposal : null
+      const isLive = t.channel === 'question' && t.status === 'open'
       const isIdle = sending === ''
       return (
-        <Box flexDirection="column" gap={1} padding={1}>
-          {header}
-          <Box gap={2}>
-            <Button key="back" variant="secondary" hotkey="b" onPress={() => back($)}>
-              ← Back
-            </Button>
-            <Text bold>
-              #{id} {thread.subject}
+        <Box flexDirection="column" gap="md">
+          <Box flexDirection="column" gap="xs">
+            {!isSplit && (
+              <Button key="back" plain dimColor hotkey="b" onPress={() => back($)}>
+                ← Back
+              </Button>
+            )}
+            <Text size="heading" weight="bold">
+              {t.subject}
             </Text>
-          </Box>
-          <Box gap={2}>
-            <Text bold color="cyan">
-              {thread.opened_by}
-            </Text>
-            <Text dimColor>{thread.channel}</Text>
-            {thread.kind !== '' && <Text color="magenta">{thread.kind}</Text>}
-            <Text color={thread.waiting ? 'yellow' : 'green'}>
-              {thread.waiting ? 'waiting on you' : thread.status}
-            </Text>
+            <Box gap="sm">
+              <Text color="claude" weight="semibold">
+                {t.opened_by}
+              </Text>
+              <Text color="inactive">#{id}</Text>
+              <Text color="inactive">{t.channel}</Text>
+              {t.kind !== '' && <Text color={chip(t.kind)}>{t.kind}</Text>}
+              <Text color={t.waiting ? 'warning' : 'success'}>{t.waiting ? 'waiting on you' : t.status}</Text>
+            </Box>
           </Box>
 
           {proposal && (
-            <Box flexDirection="column" gap={1} borderStyle="round" borderColor="yellow" paddingX={1}>
-              <Text bold color="yellow">
-                Permission rule ({proposal.scope})
+            <Box flexDirection="column" gap="sm" borderStyle="round" borderColor="permission" paddingX="md" paddingY="sm">
+              <Text color="permission" weight="bold">
+                Allow this permission rule? ({proposal.scope})
               </Text>
-              <Text>{proposal.rule}</Text>
+              <Text mono>{proposal.rule}</Text>
               {isIdle && (
-                <Box gap={2}>
-                  <Button key="approve" variant="primary" hotkey="a" onPress={() => decide($, id, true)}>
+                <Box gap="sm">
+                  <Button key="approve" variant="primary" hotkey="a" autoFocus onPress={() => decide($, id, true)}>
                     Approve
                   </Button>
                   <Button key="reject" variant="secondary" hotkey="d" onPress={() => decide($, id, false)}>
@@ -259,8 +352,8 @@ export const register: Register = on => {
             </Box>
           )}
 
-          {!proposal && thread.waiting && isIdle && (
-            <Box gap={2}>
+          {!proposal && t.waiting && isIdle && (
+            <Box gap="sm">
               <Button key="yes" variant="primary" hotkey="y" onPress={() => reply($, id, 'Yes, go ahead.')}>
                 Yes, go ahead
               </Button>
@@ -275,89 +368,66 @@ export const register: Register = on => {
             </Box>
           )}
 
-          {thread.messages.map(m => {
-            const isJohn = m.author_kind === 'human'
-            return (
-              <Box
-                key={`m-${m.id}`}
-                flexDirection="column"
-                borderStyle="round"
-                borderColor={isJohn ? 'green' : 'gray'}
-                paddingX={1}
-              >
-                <Box gap={2}>
-                  <Text bold color={isJohn ? 'green' : 'cyan'}>
-                    {isJohn ? 'You' : m.author}
-                  </Text>
-                  <Text dimColor>{m.ts.slice(0, 16).replace('T', ' ')}</Text>
+          <Box flexDirection="column" gap="md">
+            {t.messages.map(m => {
+              const isJohn = m.author_kind === 'human'
+              return (
+                <Box key={`m-${m.id}`} flexDirection="column" gap="xs">
+                  <Box gap="sm">
+                    <Text color={isJohn ? 'suggestion' : 'claude'}>{isJohn ? '❯' : '⏺'}</Text>
+                    <Text weight="semibold">{isJohn ? 'You' : m.author}</Text>
+                    <Text color="inactive" size="footnote">
+                      {ago(m.ts, now)}
+                    </Text>
+                  </Box>
+                  <Box paddingLeft={2}>
+                    <Markdown text={m.body} />
+                  </Box>
                 </Box>
-                <Markdown text={m.body} />
-              </Box>
-            )
-          })}
+              )
+            })}
+          </Box>
 
           {Input && (
-            <Input
-              key={`reply-${id}`}
-              label="Reply"
-              placeholder="Write a reply. Enter sends."
-              submitLabel="send"
-              rows={3}
-              onSubmit={(text: string) => reply($, id, text)}
-            />
+            <Box borderStyle="round" borderColor="promptBorder" paddingX="sm">
+              <Input
+                key={`reply-${id}`}
+                placeholder="Reply to the agent. Enter sends."
+                submitLabel="send"
+                rows={3}
+                onSubmit={(text: string) => reply($, id, text)}
+              />
+            </Box>
           )}
         </Box>
       )
     }
 
-    const page = board?.tabs[current]
-    const list: Row[] = page?.rows ?? []
-    const isQuestions = current === 'questions'
-    return (
-      <Box flexDirection="column" gap={1} padding={1}>
-        {header}
-        {page && !isQuestions && (
-          <Text dimColor>
-            {page.total > list.length
-              ? `Newest ${list.length} of ${page.total}`
-              : `${page.total} in all`}
-            , most recent activity first
-          </Text>
-        )}
-        {board !== null && list.length === 0 && (
-          <Text dimColor>{isQuestions ? 'Nothing is waiting on you.' : 'Nothing here.'}</Text>
-        )}
-        <Box flexDirection="column">
-          {list.map(r =>
-            r.thread_id === null ? (
-              <Box key={`row-${current}-${r.title}`} gap={2}>
-                <Text color="magenta">{r.badge}</Text>
-                <Text bold>{r.title}</Text>
-                <Text dimColor>
-                  {r.who} · {r.when}
-                </Text>
-              </Box>
-            ) : isQuestions ? (
-              <Button key={`open-${current}-${r.thread_id}`} variant="secondary" onPress={() => openThread($, r.thread_id as number)}>
-                <Text color={r.badge === 'permission' ? 'yellow' : 'magenta'}>{r.badge.padEnd(10)}</Text>
-                <Text bold>{r.who}</Text>
-                <Text dimColor>
-                  {`  ${r.when}  #${r.thread_id}`}
-                </Text>
-                {pending === r.thread_id ? <Text color="cyan">  opening…</Text> : ''}
-              </Button>
-            ) : (
-              <Button key={`open-${current}-${r.thread_id}`} variant="secondary" onPress={() => openThread($, r.thread_id as number)}>
-                <Text color="magenta">{r.badge.padEnd(8)}</Text>
-                <Text>{r.title}</Text>
-                <Text dimColor>
-                  {`  ${r.who} · ${r.when}`}
-                </Text>
-                {pending === r.thread_id ? <Text color="cyan">  opening…</Text> : ''}
-              </Button>
-            ),
-          )}
+    const empty = (
+      <Box paddingY="lg" justifyContent="center">
+        <Text color="inactive">{isQuestions && count > 0 ? '← Pick a question to read it here.' : 'Pick a thread to read it here.'}</Text>
+      </Box>
+    )
+
+    if (isSplit)
+      return (
+        <Box flexDirection="column" gap="md" padding="md">
+          {header}
+          <Box gap="lg" alignItems="flex-start">
+            <Box flexDirection="column" width="38%" flexShrink={0}>
+              {listView}
+            </Box>
+            <Box flexDirection="column" flexGrow={1}>
+              {thread ? threadView(thread) : empty}
+            </Box>
+          </Box>
         </Box>
+      )
+
+    return (
+      <Box flexDirection="column" gap="md" padding="md">
+        {header}
+        {thread ? threadView(thread) : listView}
       </Box>
     )
   })

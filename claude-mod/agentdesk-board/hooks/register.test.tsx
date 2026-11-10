@@ -43,7 +43,7 @@ function fakeBoard() {
   const waitingOnes = () => Object.values(threads).filter(t => t.waiting)
   const snapshot = () => {
     const n = waitingOnes().length
-    const row = (t: any) => ({ thread_id: t.thread_id, title: t.subject, who: t.opened_by, when: '11-10 17:04', badge: t.kind || 'ask' })
+    const row = (t: any) => ({ thread_id: t.thread_id, title: t.subject, who: t.opened_by, when: '11-10 17:04', ts: '2026-11-10T17:04:00+00:00', badge: t.kind || 'ask' })
     return {
       waiting: n,
       threads: Object.fromEntries(waitingOnes().map(t => [String(t.thread_id), t])),
@@ -51,7 +51,7 @@ function fakeBoard() {
         questions: { waiting: n, total: n, rows: waitingOnes().map(row) },
         discussion: { waiting: n, total: 425, rows: [{ ...row(threads[775]), who: 'Local_Helper · 9 msgs', badge: 'fyi' }] },
         work: { waiting: n, total: 0, rows: [] },
-        goals: { waiting: n, total: 1, rows: [{ thread_id: null, title: 'Fast-Checkout: ship it', who: 'lead x', when: '11-03 15:38', badge: 'running' }] },
+        goals: { waiting: n, total: 1, rows: [{ thread_id: null, title: 'Fast-Checkout: ship it', who: 'lead x', when: '11-03 15:38', ts: '2026-11-03T15:38:00+00:00', badge: 'running' }] },
         prs: { waiting: n, total: 0, rows: [] },
         wiki: { waiting: n, total: 0, rows: [] },
       },
@@ -115,9 +115,9 @@ test('the Questions tab lists who is asking, with the count', async ($, on) => {
   expect((await ui.find({ type: 'Text', text: /waiting on you/ }))?.text).toBe('2 waiting on you')
   expect((await ui.find({ key: 'tab-questions' }))?.text).toBe('Questions (2)')
   const row = await ui.find({ key: 'open-questions-1100' })
-  expect(row?.text).toContain('DockerAgents')
-  expect(row?.text).toContain('permission')
-  expect(row?.text).not.toContain('Bash(make') // no preview: the agent is the row
+  expect(row?.text).toBe('DockerAgents') // no preview: the agent is the row
+  expect(await ui.find({ type: 'Text', text: /^permission$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Bash\(make/ })).toBeUndefined()
   await ui.unmount()
 })
 
@@ -136,7 +136,7 @@ test('switching tabs and opening a waiting question start no process', async ($,
   await ui.press({ key: 'tab-goals' })
   await ui.press({ key: 'tab-questions' })
   await ui.press({ key: 'open-questions-1101' })
-  expect((await ui.find({ type: 'Text', text: /#1101/ }))?.text).toContain('May I deploy?')
+  expect((await ui.find({ type: 'Text', text: /May I deploy/ }))?.text).toBe('May I deploy?')
   expect(board.calls.length).toBe(before)
   await ui.unmount()
 })
@@ -155,7 +155,7 @@ test('opening a discussion thread reads it once', async ($, on) => {
   await ui.press({ key: 'tab-discussion' })
   await ui.press({ key: 'open-discussion-775' })
   expect(board.calls.at(-1)?.args).toEqual(['thread', '775'])
-  expect((await ui.find({ type: 'Text', text: /#775/ }))?.text).toContain('Crowdin repair')
+  expect((await ui.find({ type: 'Text', text: /^Crowdin repair$/ }))).toBeDefined()
   await ui.unmount()
 })
 
@@ -235,7 +235,7 @@ test('a database error shows in red and keeps what is drawn', async ($, on) => {
   const ui = await mount($)
   board.state.fail = 'database is locked'
   await ui.press({ key: 'refresh' })
-  expect((await ui.find({ type: 'Text', text: /database is locked/ }))?.text).toBe('database is locked')
+  expect((await ui.find({ type: 'Text', text: /database is locked/ }))?.text).toBe('✗ database is locked')
   expect(await ui.find({ key: 'open-questions-1100' })).toBeDefined()
   board.state.fail = ''
   await ui.press({ key: 'open-questions-1100' })
@@ -255,4 +255,17 @@ test('every surface draws the list and a thread', async ($, on) => {
     await ui.press({ key: 'back' })
     await ui.unmount()
   }
+})
+
+test('a wide pane shows the list and the open thread side by side', async ($, on) => {
+  await opened($, on)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop', props: { ...PANE.props, bodyColumns: 160 } })
+  expect(await ui.find({ type: 'Text', text: /Pick a question/ })).toBeDefined()
+  await ui.press({ key: 'open-questions-1100' })
+  expect(await ui.find({ key: 'approve' })).toBeDefined()
+  expect(await ui.find({ key: 'open-questions-1101' })).toBeDefined() // the list stays beside it
+  expect(await ui.find({ key: 'back' })).toBeUndefined() // nothing to go back to
+  await ui.press({ key: 'open-questions-1101' })
+  expect(await ui.find({ key: 'yes' })).toBeDefined()
+  await ui.unmount()
 })

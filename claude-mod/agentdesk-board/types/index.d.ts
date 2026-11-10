@@ -4,6 +4,8 @@ export type Row = {
   title: string
   who: string
   when: string
+  /** The ISO time `when` was cut from, for "12m ago". */
+  ts: string
   badge: string
 }
 export type Tab = { rows: Row[]; waiting: number; total: number }

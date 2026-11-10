@@ -23,6 +23,11 @@ process it starts is `python hooks/db.py`, a short, readable script that uses Py
 | Reply box | Free text; Enter sends. `@name` mentions are recorded as the app records them. |
 | `b`, `r` | Back to the list, refresh. |
 
+The pane asks for all the room the surface gives it. From 110 columns wide it shows the list and the open
+thread side by side, so a press on a row opens it on the right and the list stays put; narrower, a row opens
+full width with **← Back**. It is drawn in Claude Code's own theme colors, so it follows light and dark, and a
+thread reads like a transcript: `⏺` for the agent, `❯` for you, times as "12m ago".
+
 Hotkeys work while the pane has focus. The mobile app has no text field, so there the buttons still work and
 the reply box is hidden.
 
