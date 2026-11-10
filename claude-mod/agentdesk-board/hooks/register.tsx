@@ -1,9 +1,10 @@
 import { atom, read, update } from 'claude-code'
 import type { Register } from 'claude-code'
 
-import type { Note, OpenThread, Row } from '../types'
+import type { Note, OpenThread, Row, Snapshot } from '../types'
 
 const PANE = 'agentdesk-board'
+const REFRESH_MS = 30000
 
 const TABS: { id: string; label: string }[] = [
   { id: 'questions', label: 'Questions' },
@@ -16,26 +17,17 @@ const TABS: { id: string; label: string }[] = [
 
 // A shape tag changes when its value's fields change: it declines what an
 // earlier version stored, which outlives a reload.
-const tab = atom({ plugin: 'agentdesk-board', key: 'tab' } as const, 'questions', {
-  shape: 'tab-1',
-})
-const rows = atom({ plugin: 'agentdesk-board', key: 'rows' } as const, [], {
-  shape: 'rows-2',
-})
-const waiting = atom({ plugin: 'agentdesk-board', key: 'waiting' } as const, 0, {
-  shape: 'waiting-1',
-})
-const open = atom({ plugin: 'agentdesk-board', key: 'open' } as const, null, {
-  shape: 'open-2',
-})
+const snap = atom({ plugin: 'agentdesk-board', key: 'snap' } as const, null, { shape: 'snap-1' })
+const tab = atom({ plugin: 'agentdesk-board', key: 'tab' } as const, 'questions', { shape: 'tab-1' })
+const open = atom({ plugin: 'agentdesk-board', key: 'open' } as const, null, { shape: 'open-3' })
+const loading = atom({ plugin: 'agentdesk-board', key: 'loading' } as const, null, { shape: 'loading-1' })
 const note = atom(
   { plugin: 'agentdesk-board', key: 'note' } as const,
   { text: '', isError: false },
   { shape: 'note-2' },
 )
-const busy = atom({ plugin: 'agentdesk-board', key: 'busy' } as const, false, {
-  shape: 'busy-1',
-})
+// What is being sent right now ('' when nothing): it disables the buttons and says so.
+const busy = atom({ plugin: 'agentdesk-board', key: 'busy' } as const, '', { shape: 'busy-2' })
 
 type Runner = {
   process: {
@@ -49,12 +41,27 @@ type Runner = {
 type Api = Runner & Parameters<typeof update>[0]
 type Doc = Record<string, unknown> & { error?: string }
 
+// The interpreter db.py runs on. `python` on Windows is often the Store's
+// launcher alias, which costs ~200 ms a call: session.start asks it once for
+// the real python.exe and every call after goes straight there.
+let python = 'python'
+
+async function findPython($: Runner) {
+  try {
+    const out = await $.process.run(['python', '-c', 'import sys; print(sys.executable)'], { timeoutMs: 10000 })
+    const exe = out.stdout.trim()
+    if (out.exitCode === 0 && exe !== '') python = exe
+  } catch {
+    // keep `python`: the first db call reports it if it is missing
+  }
+}
+
 // The one thing this mod runs: db.py, which opens AgentDesk's SQLite file with
 // Python's own sqlite3. No pipe, no daemon, no HTTP, none of AgentDesk's binaries.
 async function db($: Runner, args: string[], stdin?: string): Promise<Doc> {
   try {
     const out = await $.process.run(
-      ['python', `${$.plugin.root}/hooks/db.py`, ...args],
+      [python, '-I', '-S', `${$.plugin.root}/hooks/db.py`, ...args],
       { stdin, timeoutMs: 30000 },
     )
     try {
@@ -71,54 +78,66 @@ async function say($: Api, text: string, isError = false) {
   await update($, note, (): Note => ({ text, isError }))
 }
 
-async function load($: Api, name: string) {
-  await update($, tab, () => name)
-  await update($, open, () => null)
-  const doc = await db($, ['tab', name])
+/** One process: every tab and every waiting question. A failed refresh keeps what is drawn and says why. */
+async function refresh($: Api) {
+  const doc = await db($, ['snapshot'])
   if (doc.error) return say($, doc.error, true)
-  await update($, rows, () => doc.rows as Row[])
-  await update($, waiting, () => Number(doc.waiting ?? 0))
+  await update($, snap, () => doc as unknown as Snapshot)
+  const shown = await read($, open)
+  const fresh = shown && (doc as unknown as Snapshot).threads[String(shown.thread_id)]
+  if (fresh) await update($, open, () => fresh)
 }
 
-async function show($: Api, id: number) {
+/** Tabs come out of the snapshot: no process, so the switch is instant. */
+async function showTab($: Api, name: string) {
+  await update($, open, () => null)
+  await update($, tab, () => name)
+}
+
+/** A waiting question is in the snapshot already; anything else is one read. */
+async function openThread($: Api, id: number) {
+  const cached = (await read($, snap))?.threads[String(id)]
+  if (cached) return update($, open, () => cached)
+  await update($, loading, () => id)
   const doc = await db($, ['thread', String(id)])
+  await update($, loading, () => null)
   if (doc.error) return say($, doc.error, true)
   await update($, open, () => doc.thread as OpenThread)
 }
 
-/** Runs one write, then re-reads the thread and the waiting count. */
-async function act($: Api, id: number, args: string[], done: string, stdin?: string) {
-  if (await read($, busy)) return
-  await update($, busy, () => true)
+/** A write is one process: db.py makes it and answers with the board as it now is. */
+async function act($: Api, args: string[], sending: string, done: string, stdin?: string) {
+  if ((await read($, busy)) !== '') return
+  await update($, busy, () => sending)
   try {
     const doc = await db($, args, stdin)
     if (doc.error) return await say($, doc.error, true)
+    await update($, snap, () => doc.snapshot as Snapshot)
+    await update($, open, () => doc.thread as OpenThread)
     await say($, done)
-    await show($, id)
-    const fresh = await db($, ['tab', 'questions'])
-    if (!fresh.error) await update($, waiting, () => Number(fresh.waiting ?? 0))
   } finally {
-    await update($, busy, () => false)
+    await update($, busy, () => '')
   }
 }
 
 async function reply($: Api, id: number, text: string) {
   if (!text.trim()) return say($, 'The reply is empty.', true)
-  return act($, id, ['reply', String(id)], `Replied on #${id}.`, text)
+  return act($, ['reply', String(id)], 'Sending…', `Replied on #${id}.`, text)
 }
 
 async function decide($: Api, id: number, approve: boolean) {
-  const verb = approve ? 'approve' : 'reject'
-  return act($, id, ['permission', verb, String(id)], approve ? `Approved #${id}: the rule is in settings.json.` : `Rejected #${id}.`)
+  return approve
+    ? act($, ['permission', 'approve', String(id)], 'Approving…', `Approved #${id}: the rule is in settings.json.`)
+    : act($, ['permission', 'reject', String(id)], 'Rejecting…', `Rejected #${id}.`)
 }
 
 async function closeQuestion($: Api, id: number) {
-  return act($, id, ['close', String(id)], `Closed #${id} without an answer.`)
+  return act($, ['close', String(id)], 'Closing…', `Closed #${id} without an answer.`)
 }
 
 async function back($: Api) {
   await say($, '')
-  return load($, await read($, tab))
+  await update($, open, () => null)
 }
 
 export const register: Register = on => {
@@ -127,13 +146,17 @@ export const register: Register = on => {
       name: 'agentdesk',
       description: 'Open the AgentDesk board: questions, discussion, work, goals',
     })
+    // Background reads: a failure is drawn by refresh itself, and one that
+    // outlives the module (a reload mid-read) has nothing left to tell.
+    void findPython($).then(() => refresh($)).catch(() => {})
+    $.clock.every(REFRESH_MS, () => void refresh($).catch(() => {}))
     return next(e)
   })
 
   on('command.run', { command: 'agentdesk' }, async $ => {
-    await $.ui.open({ id: PANE, title: 'AgentDesk', focus: true })
     await say($, '')
-    await load($, 'questions')
+    await $.ui.open({ id: PANE, title: 'AgentDesk', focus: true })
+    void refresh($).catch(() => {}) // draws what it has now; the fresh board lands a moment later
     return { text: 'AgentDesk board opened.' }
   })
 
@@ -142,12 +165,13 @@ export const register: Register = on => {
     const { Box, Text, Button, Markdown } = ui
     // The mobile app draws no text field: there the quick replies and Approve/Reject still work.
     const Input = 'Input' in ui && e.surface !== 'mobile' ? ui.Input : undefined
+    const board = await read($, snap)
     const current = await read($, tab)
-    const list = await read($, rows)
-    const count = await read($, waiting)
     const thread = await read($, open)
+    const pending = await read($, loading)
     const flash = await read($, note)
-    const isBusy = await read($, busy)
+    const sending = await read($, busy)
+    const count = board?.waiting ?? 0
 
     const header = (
       <Box flexDirection="column" gap={1}>
@@ -155,15 +179,17 @@ export const register: Register = on => {
           <Text bold color="cyan">
             AgentDesk
           </Text>
-          {count > 0 ? (
+          {board === null ? (
+            <Text dimColor>loading…</Text>
+          ) : count > 0 ? (
             <Text bold color="yellow">
               {count} waiting on you
             </Text>
           ) : (
             <Text color="green">nothing waiting on you</Text>
           )}
-          {isBusy && <Text dimColor>working…</Text>}
-          <Button key="refresh" variant="secondary" hotkey="r" onPress={() => (thread ? show($, thread.thread_id) : load($, current))}>
+          {sending !== '' && <Text color="cyan">{sending}</Text>}
+          <Button key="refresh" variant="secondary" hotkey="r" onPress={() => refresh($)}>
             Refresh
           </Button>
         </Box>
@@ -173,7 +199,7 @@ export const register: Register = on => {
               key={`tab-${t.id}`}
               variant={t.id === current && !thread ? 'primary' : 'secondary'}
               hotkey={String(i + 1)}
-              onPress={() => say($, '').then(() => load($, t.id))}
+              onPress={() => showTab($, t.id)}
             >
               {t.id === 'questions' && count > 0 ? `${t.label} (${count})` : t.label}
             </Button>
@@ -190,8 +216,8 @@ export const register: Register = on => {
     if (thread) {
       const id = thread.thread_id
       const proposal = thread.proposal?.status === 'pending' ? thread.proposal : null
-      const isQuestion = thread.channel === 'question'
-      const isLive = isQuestion && thread.status === 'open'
+      const isLive = thread.channel === 'question' && thread.status === 'open'
+      const isIdle = sending === ''
       return (
         <Box flexDirection="column" gap={1} padding={1}>
           {header}
@@ -204,12 +230,14 @@ export const register: Register = on => {
             </Text>
           </Box>
           <Box gap={2}>
+            <Text bold color="cyan">
+              {thread.opened_by}
+            </Text>
             <Text dimColor>{thread.channel}</Text>
             {thread.kind !== '' && <Text color="magenta">{thread.kind}</Text>}
             <Text color={thread.waiting ? 'yellow' : 'green'}>
               {thread.waiting ? 'waiting on you' : thread.status}
             </Text>
-            <Text dimColor>from {thread.opened_by}</Text>
           </Box>
 
           {proposal && (
@@ -218,18 +246,20 @@ export const register: Register = on => {
                 Permission rule ({proposal.scope})
               </Text>
               <Text>{proposal.rule}</Text>
-              <Box gap={2}>
-                <Button key="approve" variant="primary" hotkey="a" onPress={() => decide($, id, true)}>
-                  Approve
-                </Button>
-                <Button key="reject" variant="secondary" hotkey="d" onPress={() => decide($, id, false)}>
-                  Reject
-                </Button>
-              </Box>
+              {isIdle && (
+                <Box gap={2}>
+                  <Button key="approve" variant="primary" hotkey="a" onPress={() => decide($, id, true)}>
+                    Approve
+                  </Button>
+                  <Button key="reject" variant="secondary" hotkey="d" onPress={() => decide($, id, false)}>
+                    Reject
+                  </Button>
+                </Box>
+              )}
             </Box>
           )}
 
-          {!proposal && thread.waiting && (
+          {!proposal && thread.waiting && isIdle && (
             <Box gap={2}>
               <Button key="yes" variant="primary" hotkey="y" onPress={() => reply($, id, 'Yes, go ahead.')}>
                 Yes, go ahead
@@ -280,33 +310,54 @@ export const register: Register = on => {
       )
     }
 
+    const page = board?.tabs[current]
+    const list: Row[] = page?.rows ?? []
+    const isQuestions = current === 'questions'
     return (
       <Box flexDirection="column" gap={1} padding={1}>
         {header}
-        {list.length === 0 && flash.text === '' && <Text dimColor>Nothing here.</Text>}
-        {list.map((r, i) => (
-          <Box
-            key={`r-${current}-${i}`}
-            flexDirection="column"
-            borderStyle="round"
-            borderColor={r.badge === 'permission' ? 'yellow' : 'gray'}
-            paddingX={1}
-          >
-            <Box gap={2}>
-              <Text color={r.badge === 'permission' ? 'yellow' : 'magenta'}>{r.badge}</Text>
-              <Text dimColor>
-                {r.who} · {r.when}
-              </Text>
-            </Box>
-            {r.thread_id !== null ? (
-              <Button key={`open-${current}-${r.thread_id}`} variant="secondary" onPress={() => show($, r.thread_id as number)}>
-                {`#${r.thread_id}  ${r.title}`}
+        {page && !isQuestions && (
+          <Text dimColor>
+            {page.total > list.length
+              ? `Newest ${list.length} of ${page.total}`
+              : `${page.total} in all`}
+            , most recent activity first
+          </Text>
+        )}
+        {board !== null && list.length === 0 && (
+          <Text dimColor>{isQuestions ? 'Nothing is waiting on you.' : 'Nothing here.'}</Text>
+        )}
+        <Box flexDirection="column">
+          {list.map(r =>
+            r.thread_id === null ? (
+              <Box key={`row-${current}-${r.title}`} gap={2}>
+                <Text color="magenta">{r.badge}</Text>
+                <Text bold>{r.title}</Text>
+                <Text dimColor>
+                  {r.who} · {r.when}
+                </Text>
+              </Box>
+            ) : isQuestions ? (
+              <Button key={`open-${current}-${r.thread_id}`} variant="secondary" onPress={() => openThread($, r.thread_id as number)}>
+                <Text color={r.badge === 'permission' ? 'yellow' : 'magenta'}>{r.badge.padEnd(10)}</Text>
+                <Text bold>{r.who}</Text>
+                <Text dimColor>
+                  {`  ${r.when}  #${r.thread_id}`}
+                </Text>
+                {pending === r.thread_id ? <Text color="cyan">  opening…</Text> : ''}
               </Button>
             ) : (
-              <Text bold>{r.title}</Text>
-            )}
-          </Box>
-        ))}
+              <Button key={`open-${current}-${r.thread_id}`} variant="secondary" onPress={() => openThread($, r.thread_id as number)}>
+                <Text color="magenta">{r.badge.padEnd(8)}</Text>
+                <Text>{r.title}</Text>
+                <Text dimColor>
+                  {`  ${r.who} · ${r.when}`}
+                </Text>
+                {pending === r.thread_id ? <Text color="cyan">  opening…</Text> : ''}
+              </Button>
+            ),
+          )}
+        </Box>
       </Box>
     )
   })

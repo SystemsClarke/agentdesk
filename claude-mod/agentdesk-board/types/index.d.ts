@@ -6,6 +6,7 @@ export type Row = {
   when: string
   badge: string
 }
+export type Tab = { rows: Row[]; waiting: number; total: number }
 export type Message = {
   id: number
   ts: string
@@ -26,18 +27,24 @@ export type OpenThread = {
   proposal: Proposal | null
   messages: Message[]
 }
+/** db.py's `snapshot`: every tab, and every waiting question in full. */
+export type Snapshot = {
+  tabs: Record<string, Tab>
+  threads: Record<string, OpenThread>
+  waiting: number
+}
 /** The line under the tabs: what the last action did, or why it failed. */
 export type Note = { text: string; isError: boolean }
 
 declare module 'claude-code' {
   interface PluginState {
     'agentdesk-board': {
+      snap: Shaped<Snapshot | null>
       tab: Shaped<string>
-      rows: Shaped<Row[]>
-      waiting: Shaped<number>
       open: Shaped<OpenThread | null>
+      loading: Shaped<number | null>
       note: Shaped<Note>
-      busy: Shaped<boolean>
+      busy: Shaped<string>
     }
   }
 }

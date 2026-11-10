@@ -258,9 +258,32 @@ def kind_of(meta):
         return ""
 
 
+TABS = ("questions", "discussion", "work", "goals", "prs", "wiki")
+LIMIT = 100
+
+
+def snapshot(c):
+    """Everything the pane draws without asking again: every tab's rows, and every waiting question in full, so
+    switching tabs and opening a question cost no process at all. One read transaction, so it is self-consistent."""
+    c.execute("BEGIN")
+    try:
+        tabs = {name: tab(c, name) for name in TABS}
+        threads = {str(r["thread_id"]): thread(c, r["thread_id"])["thread"] for r in tabs["questions"]["rows"]}
+    finally:
+        c.execute("COMMIT")
+    return {"tabs": tabs, "threads": threads, "waiting": tabs["questions"]["waiting"]}
+
+
 def tab(c, name):
     out = []
     waiting = c.execute(f"SELECT COUNT(*) FROM threads t WHERE {WAITING}").fetchone()[0]
+    total = None
+    if name in ("discussion", "wiki", "work"):
+        total = c.execute("SELECT COUNT(*) FROM threads WHERE channel=? AND status <> 'archived'", (name,)).fetchone()[0]
+    elif name == "goals":
+        total = c.execute("SELECT COUNT(*) FROM goals").fetchone()[0]
+    elif name == "prs":
+        total = c.execute("SELECT COUNT(*) FROM pull_requests").fetchone()[0]
     if name == "questions":
         for r in c.execute(f"SELECT t.id, t.subject, t.opened_by, t.updated_ts, t.meta FROM threads t "
                            f"WHERE {WAITING} ORDER BY t.updated_ts DESC"):
@@ -269,23 +292,23 @@ def tab(c, name):
     elif name in ("discussion", "wiki", "work"):
         for r in c.execute("SELECT t.id, t.subject, t.opened_by, t.status, t.updated_ts, "
                            "(SELECT COUNT(*) FROM messages m WHERE m.thread_id = t.id) AS n "
-                           "FROM threads t WHERE t.channel = ? AND t.status <> 'archived' ORDER BY t.updated_ts DESC LIMIT 60", (name,)):
+                           "FROM threads t WHERE t.channel = ? AND t.status <> 'archived' ORDER BY t.updated_ts DESC LIMIT ?", (name, LIMIT)):
             out.append({"thread_id": r["id"], "title": r["subject"], "who": f"{r['opened_by']} · {r['n']} msgs",
                         "when": when(r["updated_ts"]), "badge": r["status"]})
     elif name == "goals":
         for r in c.execute("SELECT name, objective, state, lead, thread_id, updated_ts FROM goals "
-                           "ORDER BY CASE state WHEN 'running' THEN 0 WHEN 'draft' THEN 1 ELSE 2 END, updated_ts DESC"):
+                           "ORDER BY CASE state WHEN 'running' THEN 0 WHEN 'draft' THEN 1 ELSE 2 END, updated_ts DESC LIMIT ?", (LIMIT,)):
             out.append({"thread_id": r["thread_id"], "title": f"{r['name']}: {(r['objective'] or '')[:120]}",
                         "who": f"lead {r['lead']}", "when": when(r["updated_ts"]), "badge": r["state"]})
     elif name == "prs":
         for r in c.execute("SELECT repo, number, title, requested_by, requested_ts, state, thread_id, last_error "
-                           "FROM pull_requests ORDER BY CASE state WHEN 'open' THEN 0 ELSE 1 END, id DESC LIMIT 60"):
+                           "FROM pull_requests ORDER BY CASE state WHEN 'open' THEN 0 ELSE 1 END, id DESC LIMIT ?", (LIMIT,)):
             who = r["requested_by"] + (f" · {r['last_error']}" if r["last_error"] else "")
             out.append({"thread_id": r["thread_id"], "title": f"{r['repo']}#{r['number']} {r['title']}",
                         "who": who, "when": when(r["requested_ts"]), "badge": r["state"]})
     else:
         raise RuntimeError(f"unknown tab: {name}")
-    return {"rows": out, "waiting": waiting}
+    return {"rows": out, "waiting": waiting, "total": len(out) if total is None else total}
 
 
 def thread(c, thread_id):
@@ -342,8 +365,17 @@ def read(fn):
         c.close()
 
 
+def after_write(out, thread_id):
+    """A write's answer carries the board as it now is, so the pane redraws from one process, not three."""
+    out["snapshot"] = read(snapshot)
+    out["thread"] = read(lambda c: thread(c, thread_id))["thread"]
+    return out
+
+
 def main(argv):
     op, args = (argv[1] if len(argv) > 1 else ""), argv[2:]
+    if op == "snapshot":
+        return read(snapshot)
     if op == "tab":
         return read(lambda c: tab(c, args[0] if args else "questions"))
     if op == "thread":
@@ -352,11 +384,14 @@ def main(argv):
         body = sys.stdin.buffer.read().decode("utf-8")
         if not body.strip():
             return {"error": "the reply is empty"}
-        return {"ok": True, "message_id": write(lambda c: john_replies(c, int(args[0]), body))}
+        tid = int(args[0])
+        return after_write({"ok": True, "message_id": write(lambda c: john_replies(c, tid, body))}, tid)
     if op == "close":
-        return {"ok": True, "closed": write(lambda c: close_question(c, int(args[0])))}
+        tid = int(args[0])
+        return after_write({"ok": True, "closed": write(lambda c: close_question(c, tid))}, tid)
     if op == "permission" and len(args) == 2 and args[0] in ("approve", "reject"):
-        return write(lambda c: decide(c, int(args[1]), args[0] == "approve"))
+        tid = int(args[1])
+        return after_write(write(lambda c: decide(c, tid, args[0] == "approve")), tid)
     return {"error": f"unknown op: {' '.join(argv[1:])}"}
 
 

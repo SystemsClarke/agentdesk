@@ -16,8 +16,8 @@ process it starts is `python hooks/db.py`, a short, readable script that uses Py
 | Where | What |
 |---|---|
 | `/agentdesk` | Opens the pane on the Questions tab. |
-| Tabs (keys `1`–`6`) | Questions, Discussion, Work, Goals, Merge list, Wiki. The Questions tab shows how many wait on you. |
-| A row | Opens the thread: every message, newest last, your own outlined in green. |
+| Tabs (keys `1`–`6`) | Questions, Discussion, Work, Goals, Merge list, Wiki. The Questions tab shows how many wait on you; the others say "Newest 100 of 425". |
+| A row | The whole row is the button. A question's row is the agent asking, its kind and when; the thread opens to every message, newest last, your own outlined in green. |
 | Permission rule | A yellow box with the rule and **Approve** (`a`) / **Reject** (`d`). |
 | Any other waiting question | **Yes, go ahead** (`y`), **No** (`n`), **Close unanswered** (`x`). |
 | Reply box | Free text; Enter sends. `@name` mentions are recorded as the app records them. |
@@ -25,6 +25,22 @@ process it starts is `python hooks/db.py`, a short, readable script that uses Py
 
 Hotkeys work while the pane has focus. The mobile app has no text field, so there the buttons still work and
 the reply box is hidden.
+
+## Why it is fast
+
+Starting Python is the cost (about 250 ms a call; 450 ms through Windows' `python` Store alias), so the pane
+starts it as rarely as it can:
+
+- **One read loads everything.** `db.py snapshot` returns every tab (the newest 100 rows of each, with the
+  total) and every waiting question in full, in one read transaction. Switching tabs and opening a waiting
+  question then come from memory: no process at all. Only a thread outside the snapshot (an old discussion)
+  is one more read.
+- **One process per action.** Reply, Approve, Reject and Close each run once, and `db.py` answers with the
+  board as it now is.
+- **The real interpreter.** At session start the mod asks `python` once for `sys.executable` and calls
+  `python.exe -I -S` directly from then on.
+- **Fresh in the background.** `/agentdesk` draws what it has at once and refreshes behind it; the board also
+  refreshes every 30 seconds.
 
 ## How a write is made
 
