@@ -62,13 +62,18 @@ When the schema in `src/db.rs`, `src/events.rs` or `src/permissions.rs` changes,
 | `hooks/db.py` | Everything that touches the database. |
 | `types/index.d.ts` | The pane's state contract. |
 | `tests/test_db.py` | `db.py` against a throwaway board; touches nothing outside a temp folder. |
+| `hooks/register.test.tsx` | The pane's tests (`claude plugin test`). |
 
 ## Developing
 
 ```
-python claude-mod/agentdesk-board/tests/test_db.py
+python claude-mod/agentdesk-board/tests/test_db.py     # db.py against a throwaway board
+claude plugin test claude-mod/agentdesk-board          # the pane: draws, presses, typing, on every surface
 claude plugin validate claude-mod/agentdesk-board
 ```
+
+`hooks/register.test.tsx` mounts the pane with a fake board standing in for `db.py` (a `process.run`
+hook), presses its buttons and types into its reply box, and checks what reached the board and what was drawn.
 
 To try it, load the folder in a session: `claude --plugin-dir claude-mod/agentdesk-board`. A session with
 mod hot-reloading on reloads it whenever its files change. For type-checking, the engine writes the API types

@@ -141,7 +141,7 @@ export const register: Register = on => {
     const ui = $.ui.resolve(e)
     const { Box, Text, Button, Markdown } = ui
     // The mobile app draws no text field: there the quick replies and Approve/Reject still work.
-    const Input = 'Input' in ui ? ui.Input : undefined
+    const Input = 'Input' in ui && e.surface !== 'mobile' ? ui.Input : undefined
     const current = await read($, tab)
     const list = await read($, rows)
     const count = await read($, waiting)
