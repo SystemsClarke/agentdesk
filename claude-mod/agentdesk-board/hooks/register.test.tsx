@@ -21,7 +21,7 @@ type Call = { args: string[]; argv: string[]; stdin?: string }
 
 function fakeBoard() {
   const calls: Call[] = []
-  const state = { fail: '' }
+  const state: { fail: string; discussion: any[] | null } = { fail: '', discussion: null }
   const threads: Record<number, any> = {
     1100: {
       thread_id: 1100, channel: 'question', status: 'open', subject: 'permission rule: Bash(make:*)',
@@ -49,7 +49,7 @@ function fakeBoard() {
       threads: Object.fromEntries(waitingOnes().map(t => [String(t.thread_id), t])),
       tabs: {
         questions: { waiting: n, total: n, rows: waitingOnes().map(row) },
-        discussion: { waiting: n, total: 425, rows: [{ ...row(threads[775]), who: 'Local_Helper · 9 msgs', badge: 'fyi' }] },
+        discussion: { waiting: n, total: 425, rows: state.discussion ?? [{ ...row(threads[775]), who: 'Local_Helper · 9 msgs', badge: 'fyi' }] },
         work: { waiting: n, total: 0, rows: [] },
         goals: { waiting: n, total: 1, rows: [{ thread_id: null, title: 'Fast-Checkout: ship it', who: 'lead x', when: '11-03 15:38', ts: '2026-11-03T15:38:00+00:00', badge: 'running' }] },
         prs: { waiting: n, total: 0, rows: [] },
@@ -113,6 +113,9 @@ const mount = ($: any, surface: 'terminal' | 'desktop' | 'vscode' | 'mobile' = '
   $.ui.mount({ ...PANE, surface })
 
 const CARD_ROWS = 5
+/** The card Buttons drawn for a tab (on a Button surface). */
+const cardsOf = async (ui: any, tab: string) =>
+  ((await ui.findAll({ type: 'Button' })) as { key?: string }[]).filter(b => b.key?.startsWith(`open-${tab}-`))
 /** Opens the `index`th card of `tab` as the person would on this surface. */
 async function openCard(ui: any, surface: string, tab: string, index: number, id: number) {
   if (surface === 'terminal' || surface === 'desktop')
@@ -321,5 +324,37 @@ test('a card post that is not a thread id opens nothing', async ($, on) => {
   await ui.post({ open: 'DROP TABLE threads' }, { in: 'cards-questions' } as any)
   expect(board.calls.length).toBe(before)
   expect(await ui.find({ key: 'back' })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('a long tab draws 30 cards, and Show more adds the next 30', async ($, on) => {
+  const board = await opened($, on)
+  const many = Array.from({ length: 75 }, (_, i) => ({
+    thread_id: 2000 + i, title: `thread ${i}`, who: 'x · 1 msgs', when: '11-10 17:04', ts: '2026-11-10T17:04:00+00:00', badge: 'fyi',
+  }))
+  board.state.discussion = many
+  const ui = await mount($)
+  await ui.press({ key: 'refresh' })
+  await ui.press({ key: 'tab-discussion' })
+  expect(await cardsOf(ui, 'discussion')).toHaveLength(30)
+  expect((await ui.find({ key: 'more' }))?.text).toBe('Show 30 more')
+  await ui.press({ key: 'more' })
+  await ui.press({ key: 'more' })
+  expect(await cardsOf(ui, 'discussion')).toHaveLength(75)
+  expect(await ui.find({ key: 'more' })).toBeUndefined()
+  await ui.press({ key: 'tab-questions' })
+  await ui.press({ key: 'tab-discussion' })
+  expect(await cardsOf(ui, 'discussion')).toHaveLength(30) // a tab starts at a page again
+  await ui.unmount()
+})
+
+test('a refresh that finds nothing new redraws nothing', async ($, on) => {
+  const board = await opened($, on)
+  const ui = await mount($)
+  await ui.press({ key: 'open-questions-1101' })
+  const before = board.calls.length
+  await ui.press({ key: 'refresh' })
+  expect(board.calls.length).toBe(before + 1) // it did read
+  expect(await ui.find({ type: 'Text', text: /May I deploy/ })).toBeDefined() // and the open thread stayed
   await ui.unmount()
 })

@@ -41,7 +41,10 @@ export type Note = { text: string; isError: boolean }
 declare module 'claude-code' {
   interface PluginState {
     'agentdesk-board': {
-      snap: Shaped<Snapshot | null>
+      /** Bumped when the board (kept in the module, not here) changes. */
+      ver: Shaped<number>
+      /** How many cards the list draws. */
+      shown: Shaped<number>
       tab: Shaped<string>
       open: Shaped<OpenThread | null>
       loading: Shaped<number | null>

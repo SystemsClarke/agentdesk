@@ -19,7 +19,16 @@ const TABS: { id: string; label: string }[] = [
 
 // A shape tag changes when its value's fields change: it declines what an
 // earlier version stored, which outlives a reload.
-const snap = atom({ plugin: 'agentdesk-board', key: 'snap' } as const, null, { shape: 'snap-1' })
+// The board itself is NOT pane state. $.state crosses the plugin boundary on
+// every read and write, and the board is ~100 KB: holding it there copied it
+// on every redraw, a hover included. It lives in this module instead, and
+// `ver` (a number) is the only thing a change of it writes to state.
+let board: Snapshot | null = null
+let boardText = ''
+const ver = atom({ plugin: 'agentdesk-board', key: 'ver' } as const, 0, { shape: 'ver-1' })
+// How many cards the list draws; "Show more" adds a page. Fewer cards, cheaper hovers.
+const PAGE = 30
+const shown = atom({ plugin: 'agentdesk-board', key: 'shown' } as const, PAGE, { shape: 'shown-1' })
 const tab = atom({ plugin: 'agentdesk-board', key: 'tab' } as const, 'questions', { shape: 'tab-1' })
 const open = atom({ plugin: 'agentdesk-board', key: 'open' } as const, null, { shape: 'open-3' })
 const loading = atom({ plugin: 'agentdesk-board', key: 'loading' } as const, null, { shape: 'loading-1' })
@@ -80,25 +89,40 @@ async function say($: Api, text: string, isError = false) {
   await update($, note, (): Note => ({ text, isError }))
 }
 
+/** Takes a new board; false, and no redraw at all, when nothing in it changed. */
+async function setBoard($: Api, next: Snapshot) {
+  const text = JSON.stringify(next)
+  if (text === boardText) return false
+  board = next
+  boardText = text
+  await update($, ver, v => v + 1)
+  return true
+}
+
 /** One process: every tab and every waiting question. A failed refresh keeps what is drawn and says why. */
 async function refresh($: Api) {
   const doc = await db($, ['snapshot'])
   if (doc.error) return say($, doc.error, true)
-  await update($, snap, () => doc as unknown as Snapshot)
-  const shown = await read($, open)
-  const fresh = shown && (doc as unknown as Snapshot).threads[String(shown.thread_id)]
+  if (!(await setBoard($, doc as unknown as Snapshot))) return // the 30 s tick, usually: nothing to redraw
+  const showing = await read($, open)
+  const fresh = showing && board?.threads[String(showing.thread_id)]
   if (fresh) await update($, open, () => fresh)
 }
 
 /** Tabs come out of the snapshot: no process, so the switch is instant. */
 async function showTab($: Api, name: string) {
   await update($, open, () => null)
+  await update($, shown, () => PAGE)
   await update($, tab, () => name)
+}
+
+async function showMore($: Api) {
+  await update($, shown, n => n + PAGE)
 }
 
 /** A waiting question is in the snapshot already; anything else is one read. */
 async function openThread($: Api, id: number) {
-  const cached = (await read($, snap))?.threads[String(id)]
+  const cached = board?.threads[String(id)]
   if (cached) return update($, open, () => cached)
   await update($, loading, () => id)
   const doc = await db($, ['thread', String(id)])
@@ -114,7 +138,7 @@ async function act($: Api, args: string[], sending: string, done: string, stdin?
   try {
     const doc = await db($, args, stdin)
     if (doc.error) return await say($, doc.error, true)
-    await update($, snap, () => doc.snapshot as Snapshot)
+    await setBoard($, doc.snapshot as Snapshot)
     await update($, open, () => doc.thread as OpenThread)
     await say($, done)
   } finally {
@@ -190,7 +214,8 @@ export const register: Register = on => {
     // Where the surface draws a Client (terminal, desktop), the list is one: a
     // press anywhere on a card opens it. Elsewhere each card is a Button.
     const Client = 'Client' in ui && (e.surface === 'terminal' || e.surface === 'desktop') ? ui.Client : undefined
-    const board = await read($, snap)
+    await read($, ver) // subscribes this drawing to board changes; the board is the module's
+    const limit = await read($, shown)
     const current = await read($, tab)
     const thread = await read($, open)
     const pending = await read($, loading)
@@ -254,7 +279,8 @@ export const register: Register = on => {
     // ---- the list: one row per thread, the whole row the button
 
     const page = board?.tabs[current]
-    const list: Row[] = page?.rows ?? []
+    const all: Row[] = page?.rows ?? []
+    const list = all.slice(0, limit)
     const isQuestions = current === 'questions'
     const chip = (badge: string) =>
       badge === 'permission' ? 'permission' : badge === 'open' || badge === 'ask' || badge === 'running' ? 'warning' : 'inactive'
@@ -263,7 +289,7 @@ export const register: Register = on => {
       <Box flexDirection="column" gap="xs">
         {page && !isQuestions && (
           <Text color="inactive" size="footnote">
-            {page.total > list.length ? `Newest ${list.length} of ${page.total}` : `${page.total} in all`}, most recent activity first
+            {page.total > all.length ? `Newest ${all.length} of ${page.total}` : `${page.total} in all`}, most recent activity first
           </Text>
         )}
         {board !== null && list.length === 0 && (
@@ -350,6 +376,11 @@ export const register: Register = on => {
             </Box>
           )
         })}
+        {all.length > list.length && (
+          <Button key="more" variant="secondary" hotkey="m" onPress={() => showMore($)}>
+            {`Show ${Math.min(PAGE, all.length - list.length)} more`}
+          </Button>
+        )}
       </Box>
     )
 
