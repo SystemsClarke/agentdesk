@@ -174,11 +174,22 @@ export const register: Register = on => {
     return { text: 'AgentDesk board opened.' }
   })
 
+  // A press on a card of the Client list (hooks/cards.tsx). The post is code's
+  // word, not the engine's, so it is checked before it opens anything.
+  on('ui.message', { requestId: PANE }, async ($, e, next) => {
+    const data = e.data as { open?: unknown } | null
+    if (e.module.endsWith('cards.tsx') && data && Number.isInteger(data.open)) await openThread($, data.open as number)
+    return next(e)
+  })
+
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const ui = $.ui.resolve(e)
     const { Box, Text, Button, Markdown } = ui
     // The mobile app draws no text field: there the quick replies and Approve/Reject still work.
     const Input = 'Input' in ui && e.surface !== 'mobile' ? ui.Input : undefined
+    // Where the surface draws a Client (terminal, desktop), the list is one: a
+    // press anywhere on a card opens it. Elsewhere each card is a Button.
+    const Client = 'Client' in ui && (e.surface === 'terminal' || e.surface === 'desktop') ? ui.Client : undefined
     const board = await read($, snap)
     const current = await read($, tab)
     const thread = await read($, open)
@@ -260,7 +271,34 @@ export const register: Register = on => {
             <Text color="inactive">{isQuestions ? 'Nothing is waiting on you. ✓' : 'Nothing here.'}</Text>
           </Box>
         )}
-        {list.map(r => {
+        {Client && list.length > 0 ? (
+          <Client
+            key={`cards-${current}`}
+            module="./cards.tsx"
+            width="100%"
+            props={{
+              cards: list
+                .filter(r => r.thread_id !== null)
+                .map(r => {
+                  const badge = r.badge === 'fyi' ? '' : r.badge
+                  return {
+                    id: r.thread_id as number,
+                    title: isQuestions ? r.who : r.title,
+                    badge,
+                    badgeColor: chip(badge),
+                    details: [isQuestions ? `#${r.thread_id}` : r.who, ago(r.ts, now), pending === r.thread_id ? 'opening…' : '']
+                      .filter(Boolean)
+                      .join('  ·  '),
+                    isOpen: thread?.thread_id === r.thread_id,
+                  }
+                }),
+            }}
+          />
+        ) : null}
+        {Client && list.some(r => r.thread_id === null) && (
+          <Text color="inactive">{list.filter(r => r.thread_id === null).map(r => `${r.badge}  ·  ${r.title}`).join('\n')}</Text>
+        )}
+        {!Client && list.map(r => {
           const isOpen = thread?.thread_id === r.thread_id && r.thread_id !== null
           const age = ago(r.ts, now)
           const label = isQuestions ? r.who : r.title

@@ -92,7 +92,7 @@ async function opened($: any, on: any) {
   const board = fakeBoard()
   on('command.register', () => ({ value: { command: 'agentdesk' } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
-  on('clock.every', () => ({ value: { cancel: () => {} } }))
+  on('clock.every', () => ({ deny: 'no background refresh in tests' }))
   on('session.start', (_: unknown, e: { cwd: string }) => ({ cwd: e.cwd }))
   on('process.run', (_: unknown, e: { argv: string[]; init?: { stdin?: string } }) => {
     if (e.argv[1] === '-c') return { value: { exitCode: 0, stdout: 'C:\\Python\\python.exe\r\n', stderr: '' } }
@@ -106,8 +106,19 @@ async function opened($: any, on: any) {
   return board
 }
 
-const mount = ($: any, surface: 'terminal' | 'desktop' | 'vscode' | 'mobile' = 'desktop') =>
+// VS Code and mobile draw each card as a Button; terminal and desktop draw the
+// list as one Client (hooks/cards.tsx). Most tests press Buttons, so they mount
+// on vscode; the Client's own tests below press its cards by pointer.
+const mount = ($: any, surface: 'terminal' | 'desktop' | 'vscode' | 'mobile' = 'vscode') =>
   $.ui.mount({ ...PANE, surface })
+
+const CARD_ROWS = 5
+/** Opens the `index`th card of `tab` as the person would on this surface. */
+async function openCard(ui: any, surface: string, tab: string, index: number, id: number) {
+  if (surface === 'terminal' || surface === 'desktop')
+    await ui.pointer({ type: 'up', button: 'left', x: 3, y: index * CARD_ROWS + 1, in: `cards-${tab}` })
+  else await ui.press({ key: `open-${tab}-${id}` })
+}
 
 test('the Questions tab lists who is asking, with the count', async ($, on) => {
   await opened($, on)
@@ -251,7 +262,7 @@ test('every surface draws the list and a thread', async ($, on) => {
   await opened($, on)
   for (const surface of ['terminal', 'desktop', 'vscode', 'mobile'] as const) {
     const ui = await mount($, surface)
-    await ui.press({ key: 'open-questions-1101' })
+    await openCard(ui, surface, 'questions', 1, 1101)
     expect(await ui.find({ type: 'Text', text: /#1101/ })).toBeDefined()
     if (surface === 'mobile') expect(await ui.find({ key: 'reply-1101' })).toBeUndefined()
     else expect(await ui.find({ key: 'reply-1101' })).toBeDefined()
@@ -262,7 +273,7 @@ test('every surface draws the list and a thread', async ($, on) => {
 
 test('a wide pane shows the list and the open thread side by side', async ($, on) => {
   await opened($, on)
-  const ui = await $.ui.mount({ ...PANE, surface: 'desktop', props: { ...PANE.props, bodyColumns: 160 } })
+  const ui = await $.ui.mount({ ...PANE, surface: 'vscode', props: { ...PANE.props, bodyColumns: 160 } })
   expect(await ui.find({ type: 'Text', text: /Pick a question/ })).toBeDefined()
   await ui.press({ key: 'open-questions-1100' })
   expect(await ui.find({ key: 'approve' })).toBeDefined()
@@ -270,5 +281,45 @@ test('a wide pane shows the list and the open thread side by side', async ($, on
   expect(await ui.find({ key: 'back' })).toBeUndefined() // nothing to go back to
   await ui.press({ key: 'open-questions-1101' })
   expect(await ui.find({ key: 'yes' })).toBeDefined()
+  await ui.unmount()
+})
+
+test('on desktop a press anywhere on a card opens it, its border included', async ($, on) => {
+  await opened($, on)
+  const ui = await mount($, 'desktop')
+  expect(await ui.find({ key: 'open-questions-1100' })).toBeUndefined() // no Buttons: one Client
+  // Card 2 spans rows 5..8: press its bottom border, far right, not its words.
+  await ui.pointer({ type: 'up', button: 'left', x: 60, y: CARD_ROWS + 3, in: 'cards-questions' })
+  expect((await ui.find({ type: 'Text', text: /May I deploy/ }))?.text).toBe('May I deploy?')
+  await ui.unmount()
+})
+
+test('the blank row between cards and a right click open nothing', async ($, on) => {
+  await opened($, on)
+  const ui = await mount($, 'desktop')
+  await ui.pointer({ type: 'up', button: 'left', x: 3, y: CARD_ROWS - 1, in: 'cards-questions' })
+  await ui.pointer({ type: 'up', button: 'right', x: 3, y: 1, in: 'cards-questions' })
+  await ui.pointer({ type: 'up', button: 'left', x: 3, y: CARD_ROWS * 7, in: 'cards-questions' })
+  expect(await ui.find({ key: 'approve' })).toBeUndefined()
+  expect(await ui.find({ key: 'yes' })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('the cards take the keyboard: Down, then Enter, opens', async ($, on) => {
+  await opened($, on)
+  const ui = await mount($, 'terminal')
+  await ui.key({ key: 'down', in: 'cards-questions' })
+  await ui.key({ key: 'return', in: 'cards-questions' })
+  expect(await ui.find({ key: 'approve' })).toBeDefined() // the first card: the permission rule
+  await ui.unmount()
+})
+
+test('a card post that is not a thread id opens nothing', async ($, on) => {
+  const board = await opened($, on)
+  const ui = await mount($, 'desktop')
+  const before = board.calls.length
+  await ui.post({ open: 'DROP TABLE threads' }, { in: 'cards-questions' } as any)
+  expect(board.calls.length).toBe(before)
+  expect(await ui.find({ key: 'back' })).toBeUndefined()
   await ui.unmount()
 })

@@ -80,6 +80,7 @@ When the schema in `src/db.rs`, `src/events.rs` or `src/permissions.rs` changes,
 |---|---|
 | `.claude-plugin/plugin.json` | The manifest. |
 | `hooks/hooks.json`, `hooks/register.tsx` | The hooks module: the `/agentdesk` command and the pane. |
+| `hooks/cards.tsx` | The list's cards as one `Client` region (terminal, desktop): a press anywhere on a card opens it, and Up/Down/Enter walk it. A Button is pressable only on its own words, which is why the list is not Buttons there. VS Code and mobile, which draw no Client, get a Button per card. |
 | `hooks/db.py` | Everything that touches the database. |
 | `types/index.d.ts` | The pane's state contract. |
 | `tests/test_db.py` | `db.py` against a throwaway board; touches nothing outside a temp folder. |
