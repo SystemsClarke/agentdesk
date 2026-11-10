@@ -115,8 +115,8 @@ test('the Questions tab lists who is asking, with the count', async ($, on) => {
   expect((await ui.find({ type: 'Text', text: /waiting on you/ }))?.text).toBe('2 waiting on you')
   expect((await ui.find({ key: 'tab-questions' }))?.text).toBe('Questions (2)')
   const row = await ui.find({ key: 'open-questions-1100' })
-  expect(row?.text).toBe('DockerAgents') // no preview: the agent is the row
-  expect(await ui.find({ type: 'Text', text: /^permission$/ })).toBeDefined()
+  // The whole card is the button: the agent, then its kind, number and age. No preview.
+  expect(row?.text).toMatch(/^DockerAgents\npermission {2}· {2}#1100 {2}· {2}(now|\d+[mhd] ago)$/)
   expect(await ui.find({ type: 'Text', text: /Bash\(make/ })).toBeUndefined()
   await ui.unmount()
 })
@@ -224,7 +224,10 @@ test('a row with no thread draws as text', async ($, on) => {
   await opened($, on)
   const ui = await mount($)
   await ui.press({ key: 'tab-goals' })
-  expect((await ui.find({ type: 'Text', text: /Fast-Checkout/ }))?.text).toBe('Fast-Checkout: ship it')
+  const goal = await ui.find({ type: 'Text', text: /Fast-Checkout/ })
+  expect(goal?.text).toMatch(/^Fast-Checkout: ship it\nrunning {2}· {2}lead x {2}· {2}\d+d ago$/)
+  expect(goal?.text).not.toContain('opening') // a row with no thread is never "opening"
+  expect(await ui.find({ type: 'Button', text: /Fast-Checkout/ })).toBeUndefined()
   await ui.press({ key: 'tab-wiki' })
   expect(await ui.find({ type: 'Text', text: /Nothing here/ })).toBeDefined()
   await ui.unmount()

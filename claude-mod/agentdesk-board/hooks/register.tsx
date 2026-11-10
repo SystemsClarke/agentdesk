@@ -263,8 +263,31 @@ export const register: Register = on => {
         {list.map(r => {
           const isOpen = thread?.thread_id === r.thread_id && r.thread_id !== null
           const age = ago(r.ts, now)
-          const meta = isQuestions ? `${age}  ·  #${r.thread_id}` : `${r.who}  ·  ${age}`
           const label = isQuestions ? r.who : r.title
+          // The badge leads the second line, so a long title never pushes it out
+          // of the card; "fyi" is every discussion's and says nothing, so it goes.
+          const badge = r.badge === 'fyi' ? '' : r.badge
+          const meta = [isQuestions ? `#${r.thread_id}` : r.who, age, r.thread_id !== null && pending === r.thread_id ? 'opening…' : '']
+            .filter(Boolean)
+            .join('  ·  ')
+          // Title and details are one Button: the whole card is the target.
+          const face = [
+            <Text weight="semibold" color={isOpen ? 'claude' : 'text'} wrap="wrap">
+              {label}
+            </Text>,
+            '\n',
+            badge !== '' ? (
+              <Text color={chip(badge)} size="footnote" weight="semibold">
+                {badge}
+                {'  ·  '}
+              </Text>
+            ) : (
+              ''
+            ),
+            <Text color="inactive" size="footnote" wrap="wrap">
+              {meta}
+            </Text>,
+          ]
           return (
             <Box
               key={`row-${current}-${r.thread_id ?? r.title}`}
@@ -276,28 +299,13 @@ export const register: Register = on => {
               borderDimColor={!isOpen}
               hover={{ borderColor: 'claude' }}
             >
-              <Box justifyContent="space-between" gap="sm">
-                {r.thread_id === null ? (
-                  <Text weight="semibold">{label}</Text>
-                ) : (
-                  <Button
-                    key={`open-${current}-${r.thread_id}`}
-                    plain
-                    onPress={() => openThread($, r.thread_id as number)}
-                  >
-                    <Text weight="semibold" color={isOpen ? 'claude' : 'text'}>
-                      {label}
-                    </Text>
-                  </Button>
-                )}
-                <Text color={chip(r.badge)} size="footnote">
-                  {r.badge}
-                </Text>
-              </Box>
-              <Text color="inactive" size="footnote">
-                {meta}
-                {pending === r.thread_id ? '  ·  opening…' : ''}
-              </Text>
+              {r.thread_id === null ? (
+                <Text>{face}</Text>
+              ) : (
+                <Button key={`open-${current}-${r.thread_id}`} plain onPress={() => openThread($, r.thread_id as number)}>
+                  {face}
+                </Button>
+              )}
             </Box>
           )
         })}
@@ -389,12 +397,12 @@ export const register: Register = on => {
           </Box>
 
           {Input && (
-            <Box borderStyle="round" borderColor="promptBorder" paddingX="sm">
+            <Box flexDirection="column" width="100%">
               <Input
                 key={`reply-${id}`}
                 placeholder="Reply to the agent. Enter sends."
                 submitLabel="send"
-                rows={3}
+                rows={4}
                 onSubmit={(text: string) => reply($, id, text)}
               />
             </Box>
@@ -413,11 +421,13 @@ export const register: Register = on => {
       return (
         <Box flexDirection="column" gap="md" padding="md">
           {header}
-          <Box gap="lg" alignItems="flex-start">
-            <Box flexDirection="column" width="38%" flexShrink={0}>
+          <Box gap="lg" alignItems="flex-start" width="100%">
+            <Box flexDirection="column" width="40%" flexShrink={0}>
               {listView}
             </Box>
-            <Box flexDirection="column" flexGrow={1}>
+            {/* minWidth 0 lets the thread shrink to what is left instead of running
+                past the pane's edge; a wide table is clipped, not the whole column. */}
+            <Box flexDirection="column" flexGrow={1} flexShrink={1} minWidth={0} overflow="hidden">
               {thread ? threadView(thread) : empty}
             </Box>
           </Box>
